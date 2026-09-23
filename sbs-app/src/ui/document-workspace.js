@@ -25,6 +25,7 @@ import { builtinTemplates, docTextFor, pageRangeLabel, unitsOf, partInfo, stills
 import { DOCUMENT_CSS, renderPageHtml, renderTocPageHtml, renderCustomPageHtml, slotInnerHtml } from '../systems/document-render.js';
 import { watermarkOf, watermarkHtml, watermarkCss, watermarkVisible, detectWatermarkMode, bakeWatermarkPixels, fitWithin } from '../systems/watermark-core.js';
 import * as D from '../systems/document.js';
+import * as clipPool from '../systems/clip-pool.js';   // 📋 V0.3.4.90 — table cells travel between SBS windows
 import { openTemplateEditor } from './document-template-editor.js';
 import { openVideoFrameDialog } from './video-frame-dialog.js';   // 🎞 which frame of a step's clip this picture shows
 
@@ -278,6 +279,23 @@ function _build() {
   // the block does not fit. A plain word still just types.
   document.addEventListener('paste', _onTablePaste, true);
   document.addEventListener('copy', _onTableCopy, true);
+  // 🖼 V0.3.4.90 — a picture dragged from a folder: onto a table cell, onto a picture frame, or
+  // anywhere on a custom page (the overlay's table editor had this; the document did not).
+  _root.addEventListener('dragover', (e) => {
+    if (!_isOpen() || _tplEd) return;
+    if (![...(e.dataTransfer?.items || [])].some(i => i.kind === 'file')) return;
+    if (!_dropTargetOf(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  _root.addEventListener('drop', (e) => {
+    if (!_isOpen() || _tplEd) return;
+    const t = _dropTargetOf(e);
+    const file = [...(e.dataTransfer?.files || [])].find(f => /^image\//.test(f.type));
+    if (!t || !file) return;
+    e.preventDefault(); e.stopPropagation();
+    _dropPicture(t, file);
+  });
   _shadow.addEventListener('focusout', _onCustomFocusOut);
   _shadow.addEventListener('pointermove', _onSlotPointerMove);
   _shadow.addEventListener('pointerup', _onSlotPointerUp);
@@ -1180,6 +1198,39 @@ function _pictureChoice(c, page, k, modelPage) {
   return { thumb: before ? t.start.get(sid) : t.end.get(sid), before, text: st === 'auto' ? `Automatic — ${name(sid)}` : before ? `before ${name(sid)}` : name(sid) };
 }
 
+/** 🖼 What a dropped picture would land on: a table cell (custom page), a picture frame, or a custom page. */
+function _dropTargetOf(e) {
+  const path = e.composedPath ? e.composedPath() : [];
+  const first = (fn) => path.find(n => n instanceof HTMLElement && fn(n));
+  const cell = first(n => n.dataset?.cell !== undefined);
+  if (cell) {
+    const item = first(n => n.classList?.contains('ci') && n.dataset?.item);
+    if (item && _editHost() === 'custom') { const [r, c] = String(cell.dataset.cell).split(',').map(Number); return { kind: 'cell', itemId: item.dataset.item, r, c }; }
+    return null;
+  }
+  const slot = first(n => n.classList?.contains('slot') && n.dataset?.slot !== undefined);
+  if (slot) return { kind: 'slot', slot: Number(slot.dataset.slot) };
+  if (first(n => n.classList?.contains('page')) && _editHost() === 'custom') return { kind: 'custom', x: e.clientX, y: e.clientY };
+  return null;
+}
+async function _dropPicture(t, file) {
+  if (t.kind === 'slot') { _importAsset(file, t.slot); return; }
+  const asset = await _readAsset(file);
+  if (!asset) return;
+  if (t.kind === 'cell') {
+    D.setTableCellImage(_pageId, t.itemId, t.r, t.c, asset);
+    setStatus('Picture put into the cell.', 'success', 3000);
+    return;
+  }
+  // a custom page: a new picture item, centred where it was dropped
+  const pg = _shadow.querySelector('.page')?.getBoundingClientRect();
+  if (!pg) return;
+  const k = _mmPerPx(), A = _area(), ratio = asset.w / Math.max(1, asset.h);
+  const w = Math.min(80, A.w), h = Math.max(5, _snap(w / ratio));
+  const id = D.addCustomImage(_pageId, asset, _clampItemRect({ x: _snap((t.x - pg.left) * k - w / 2), y: _snap((t.y - pg.top) * k - h / 2), w, h }));
+  if (id) { _customSel = id; _renderAll(); setStatus(`"${file.name}" placed. Drag it to move it, a handle to size it.`, 'success', 5000); }
+}
+
 /** External picture → downscaled, stored in the document (JPEG unless it really has transparency). */
 async function _readAsset(file) {
   try {
@@ -1515,6 +1566,7 @@ function _copyPickedCells(cut = false) {
   }
   const tsv = cells.map(r2 => r2.join('\t')).join('\n');
   _tableClip = { rows, cols, tsv, fmt, imgs };
+  _poolTableClip(_tableClip);   // 📋 the pool too
   const ta = document.createElement('textarea');
   ta.value = tsv;
   ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
@@ -1539,6 +1591,14 @@ function _copyPickedCells(cut = false) {
  * carry: each cell's look and its picture, matched back by the very same text
  * when it is pasted here again.
  */
+/** 📋 The picked cells onto the pool. A cell's picture is an ASSET ID here — meaningless elsewhere — so the pool gets the picture itself. */
+function _poolTableClip(clip) {
+  const assets = D.getDocument()?.assets || {};
+  const imgs = {};
+  for (const [k, id] of Object.entries(clip.imgs || {})) { const a = assets[id]; if (a?.dataUrl) imgs[k] = a.dataUrl; }
+  clipPool.writeClip('tableCells', { rows: clip.rows, cols: clip.cols, tsv: clip.tsv, fmt: clip.fmt, imgs }, { text: clip.tsv });
+}
+
 function _onTableCopy(e) {
   if (!_isOpen() || _tplEd) return;
   const tb = _tableNow(); if (!tb) return;
@@ -1561,6 +1621,7 @@ function _onTableCopy(e) {
   }
   const tsv = cells.map(r2 => r2.join('\t')).join('\n');
   _tableClip = { rows, cols, tsv, fmt, imgs };
+  _poolTableClip(_tableClip);   // 📋 the pool too
   e.clipboardData?.setData('text/plain', tsv);
   e.preventDefault(); e.stopPropagation();
   setStatus(`${rows}×${cols} cells copied${Object.keys(imgs).length ? ', pictures and all' : ''}.`, 'info', 3000);
@@ -1623,8 +1684,35 @@ function _onTablePaste(e) {
   }
   // our own copy? then the look and the pictures come with it
   const rich = _tableClip && _tableClip.tsv === text ? _tableClip : null;
+  if (looksLikeGrid && !rich) {
+    // 📋 V0.3.4.90 — another SBS window's cells? The pool carries their look and their pictures
+    // (as pictures, not asset ids): the pictures become assets of this document, in one commit.
+    const pageId = _pageId, itemId = _customSel, r = at[0], c = at[1];
+    clipPool.readClip(['tableCells']).then(async (env) => {
+      const pool = env?.payload?.tsv === text ? env.payload : null;
+      if (!_isOpen() || pageId !== _pageId || itemId !== _customSel) return;
+      const live = _itemsNow().find(i => i.id === itemId);
+      const now = live?.type === 'table' ? live : tb;
+      if (!pool) { _tsel = null; _patchItem(tablePaste(now, r, c, text), 'Paste into the table'); setStatus('Pasted into the table.', 'success', 3000); return; }
+      const pics = [];
+      for (const [k, dataUrl] of Object.entries(pool.imgs || {})) {
+        if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) continue;
+        const [y, x] = k.split(',').map(Number);
+        const size = await _measure(dataUrl);
+        if (size?.w) pics.push({ key: `${r + y},${c + x}`, dataUrl, w: size.w, h: size.h, name: '' });
+      }
+      const patch = tablePasteRich(now, r, c, { ...pool, imgs: {} });
+      if (!patch) return;
+      const cleared = { ...(now.imgs || {}) };
+      for (let y = 0; y < pool.rows; y++) for (let x = 0; x < pool.cols; x++) delete cleared[`${r + y},${c + x}`];
+      D.setTableBlock(pageId, itemId, { ...patch, imgs: cleared }, pics);
+      _tsel = null;
+      setStatus(pics.length ? `Pasted, with ${pics.length} picture${pics.length === 1 ? '' : 's'}.` : 'Pasted into the table.', 'success', 4000);
+    });
+    return;
+  }
   const pch = looksLikeGrid
-    ? (rich ? tablePasteRich(tb, at[0], at[1], rich) : tablePaste(tb, at[0], at[1], text))
+    ? tablePasteRich(tb, at[0], at[1], rich)
     : { cells: tb.cells.map((row, y) => row.map((v, x) => (y === at[0] && x === at[1] ? text.slice(0, 600) : v))) };
   if (pch) { _tsel = null; _patchItem(pch, 'Paste into the table'); setStatus('Pasted into the table.', 'success', 3000); }
 }

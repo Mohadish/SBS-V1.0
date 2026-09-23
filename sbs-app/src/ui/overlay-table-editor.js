@@ -28,6 +28,7 @@ import {
 } from '../systems/document-core.js';
 import { undoManager } from '../systems/undo.js';
 import { setStatus } from './status.js';
+import * as clipPool from '../systems/clip-pool.js';   // 📋 V0.3.4.90 — cells travel between SBS windows, look and pictures included
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -366,6 +367,7 @@ function _copyCells(st, cut) {
   }
   const tsv = grid.map(r => r.join('\t')).join('\n');
   _clip = { rows, cols, tsv, fmt, imgs };
+  clipPool.writeClip('tableCells', _clip, { text: tsv });   // 📋 the pool: the same cells in another window (pictures are data URLs here already)
   const ta = document.createElement('textarea');
   ta.value = tsv;
   ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
@@ -775,13 +777,16 @@ export function openOverlayTableEditor(ctx) {
     _commitOpenCell(st);
     const at = _sel(st) || s;
     // Cells copied inside the app carry their look; the system clipboard only
-    // carries the text, so it is the app's copy when the text still matches.
-    const rich = _clip && _clip.tsv === text ? _clip : null;
-    const patch = rich ? tablePasteRich(st.data, at.r0, at.c0, rich)
-                       : tablePaste(st.data, at.r0, at.c0, text);
-    if (_apply(st, patch, 'Paste into the table')) {
-      setStatus('Pasted into the table.', 'success', 3000);
-    }
+    // carries the text, so it is the app's copy when the text still matches —
+    // this window's, or (📋 V0.3.4.90) the pool's, when another SBS window copied.
+    const applyRich = (rich) => {
+      if (_open !== st) return;
+      const patch = rich ? tablePasteRich(st.data, at.r0, at.c0, rich)
+                         : tablePaste(st.data, at.r0, at.c0, text);
+      if (_apply(st, patch, 'Paste into the table')) setStatus('Pasted into the table.', 'success', 3000);
+    };
+    if (_clip && _clip.tsv === text) { applyRich(_clip); return; }
+    clipPool.readClip(['tableCells']).then(env => applyRich(env?.payload?.tsv === text ? env.payload : null));
   };
   document.addEventListener('paste', st.paste, true);
 

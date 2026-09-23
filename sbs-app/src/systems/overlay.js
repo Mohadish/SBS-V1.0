@@ -22,6 +22,7 @@ import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.75 — disk
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
 import { showContextMenu } from '../ui/context-menu.js';
+import * as clipPool from './clip-pool.js';   // 📋 V0.3.4.90 — copy here, paste in another SBS window
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import { promptString, chooseFromList } from '../ui/prompt.js';
 import { openSequenceEditor } from '../ui/sequence-editor.js';
@@ -31,7 +32,7 @@ import * as interfaces from './interfaces.js';   // interface overlay (used lazi
 // works with, drawn through the same HTML rasteriser the text boxes use.
 import { tableOverlayHtml, defaultOverlayTable, DEFAULT_PIC_PX } from './table-html.js';
 import { openOverlayTableEditor, closeOverlayTableEditor, refreshOverlayTableEditor,
-         TABLE_UNDO_SCOPE } from '../ui/overlay-table-editor.js';
+         isOverlayTableEditorOpen, TABLE_UNDO_SCOPE } from '../ui/overlay-table-editor.js';
 import { sanitizeCustomItem, tableInsertRow, tableDeleteRow, tableInsertCol, tableDeleteCol,
          tableDeleteRows, tableDeleteCols,
          tableMerge, tableUnmerge, canMerge, mergeAt } from './document-core.js';
@@ -6075,7 +6076,7 @@ function _pushAddNodeUndo(node, label) {
   );
 }
 
-function _pushAddNodesUndo(nodes, specs, label) {
+function _pushAddNodesUndo(nodes, specs, label, hooks = null) {
   if (!nodes?.length || !specs?.length) return;
   let nodeRefs = [...nodes];
   undoManager.push(label,
@@ -6087,9 +6088,11 @@ function _pushAddNodesUndo(nodes, specs, label) {
       _setSelection(null);
       _layer.batchDraw();
       _scheduleSave();
+      try { hooks?.undo?.(); } catch (e) { console.warn('[overlay] paste undo hook:', e?.message); }   // 📋 definitions a paste brought along leave with it
       return any ? undefined : false;
     },
     async () => {
+      try { hooks?.redo?.(); } catch (e) { console.warn('[overlay] paste redo hook:', e?.message); }
       const fresh = [];
       for (const spec of specs) {
         const n = await _recreateNode(spec);
@@ -6176,6 +6179,12 @@ function _copyToOverlayClipboard() {
     spec:        _serializeNode(n),
     capturedAt:  { x: n.x() ?? 0, y: n.y() ?? 0 },
   })).filter(e => e.spec);
+  // 📋 V0.3.4.90 — and onto the POOL (the OS clipboard): another SBS window can paste it, and the
+  // definitions the items point at ride along so it can resolve them (clip-pool.js).
+  if (_overlayClipboard.length) {
+    const specs = _overlayClipboard.map(e => e.spec);
+    clipPool.writeClip('overlay', { items: _overlayClipboard, ...clipPool.collectDefs(specs) }, { text: clipPool.overlayPlainText(specs) });
+  }
   return _overlayClipboard.length > 0;
 }
 
@@ -6191,7 +6200,21 @@ function _copyToOverlayClipboard() {
  * fire-and-forget — we return a Promise<boolean> for completeness.
  */
 async function _pasteFromOverlayClipboard(opts = {}) {
-  if (!_overlayClipboard?.length) return false;
+  // 📋 V0.3.4.90 — the POOL first: whatever SBS window copied last. A clipboard that holds
+  // something else (Word, a browser) means this window's own copy is stale. Only a clipboard
+  // that cannot be read at all falls back to it. The definitions the items point at are
+  // resolved to THIS project's (clip-pool.js remapDefs) — what it had to add joins the undo.
+  const env = await clipPool.readClip(['overlay']);
+  let entries = null, hooks = null, note = '';
+  if (env?.payload?.items?.length) {
+    const r = clipPool.remapDefs(env, env.payload.items.map(e => e.spec));
+    entries = env.payload.items.map((e, i) => ({ ...e, spec: r.specs[i] }));
+    hooks = (r.undo || r.redo) ? { undo: r.undo, redo: r.redo } : null;
+    note = r.note;
+  } else if (env === undefined && _overlayClipboard?.length) {
+    entries = _overlayClipboard;
+  }
+  if (!entries?.length) { if (env === null) setStatus('Nothing from SBS to paste — the clipboard holds something else.', 'info', 3500); return false; }
   const { inPlace = false, offset = 20 } = opts;
   const newNodes = [];
   // P7-C-1: capture each fresh node's POST-positioning spec so undo
@@ -6199,7 +6222,7 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   // _serializeNode after we've set x/y picks up the offset / inPlace
   // positioning the user actually saw.
   const newSpecs = [];
-  for (const entry of _overlayClipboard) {
+  for (const entry of entries) {
     const node = await _recreateNode(entry.spec);
     if (!node) continue;
     if (inPlace) {
@@ -6214,7 +6237,7 @@ async function _pasteFromOverlayClipboard(opts = {}) {
     newNodes.push(node);
     newSpecs.push(_serializeNode(node));
   }
-  if (!newNodes.length) return false;
+  if (!newNodes.length) { hooks?.undo?.(); return false; }
 
   // Replace selection with the freshly-pasted nodes.
   _transformer.nodes(newNodes);
@@ -6222,8 +6245,9 @@ async function _pasteFromOverlayClipboard(opts = {}) {
   _layer.batchDraw();
   _uiLayer.batchDraw();
   const label = opts.label || `Paste ${newSpecs.length} item${newSpecs.length > 1 ? 's' : ''}`;
-  _pushAddNodesUndo(newNodes, newSpecs, label);
+  _pushAddNodesUndo(newNodes, newSpecs, label, hooks);
   _scheduleSave();
+  if (note) setStatus(`Pasted. ${note} — they are this project's own now.`, 'info', 7000);
   return true;
 }
 
@@ -6240,10 +6264,9 @@ async function _duplicateSelected() {
  * available, just greyed out.
  */
 function _showEmptyViewportContextMenu(x, y) {
-  const hasClipboard = !!_overlayClipboard?.length;
   showContextMenu([
-    { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
-    { label: '📥 Paste in place',  disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
+    { label: '📥 Paste',           action: () => _pasteFromOverlayClipboard({ inPlace: false }) },   // 📋 never greyed: another window may have copied
+    { label: '📥 Paste in place',  action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
   ], x, y);
 }
 
@@ -6805,7 +6828,6 @@ export function reloadActiveOverlay() {
 
 function _showOverlayContextMenu(node, x, y) {
   const sel = _transformer?.nodes() || [node];
-  const hasClipboard = !!_overlayClipboard?.length;
   // Interface overlays get a "Change image" entry (pick from the library folder).
   // Reset/Update-default land in the next slice.
   const ifaceItems = interfaces.isInterfaceNode(node)
@@ -7271,8 +7293,8 @@ function _showOverlayContextMenu(node, x, y) {
     ...arrangeItems,
     { label: '⎘ Duplicate',        action: _duplicateSelected },
     { label: '📋 Copy',            action: _copyToOverlayClipboard },
-    { label: '📥 Paste',           disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: false }) },
-    { label: '📥 Paste in place',  disabled: !hasClipboard, action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
+    { label: '📥 Paste',           action: () => _pasteFromOverlayClipboard({ inPlace: false }) },   // 📋 never greyed: another window may have copied
+    { label: '📥 Paste in place',  action: () => _pasteFromOverlayClipboard({ inPlace: true })  },
     { separator: true },
     { label:  '🗑 Delete',
       action: () => {
@@ -9551,10 +9573,12 @@ function _onKeyDown(e) {
   if (k === 'c') { if (_copyToOverlayClipboard()) e.preventDefault(); return; }
   if (k === 'v') {
     const inPlace = !!e.altKey;            // Ctrl+Alt+V → paste in place
-    if (_overlayClipboard?.length) {
-      e.preventDefault();
-      _pasteFromOverlayClipboard({ inPlace });
-    }
+    // 📋 V0.3.4.90 — the pool is read asynchronously, so the key cannot know yet whether there is
+    // anything to paste; nothing else in the overlay reacts to a bare Ctrl+V, so it is always taken.
+    // A table being edited owns Ctrl+V (its cells) — the editor's own paste handler runs then.
+    if (isOverlayTableEditorOpen()) return;
+    e.preventDefault();
+    _pasteFromOverlayClipboard({ inPlace });
     return;
   }
   if (k === 'd') {
