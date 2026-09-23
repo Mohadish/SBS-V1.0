@@ -48,17 +48,20 @@
     const s = sampleAt(e.clientX, e.clientY);
     lg.clearRect(0, 0, 11, 11);
     lg.drawImage(nat, s.x - 5, s.y - 5, 11, 11, 0, 0, 11, 11);
-    const left = e.clientX + 24 + 132 > window.innerWidth ? e.clientX - 24 - 132 : e.clientX + 24;
-    const top = e.clientY + 24 + 132 > window.innerHeight ? e.clientY - 24 - 132 : e.clientY + 24;
+    // the loupe IS the cursor: centred on the pointer, its crosshair on the sampled pixel
+    const left = e.clientX - 66, top = e.clientY - 66;
     loupe.style.left = `${left}px`; loupe.style.top = `${top}px`; loupe.style.display = 'block';
-    tag.style.left = `${left}px`; tag.style.top = `${top + 138}px`; tag.style.display = 'block';
+    const tagTop = top + 138 + 28 > window.innerHeight ? top - 30 : top + 138;
+    tag.style.left = `${Math.max(4, Math.min(window.innerWidth - 110, e.clientX - 40))}px`; tag.style.top = `${tagTop}px`; tag.style.display = 'block';
     tagSw.style.background = s.hex; tagTx.textContent = s.hex;
   });
   window.addEventListener('mousedown', (e) => {
     if (e.button === 0) finish(sampleAt(e.clientX, e.clientY).hex);
     else finish(null);
   });
+  // the pointer may arrive from another display's picker window: sample right away
+  window.addEventListener('mouseenter', (e) => window.dispatchEvent(new MouseEvent('mousemove', { clientX: e.clientX, clientY: e.clientY })));
   window.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('keydown', (e) => { if (e.key === 'Escape') finish(null); });
-  window.addEventListener('blur', () => finish(null));
+  // (no blur → cancel: with one picker window per display, moving to another display's window blurs this one)
 })();

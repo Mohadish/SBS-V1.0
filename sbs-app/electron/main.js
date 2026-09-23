@@ -1176,45 +1176,78 @@ ipcMain.handle('fs:listTree', async (_, dirPath) => {
 // on (desktopCapturer), open a frameless window over that display showing the
 // snapshot, let the user click a pixel of it (electron/screen-picker.*), and
 // answer with the hex. One at a time; Esc answers nothing.
-let _pickShot = null;      // the current snapshot's data URL, for the picker window
-let _pickWin  = null;
-ipcMain.handle('color:pickScreen:image', () => _pickShot);
+// V0.3.4.110 — EVERY display at once (one picker window per display, the first
+// click anywhere answers), and this app's own windows are made transparent for
+// the snapshot, so what sits behind SBS can be picked without minimising it.
+const _pickShots = new Map();   // display id → the snapshot's data URL
+let   _pickWins  = [];
+ipcMain.handle('color:pickScreen:image', (_, displayId) => _pickShots.get(String(displayId)) || null);
 ipcMain.handle('color:pickScreen', async () => {
-  if (_pickWin) return null;
+  if (_pickWins.length) return null;
+  const mine = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
+  const opacity = new Map();
+  const restore = () => { for (const [w, o] of opacity) { try { if (!w.isDestroyed()) w.setOpacity(o); } catch {} } opacity.clear(); };
   try {
-    const disp  = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-    const scale = disp.scaleFactor || 1;
-    const size  = { width: Math.round(disp.size.width * scale), height: Math.round(disp.size.height * scale) };
-    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: size });
-    const src = sources.find(s => String(s.display_id) === String(disp.id)) || sources[0];
-    if (!src || src.thumbnail.isEmpty()) return null;
-    _pickShot = src.thumbnail.toDataURL();
+    const displays = screen.getAllDisplays();
+    // our own windows out of the picture (transparent, not hidden: no minimise / restore churn)
+    for (const w of mine) { try { opacity.set(w, w.getOpacity()); w.setOpacity(0); } catch {} }
+    await new Promise(r => setTimeout(r, 160));   // the compositor needs a frame or two
+    _pickShots.clear();
+    // one capture per distinct native size (thumbnailSize is shared by every source in a call)
+    const bySize = new Map();
+    for (const d of displays) {
+      const sc = d.scaleFactor || 1;
+      const k = `${Math.round(d.size.width * sc)}x${Math.round(d.size.height * sc)}`;
+      if (!bySize.has(k)) bySize.set(k, { width: Math.round(d.size.width * sc), height: Math.round(d.size.height * sc), ids: [] });
+      bySize.get(k).ids.push(String(d.id));
+    }
+    for (const { width, height, ids } of bySize.values()) {
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width, height } });
+      for (const s of sources) {
+        const id = String(s.display_id);
+        if (ids.includes(id) && !s.thumbnail.isEmpty()) _pickShots.set(id, s.thumbnail.toDataURL());
+      }
+      // a source that names no display (some drivers): the first unmatched display takes it
+      for (const s of sources) if (!ids.includes(String(s.display_id)) && !s.thumbnail.isEmpty()) { const free = ids.find(i => !_pickShots.has(i)); if (free) _pickShots.set(free, s.thumbnail.toDataURL()); }
+    }
+    restore();
+    if (!_pickShots.size) return null;
     const hex = await new Promise((resolve) => {
       let settled = false;
       const done = (v) => { if (settled) return; settled = true; ipcMain.removeListener('color:pickScreen:done', onDone); resolve(v); };
-      const onDone = (e, v) => { if (_pickWin && e.sender === _pickWin.webContents) done(typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null); };
+      const onDone = (e, v) => { if (_pickWins.some(w => !w.isDestroyed() && e.sender === w.webContents)) done(typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null); };
       ipcMain.on('color:pickScreen:done', onDone);
-      const b = disp.bounds;
-      _pickWin = new BrowserWindow({
-        x: b.x, y: b.y, width: b.width, height: b.height,
-        frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false, minimizable: false, maximizable: false,
-        hasShadow: false, show: false, backgroundColor: '#000000', title: 'Pick a colour',
-        webPreferences: { preload: path.join(__dirname, 'screen-picker-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
-      });
-      _pickWin.setMenuBarVisibility(false);
-      _pickWin.setAlwaysOnTop(true, 'screen-saver');
-      _pickWin.on('closed', () => { _pickWin = null; done(null); });
-      _pickWin.once('ready-to-show', () => { try { _pickWin.setBounds(b); _pickWin.show(); _pickWin.focus(); } catch {} });
-      _pickWin.loadFile(path.join(__dirname, 'screen-picker.html')).catch(() => done(null));
+      for (const d of displays) {
+        if (!_pickShots.has(String(d.id))) continue;
+        const b = d.bounds;
+        const w = new BrowserWindow({
+          x: b.x, y: b.y, width: b.width, height: b.height,
+          frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false, minimizable: false, maximizable: false,
+          hasShadow: false, show: false, backgroundColor: '#000000', title: 'Pick a colour',
+          webPreferences: { preload: path.join(__dirname, 'screen-picker-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+        });
+        _pickWins.push(w);
+        w.setMenuBarVisibility(false);
+        w.setAlwaysOnTop(true, 'screen-saver');
+        w.on('closed', () => done(null));
+        w.once('ready-to-show', () => { try { w.setBounds(b); w.show(); } catch {} });
+        w.loadFile(path.join(__dirname, 'screen-picker.html'), { query: { d: String(d.id) } }).catch(() => done(null));
+      }
+      // the one under the pointer gets the keyboard (Esc)
+      const under = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+      const i = displays.findIndex(d => d.id === under.id);
+      setTimeout(() => { try { (_pickWins[i >= 0 ? i : 0])?.focus(); } catch {} }, 250);
     });
-    try { if (_pickWin && !_pickWin.isDestroyed()) _pickWin.destroy(); } catch {}
-    _pickWin = null;
-    _pickShot = null;
+    for (const w of _pickWins) { try { if (!w.isDestroyed()) w.destroy(); } catch {} }
+    _pickWins = [];
+    _pickShots.clear();
+    try { mainWindow?.focus(); } catch {}
     return hex;
   } catch (e) {
     console.warn('[pick] screen colour pick failed:', e?.message);
-    try { if (_pickWin && !_pickWin.isDestroyed()) _pickWin.destroy(); } catch {}
-    _pickWin = null; _pickShot = null;
+    restore();
+    for (const w of _pickWins) { try { if (!w.isDestroyed()) w.destroy(); } catch {} }
+    _pickWins = []; _pickShots.clear();
     return null;
   }
 });
