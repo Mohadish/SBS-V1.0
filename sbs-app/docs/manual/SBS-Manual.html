@@ -253,6 +253,10 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <h2 id="start-save">Saving, autosave, backups</h2>
 <p><kbd>Ctrl</kbd>+<kbd>S</kbd> saves, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> saves as. Saves are atomic — the previous file is only replaced once the new one is completely written. <span class="ui">Settings ▸ Auto-backup</span> keeps timestamped copies in <code>backups/</code>; <span class="ui">Back up now</span> makes one immediately. Closing the window with unsaved changes asks you first.</p>
 <div class="tip"><b>Rule of thumb.</b> The project file is the truth. Anything you see in the viewport is rebuilt from it when a project loads, so a reload (<kbd>Ctrl</kbd>+<kbd>R</kbd> in the app window) is always a safe way to make the live scene match the data.</div>
+
+<h2 id="start-collect">Taking a project to another computer</h2>
+<p><span class="ui">File ▸ Collect Project for Another Computer…</span> packs everything the project uses into <b>one .zip</b> — like Archive in 3ds Max or Collect Files in After Effects: a copy of the project whose paths point <em>inside</em> the archive, the CAD models, every video clip the steps use (whole), the brand file, the interface library, and the project's <code>audio/</code>, <code>languages/</code> and <code>media/</code> folders. The render cache is a tick-box, off by default (it is large and the next export rebuilds it). Unzip anywhere and open the <code>.sbsproj</code> — nothing to relink.</p>
+<p>The dialog lists every file with where it was found. Each one is <b>copied</b> into the archive, <b>linked</b> — kept out, the project keeps its absolute path (for a file on a restricted network share that cannot be read here: a computer that can see the share still loads it) — or <b>skipped</b>. A missing file can be located with <span class="ui">Browse…</span> first. <code>COLLECT-REPORT.txt</code> inside the archive says what was copied, linked and left out. Files are stored without compression (clips and models do not compress), so the archive is big — that is the point.</p>
 </section>
 
 <section class="ch" id="interface">

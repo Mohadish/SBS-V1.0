@@ -50,6 +50,22 @@ contextBridge.exposeInMainWorld('sbsNative', {
   statFile:  (filePath)           => ipcRenderer.invoke('fs:stat',      filePath),
   listDir:   (dirPath)            => ipcRenderer.invoke('fs:listDir',   dirPath),
   deletePath:(p, opts={})         => ipcRenderer.invoke('fs:deletePath', p, opts),
+  readable:  (filePath)           => ipcRenderer.invoke('fs:readable',  filePath),   // 📦 V0.3.4.101 — stat + one byte read
+  listTree:  (dirPath)            => ipcRenderer.invoke('fs:listTree',  dirPath),    // 📦 every file under a folder
+
+  // ── 📦 Collect project (V0.3.4.101) — one .zip with everything, streamed by main ──
+  collect: {
+    begin:   (zipPath)          => ipcRenderer.invoke('collect:begin',   zipPath),
+    addFile: (token, src, dst)  => ipcRenderer.invoke('collect:addFile', token, src, dst),
+    addText: (token, dst, data) => ipcRenderer.invoke('collect:addText', token, dst, data),
+    finish:  (token)            => ipcRenderer.invoke('collect:finish',  token),
+    abort:   (token)            => ipcRenderer.invoke('collect:abort',   token),
+    onProgress: (cb) => {
+      const h = (_e, data) => { try { cb(data); } catch (_) { /* ignore */ } };
+      ipcRenderer.on('collect:progress', h);
+      return () => { try { ipcRenderer.removeListener('collect:progress', h); } catch (_) { /* ignore */ } };
+    },
+  },
 
   // ── App ──────────────────────────────────────────────────────────────────
   getVersion:         ()          => ipcRenderer.invoke('app:getVersion'),
@@ -95,6 +111,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:brandPanel',           // 🏷 V0.3.3.12 — Tools ▸ Brand… (company standard file)
       'menu:documentPanel',        // 📄 V0.3.4.0 — Tools ▸ Document… (2D manual from the animation)
       'menu:licensePanel',         // 🔑 V0.3.4.64 — Help ▸ Licence…
+      'menu:collectProject',       // 📦 V0.3.4.101 — File ▸ Collect Project for Another Computer…
       'key:altCombo',              // 🎹 V0.3.2.175 — Alt+<key> combos forwarded
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level

@@ -551,6 +551,8 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'Save Project',      accelerator: 'CmdOrCtrl+S', click: () => mainWindow?.webContents.send('menu:saveProject') },
         { label: 'Save Project As…',  accelerator: 'CmdOrCtrl+Shift+S', click: () => mainWindow?.webContents.send('menu:saveProjectAs') },
+        // 📦 V0.3.4.101 — everything the project needs, in one .zip, for another computer
+        { label: 'Collect Project for Another Computer…', click: () => mainWindow?.webContents.send('menu:collectProject') },
         { type: 'separator' },
         // "Load Model…" (Ctrl+L) removed in V0.3.3.0 — no renderer subscriber since
         // April; models come in through the Files tab. The channel stays
@@ -1134,6 +1136,48 @@ ipcMain.handle('fs:stat', async (_, filePath) => {
     return { size: s.size, mtimeMs: s.mtimeMs };
   } catch { return null; }
 });
+
+// 📦 V0.3.4.101 — can this file actually be READ (not just seen)? A share can
+// answer a stat and still refuse the bytes; the collect dialog needs to know
+// before it promises a copy. Reads one byte.
+ipcMain.handle('fs:readable', async (_, filePath) => {
+  try {
+    const s = fs.statSync(filePath);
+    if (s.isDirectory()) return { ok: true, dir: true, size: 0, mtimeMs: s.mtimeMs };
+    const fd = fs.openSync(filePath, 'r');
+    try { if (s.size > 0) fs.readSync(fd, Buffer.alloc(1), 0, 1, 0); } finally { fs.closeSync(fd); }
+    return { ok: true, dir: false, size: s.size, mtimeMs: s.mtimeMs };
+  } catch (e) {
+    return { ok: false, error: e.code || e.message };
+  }
+});
+
+// 📦 Every file under a folder, recursively — [{ rel, size }] with '/' separators.
+ipcMain.handle('fs:listTree', async (_, dirPath) => {
+  const out = [];
+  const walk = (dir, rel) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(path.join(dir, e.name), r);
+      else if (e.isFile()) { let size = 0; try { size = fs.statSync(path.join(dir, e.name)).size; } catch {} out.push({ rel: r, size }); }
+    }
+  };
+  try { if (!fs.statSync(dirPath).isDirectory()) return null; } catch { return null; }
+  walk(dirPath, '');
+  return out;
+});
+
+// ─── 📦 Collect project (V0.3.4.101) ─────────────────────────────────────────
+// The renderer drives it file by file (it owns the decisions: copy / link /
+// skip) and gets a progress event per chunk. See electron/collect-zip.js.
+const collectZip = require('./collect-zip.js');
+ipcMain.handle('collect:begin',   (_, zipPath)            => { try { return { ok: true, token: collectZip.begin(zipPath) }; } catch (e) { return { ok: false, error: e.message }; } });
+ipcMain.handle('collect:addFile', (e, token, src, dst)    => collectZip.addFile(token, src, dst, (n) => { try { e.sender.send('collect:progress', { token, bytes: n }); } catch {} }));
+ipcMain.handle('collect:addText', (_, token, dst, data)   => collectZip.addText(token, dst, data));
+ipcMain.handle('collect:finish',  (_, token)              => collectZip.finish(token));
+ipcMain.handle('collect:abort',   (_, token)              => collectZip.abort(token));
 
 // List directory contents — returns [{ name, isDir, size, mtimeMs }, ...].
 // Returns null if the dir doesn't exist or can't be read.

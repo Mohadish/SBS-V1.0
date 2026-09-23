@@ -577,6 +577,14 @@ async function _encodeProjectStream(project, onProgress = null) {
   return { bytes: new Uint8Array(await outP), rawBytes };
 }
 
+/** 📦 V0.3.4.101 — a project object → the bytes a save would write (gzipped,
+ *  streamed). The collect feature writes an adjusted copy of the project into
+ *  its archive through this. */
+export async function encodeProjectBytes(project, onProgress = null) {
+  const { bytes } = await _encodeProjectStream(project, onProgress);
+  return bytes;
+}
+
 /** Bytes read from disk → project JSON string, auto-detecting gzip vs plain. */
 async function _decodeProjectBytes(bytes) {
   if (_isGzipBytes(bytes)) {

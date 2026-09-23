@@ -1725,6 +1725,12 @@ window.sbsNative?.onMenu?.('menu:brandPanel', () => {
     .catch(err => console.error('[brand] failed:', err));
 });
 
+// 📦 File ▸ Collect Project for Another Computer… (V0.3.4.101) — one .zip with
+// everything the project uses. Also reachable from the console: sbsCollect().
+const _openCollect = () => import('./ui/collect-dialog.js').then(m => m.openCollectDialog()).catch(err => { console.error('[collect] failed:', err); setStatus(`Collect failed to open: ${err?.message || err}`, 'danger', 8000); });
+window.sbsNative?.onMenu?.('menu:collectProject', _openCollect);
+window.sbsCollect = _openCollect;
+
 // 📄 Tools ▸ Document… (V0.3.4.0) — the animation as a paged 2D manual.
 // V0.3.4.1: a full-window workspace (steps list · A4 page · page settings).
 const _openDocumentWorkspace = () => {
