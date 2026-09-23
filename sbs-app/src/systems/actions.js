@@ -10480,7 +10480,7 @@ export function hasPrimitiveClipboard() { return !!_primClipboard; }
  * back to a plain origin-spawn when the source no longer exists.
  *   linked=false → independent param group · linked=true → shares the source's group.
  */
-function _pastePrimitive({ linked }) {
+function _pastePrimitive({ linked, undoLabel = null }) {
   if (!_primClipboard) return null;
   const cb   = _primClipboard;
   const root = state.get('treeData');
@@ -10518,7 +10518,7 @@ function _pastePrimitive({ linked }) {
     params, quality, baseAtOrigin, parentId, transform,
     primLinkId: linked ? (cb.primLinkId || generateId('primLink')) : generateId('primLink'),
     name:       cb.name,
-    undoLabel:  linked ? 'Paste linked primitive' : 'Paste primitive',
+    undoLabel:  undoLabel || (linked ? 'Paste linked primitive' : 'Paste primitive'),
   });
   if (!id) return null;
 
@@ -10533,6 +10533,67 @@ function _pastePrimitive({ linked }) {
 
 /** Paste an INDEPENDENT copy — its own parameter group (edits don't link back). */
 export function pastePrimitive()         { return _pastePrimitive({ linked: false }); }
+
+/** ⧉ V0.3.4.104 — Ctrl+D on a primitive: an independent copy beside it, one undo entry.
+ *  The primitive clipboard is left exactly as it was. */
+export function duplicatePrimitive(nodeId) {
+  const keep = _primClipboard;
+  try {
+    if (!copyPrimitive(nodeId)) return null;
+    return _pastePrimitive({ linked: false, undoLabel: 'Duplicate primitive' });
+  } finally { _primClipboard = keep; }
+}
+
+/**
+ * ⧉ V0.3.4.104 — Ctrl+D on a flat shape: a second instance of the same template,
+ * same parent, same plane and pose, set beside the original (by its own width);
+ * visible on the active step, hidden on the others like a freshly placed shape.
+ * One undo entry. Returns the new node id.
+ */
+export function duplicateFlatShape(nodeId) {
+  const root = state.get('treeData');
+  const src  = nodeId ? (state.get('nodeById')?.get(nodeId) ?? findNode(root, nodeId)) : null;
+  if (!root || !src || src.type !== 'flatShape') return null;
+  const parent = _findDataParent(root, nodeId) || root;
+  // its width, for the sideways offset — the built mesh knows; a fresh one falls back to 20
+  let off = 20;
+  try {
+    const m = steps.object3dById?.get(src.id);
+    const g = m?.geometry; if (g) { g.computeBoundingBox?.(); const bb = g.boundingBox; if (bb) off = Math.max(1, (bb.max.x - bb.min.x) * 1.1); }
+  } catch { /* the default stands */ }
+  const { id: _id, children: _ch, object3d: _o, follow: _f, ...plain } = src;
+  void _id; void _ch; void _o; void _f;
+  const copy = createFlatShapeNode({
+    ...JSON.parse(JSON.stringify(plain)),
+    name: src.name,
+    localOffset: [(src.localOffset?.[0] || 0) + off, src.localOffset?.[1] || 0, src.localOffset?.[2] || 0],
+  });
+  const materialise = (node) => {
+    const p = state.get('nodeById')?.get(parent.id) ?? findNode(state.get('treeData'), parent.id);
+    if (!p) return false;
+    p.children = p.children || [];
+    p.children.push(node);
+    const mesh = ensureFlatShapeObject3D(node);
+    const parentObj = p.object3d ?? steps.object3dById?.get(p.id) ?? null;
+    if (parentObj && mesh) parentObj.add(mesh);
+    if (mesh) { applyNodeTransformToObject3D(node, mesh); steps.object3dById.set(node.id, mesh); }
+    state.setState({ nodeById: _nodes_buildNodeMap(state.get('treeData')) });
+    _propagateNewNodeToSteps(node, p.id, { activeStepOnly: true });
+    state.emit('change:treeData', state.get('treeData'));
+    steps.scheduleTransformSync();
+    steps.flushSync?.();
+    state.markDirty();
+    return true;
+  };
+  if (!materialise(copy)) return null;
+  const snapshot = JSON.parse(JSON.stringify(copy));
+  undoManager.push(`Duplicate shape "${src.name || 'shape'}"`,
+    () => _removeShapeInstance(copy.id),
+    () => materialise(JSON.parse(JSON.stringify(snapshot))),
+  );
+  state.setState({ selectedId: copy.id, multiSelectedIds: new Set([copy.id]) });
+  return copy.id;
+}
 
 /** Paste a LINKED instance — shares the source's parameter group (ripples). */
 export function pastePrimitiveInstance() { return _pastePrimitive({ linked: true  }); }

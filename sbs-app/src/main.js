@@ -58,7 +58,7 @@ import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrde
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
-import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee, cancelOverlayPolyEdit } from './systems/overlay.js';
+import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee, cancelOverlayPolyEdit, isEditing as isOverlayEditing, selectionCount as overlaySelectionCount } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray, toggleOverlaySnap } from './ui/overlay-toolbar.js';
 import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
 import { initHeaderLayer }     from './systems/header.js';
@@ -5260,6 +5260,20 @@ window.addEventListener('keydown', async e => {
   // on window, so the workspace cannot stop the event itself — the gate is here.
   if (_takeoverOpen()) return;
 
+  // ⧉ Ctrl+D = DUPLICATE whatever is selected and can be duplicated (V0.3.4.104,
+  // the user's rule: "one key for anything that has a duplicate"). Overlay items
+  // (text boxes, shapes, pictures) are the overlay's own Ctrl+D — its listener
+  // runs first and marks the event; with an overlay selection this one stays
+  // out. Otherwise: the 3D selection — screws (same template), primitives,
+  // flat shapes — each by its own duplicate, one undo entry each.
+  if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyD') {
+    if (e.defaultPrevented) return;
+    if (isOverlayEditing() && overlaySelectionCount() > 0) return;
+    e.preventDefault();
+    _duplicateSceneSelection();
+    return;
+  }
+
   // ── Step navigation ──────────────────────────────────────────────────────
   // After moving the active step, keep the selection united with it UNLESS
   // we're in multi-select (selection ≥ 2 steps) — see
@@ -5585,6 +5599,35 @@ window.addEventListener('keydown', async e => {
 function _takeoverOpen() {
   const dw = document.getElementById('document-workspace');
   return !!dw && dw.style.display !== 'none';
+}
+
+/** ⧉ Ctrl+D on the 3D selection: every selected item that has a duplicate gets one. */
+async function _duplicateSceneSelection() {
+  const selSet = state.get('multiSelectedIds');
+  const selId  = state.get('selectedId');
+  const ids = [...((selSet instanceof Set && selSet.size) ? selSet : (selId ? [selId] : []))];
+  const nodeById = state.get('nodeById');
+  if (!ids.length) { setStatus('Select something to duplicate — a screw, a primitive, a shape, or an overlay item.', 'warn', 5000); return; }
+  const hw = await import('./systems/hardware-actions.js');
+  const made = [], skipped = [];
+  for (const id of ids) {
+    const n = nodeById?.get(id);
+    if (!n) continue;
+    let out = null;
+    try {
+      if (n.type === 'hardwareInstance')  out = hw.duplicateInstance(id)?.id || null;
+      else if (n.type === 'primitive')    out = actions.duplicatePrimitive(id);
+      else if (n.type === 'flatShape')    out = actions.duplicateFlatShape(id);
+      else { skipped.push(n.name || n.type); continue; }
+    } catch (err) { console.warn('[duplicate] failed for', n.name || id, err); }
+    if (out) made.push(out);
+  }
+  if (made.length) {
+    actions.setSelection(made[made.length - 1], new Set(made));
+    setStatus(`Duplicated ${made.length} item${made.length === 1 ? '' : 's'}${skipped.length ? ` · ${skipped.length} cannot be duplicated (${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''})` : ''}.`, 'success', 4000);
+  } else {
+    setStatus('Nothing here can be duplicated — Ctrl+D copies screws, primitives, shapes, and overlay items (text boxes, pictures).', 'warn', 5000);
+  }
 }
 
 function _isInputFocused() {

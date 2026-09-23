@@ -533,6 +533,9 @@ export function pickTextBoxStyle() {
 
 export function isEditing() { return _editing; }
 
+/** How many overlay items are selected (the transformer's nodes). */
+export function selectionCount() { return _transformer?.nodes()?.length || 0; }
+
 /**
  * Borrow the overlay's Konva.Stage for sibling layers (header.js).
  * Returns null until initOverlay() has run.
