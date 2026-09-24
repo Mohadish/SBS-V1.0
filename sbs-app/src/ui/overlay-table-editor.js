@@ -311,19 +311,19 @@ function _bar(st) {
   const f = s ? (st.data.fmt?.[`${s.r0},${s.c0}`] || {}) : {};
   const b = (a, label, title, on) =>
     `<button data-t="${a}" title="${_esc(title)}" style="height:22px;padding:0 7px;font-size:11.5px;border-radius:5px;cursor:pointer;`
-    + `border:1px solid ${on ? '#38bdf8' : 'rgba(255,255,255,.12)'};background:${on ? '#1d3a5f' : 'rgba(15,23,42,.9)'};color:#e2e8f0;">${label}</button>`;
+    + `border:1px solid ${on ? '#38bdf8' : 'var(--float-line-strong)'};background:${on ? 'rgba(56,189,248,0.28)' : 'var(--field-bg)'};color:var(--float-text);">${label}</button>`;
   const where = !s ? 'no cells picked' : one ? `row ${s.r0 + 1}, column ${s.c0 + 1}` : `${s.r1 - s.r0 + 1}×${s.c1 - s.c0 + 1} cells`;
   const canM = s && canMerge(st.data, s.r0, s.c0, s.r1, s.c1);
   const canU = s && !!mergeAt(st.data, s.r0, s.c0);
   st.bar.innerHTML =
     `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">`
-    + `<span style="color:#7dd3fc;font-size:11px;">${_esc(where)}</span>`
+    + `<span style="color:var(--accent);font-size:11px;">${_esc(where)}</span>`
     + b('bold', '<b>B</b>', 'Bold', !!f.b) + b('italic', '<i>I</i>', 'Italic', !!f.i)
     + b('al-start', '⫷', 'Align to the start', f.a === 'start') + b('al-center', '⫿', 'Centre', f.a === 'center') + b('al-end', '⫸', 'Align to the end', f.a === 'end')
-    + `<label style="display:flex;gap:3px;align-items:center;color:#94a3b8;font-size:11px;">size`
-    + `<input data-t="size" type="number" min="5" max="40" step="1" value="${Number(f.s) || st.data.size || 15}" style="width:52px;height:22px;background:#0f172a;color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:5px;"></label>`
-    + `<input data-t="fg" type="color" value="${_esc(f.c || st.data.color || '#111111')}" title="Text colour" style="width:28px;height:22px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:5px;background:none;">`
-    + `<input data-t="bg" type="color" value="${_esc(f.bg || '#ffffff')}" title="Cell colour" style="width:28px;height:22px;padding:0;border:1px solid rgba(255,255,255,.12);border-radius:5px;background:none;">`
+    + `<label style="display:flex;gap:3px;align-items:center;color:var(--float-muted);font-size:11px;">size`
+    + `<input data-t="size" type="number" min="5" max="40" step="1" value="${Number(f.s) || st.data.size || 15}" style="width:52px;height:22px;background:var(--field-bg);color:var(--float-text);border:1px solid var(--field-line);border-radius:5px;"></label>`
+    + `<input data-t="fg" type="color" value="${_esc(f.c || st.data.color || '#111111')}" title="Text colour" style="width:28px;height:22px;padding:0;border:1px solid var(--float-line-strong);border-radius:5px;background:none;">`
+    + `<input data-t="bg" type="color" value="${_esc(f.bg || '#ffffff')}" title="Cell colour" style="width:28px;height:22px;padding:0;border:1px solid var(--float-line-strong);border-radius:5px;background:none;">`
     + b('clear', '⌫', 'Clear the look of the picked cells')
     + `</div>`
     + `<div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:4px;">`
@@ -463,8 +463,8 @@ export function openOverlayTableEditor(ctx) {
   chrome.style.cssText = 'position:fixed;z-index:62;transform-origin:0 0;pointer-events:none;';
 
   const bar = document.createElement('div');
-  bar.style.cssText = 'position:fixed;z-index:63;background:rgba(10,15,25,.95);border:1px solid #38bdf8;border-radius:9px;'
-    + 'padding:5px 7px;box-shadow:0 8px 24px rgba(0,0,0,.5);color:#94a3b8;font:500 11.5px/1.2 system-ui,sans-serif;max-width:min(900px,94vw);';
+  bar.style.cssText = 'position:fixed;z-index:63;background:var(--float-bg-solid);border:1px solid #38bdf8;border-radius:9px;'   // V0.3.4.120 — theme-aware
+    + 'padding:5px 7px;box-shadow:var(--shadow-float);color:var(--float-muted);font:500 11.5px/1.2 system-ui,sans-serif;max-width:min(900px,94vw);';
 
   document.body.appendChild(host);
   document.body.appendChild(chrome);

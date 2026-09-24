@@ -84,18 +84,19 @@ export function openColorDialog(input) {
   el.setAttribute('role', 'dialog');
   // V0.3.4.113 — roomier than .110 (the hex was unreadable): a wider panel, a
   // taller square, 15 px monospace fields, the hex field across the width.
-  el.style.cssText = 'position:fixed;z-index:10060;width:332px;background:#1f2937;color:#e5e7eb;border:1px solid #475569;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.6);padding:12px;font:13px system-ui,sans-serif;user-select:none;';
+  // V0.3.4.120 — theme-aware: the panel palette for the dialog, the field palette for its controls
+  el.style.cssText = 'position:fixed;z-index:10060;width:332px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-float);padding:12px;font:13px system-ui,sans-serif;user-select:none;';
   el.innerHTML = `
     <div style="display:flex;gap:10px;align-items:stretch;">
       <canvas data-sv width="236" height="170" style="width:236px;height:170px;border-radius:6px;cursor:crosshair;flex:none;"></canvas>
       <div style="display:flex;flex-direction:column;gap:8px;flex:1;">
-        <button type="button" data-drop title="Eyedropper — pick a colour from anywhere on screen: every display, other windows included (the same as Alt+click on the swatch). Esc cancels." style="height:44px;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">${eyedropperSvg(30)}</button>
+        <button type="button" data-drop title="Eyedropper — pick a colour from anywhere on screen: every display, other windows included (the same as Alt+click on the swatch). Esc cancels." style="height:44px;background:var(--field-bg);color:var(--text);border:1px solid var(--field-line);border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;">${eyedropperSvg(30)}</button>
         <div data-preview style="flex:1;border-radius:6px;border:1px solid #475569;background:${start};"></div>
       </div>
     </div>
     <canvas data-hue width="308" height="16" style="width:308px;height:16px;border-radius:8px;margin-top:10px;cursor:ew-resize;display:block;"></canvas>
     <div style="display:grid;grid-template-columns:76px minmax(0,1fr);gap:8px;align-items:end;margin-top:10px;">
-      <select data-mode title="How the colour is written" style="width:100%;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;height:32px;padding:0 6px;font-size:13px;box-sizing:border-box;">
+      <select data-mode title="How the colour is written" style="width:100%;background:var(--field-bg);color:var(--text);border:1px solid var(--field-line);border-radius:6px;height:32px;padding:0 6px;font-size:13px;box-sizing:border-box;">
         <option value="hex">HEX</option><option value="rgb">RGB</option><option value="hsl">HSL</option>
       </select>
       <div data-fields style="display:grid;grid-template-columns:1fr;gap:6px;min-width:0;"></div>
@@ -112,7 +113,7 @@ export function openColorDialog(input) {
     w.style.cssText = 'display:flex;flex-direction:column;gap:3px;font-size:11px;color:#94a3b8;min-width:0;';
     const i = document.createElement('input');
     i.type = 'text'; i.value = value; i.spellcheck = false; i.inputMode = max ? 'numeric' : 'text';
-    i.style.cssText = `background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:6px;height:32px;padding:0 8px;font:${wide ? 16 : 15}px Consolas,monospace;letter-spacing:.5px;box-sizing:border-box;width:100%;min-width:0;display:block;`;
+    i.style.cssText = `background:var(--field-bg);color:var(--text);border:1px solid var(--field-line);border-radius:6px;height:32px;padding:0 8px;font:${wide ? 16 : 15}px Consolas,monospace;letter-spacing:.5px;box-sizing:border-box;width:100%;min-width:0;display:block;`;
     i.addEventListener('mousedown', e => e.stopPropagation());
     i.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); onChange(i.value, true); } if (e.key === 'Escape') { e.preventDefault(); closeColorDialog(true); } });
     i.addEventListener('input', () => onChange(i.value, false));

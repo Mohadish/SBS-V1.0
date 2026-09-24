@@ -55,8 +55,8 @@ export function initOverlayToolbar() {
     'top:8px', 'right:8px',
     'z-index:30',
     'display:flex', 'gap:6px', 'align-items:center', 'flex-wrap:nowrap',
-    'background:rgba(10,15,25,0.85)',
-    'border:1px solid rgba(255,255,255,0.08)',
+    'background:var(--float-bg)', 'color:var(--float-text)',   // V0.3.4.120 — theme-aware (base.css --float-*)
+    'border:1px solid var(--float-line)',
     'border-radius:8px',
     'padding:4px 6px',
     'font-size:12px',
@@ -312,7 +312,7 @@ export function initOverlayToolbar() {
   // here is rendered, exported or saved with the project — the magnet's settings are this machine's (user
   // settings), like the shape defaults. NOT inside the bar: the bar has overflow-x:auto (it scrolls when crowded)
   // and clips whatever hangs in it.
-  const PANEL_CSS = ['position:absolute', 'right:8px', 'z-index:30', 'background:rgba(10,15,25,0.85)', 'border:1px solid rgba(255,255,255,0.08)',
+  const PANEL_CSS = ['position:absolute', 'right:8px', 'z-index:30', 'background:var(--float-bg)', 'color:var(--float-text)', 'border:1px solid var(--float-line)',
     'border-radius:8px', 'font-size:12px', 'user-select:none', 'backdrop-filter:blur(4px)'].join(';');
   _helperBar = document.createElement('div');
   _helperBar.id = 'overlay-helpers-bar';
@@ -326,12 +326,12 @@ export function initOverlayToolbar() {
 
   _helpersPanel = document.createElement('div');
   _helpersPanel.id = 'overlay-helpers-panel';
-  _helpersPanel.style.cssText = `${PANEL_CSS};z-index:31;display:none;flex-direction:column;gap:7px;padding:9px 10px;color:#cbd5e1;background:rgba(10,15,25,0.94);white-space:nowrap;`;
+  _helpersPanel.style.cssText = `${PANEL_CSS};z-index:31;display:none;flex-direction:column;gap:7px;padding:9px 10px;background:var(--float-bg-solid);white-space:nowrap;`;
   const row = (html) => { const d = document.createElement('label'); d.style.cssText = 'display:flex;gap:7px;align-items:center;cursor:pointer;'; d.innerHTML = html; return d; };
-  const head = document.createElement('div'); head.style.cssText = 'font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;'; head.textContent = '🧲 The magnet sticks…';
+  const head = document.createElement('div'); head.style.cssText = 'font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--float-muted);'; head.textContent = '🧲 The magnet sticks…';
   _magnetItems = row('<input type="checkbox" data-snap="items"> to the other items');
   _magnetFrame = row('<input type="checkbox" data-snap="frame"> to the picture (edges + centre)');
-  _magnetDist  = row('from <input type="number" data-snap="distance" min="1" max="60" step="1" style="width:52px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:2px 5px;"> px away');
+  _magnetDist  = row('from <input type="number" data-snap="distance" min="1" max="60" step="1" style="width:52px;background:var(--field-bg);color:var(--float-text);border:1px solid var(--field-line);border-radius:5px;padding:2px 5px;"> px away');
   _helpersPanel.append(head, _magnetItems, _magnetFrame, _magnetDist);
   _cogBtn.addEventListener('click', (e) => { e.stopPropagation(); _helpersOpen = !_helpersOpen; _syncHelpers(); });
   _helpersPanel.addEventListener('change', async (e) => {
@@ -434,12 +434,12 @@ function _ensureFloatBar() {
   _floatBar.style.cssText = [
     'position:fixed', 'top:0', 'left:0', 'z-index:40',
     'display:none', 'gap:6px', 'align-items:center', 'flex-wrap:nowrap',
-    'background:rgba(10,15,25,0.95)',
-    'border:1px solid rgba(255,255,255,0.12)',
+    'background:var(--float-bg-solid)', 'color:var(--float-text)',
+    'border:1px solid var(--float-line-strong)',
     'border-radius:8px', 'padding:4px 6px',
     'font-size:12px', 'user-select:none',
     'backdrop-filter:blur(6px)',
-    'box-shadow:0 6px 20px rgba(0,0,0,0.45)',
+    'box-shadow:var(--shadow-float)',
     'max-width:calc(100vw - 16px)',
   ].join(';');
   _floatSlot = document.createElement('div');
@@ -602,7 +602,7 @@ function _btn(label, title) {
 
 function _sep() {
   const s = document.createElement('span');
-  s.style.cssText = 'width:1px;height:16px;background:rgba(255,255,255,0.15);margin:0 2px;';
+  s.style.cssText = 'width:1px;height:16px;background:var(--float-line-strong);margin:0 2px;';
   return s;
 }
 

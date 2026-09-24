@@ -187,15 +187,15 @@ function _btn(label, variant) {
   b.textContent = label;
   b.style.cssText = [
     'height:24px','padding:0 10px','font-size:13px',
-    'border:1px solid #334155','border-radius:6px',
-    'background:' + (variant === 'primary' ? '#2563eb' : '#1f2937'),
-    'color:#e5e7eb','cursor:pointer',
+    'border:1px solid ' + (variant === 'primary' ? '#2563eb' : 'var(--line)'),'border-radius:6px',   // V0.3.4.120 — theme-aware
+    'background:' + (variant === 'primary' ? '#2563eb' : 'var(--panel2)'),
+    'color:' + (variant === 'primary' ? '#ffffff' : 'var(--text)'),'cursor:pointer',
   ].join(';');
   return b;
 }
 
 function _sep() {
   const s = document.createElement('span');
-  s.style.cssText = 'width:1px;height:18px;background:#334155;margin:0 4px;';
+  s.style.cssText = 'width:1px;height:18px;background:var(--line);margin:0 4px;';
   return s;
 }

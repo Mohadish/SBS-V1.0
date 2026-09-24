@@ -192,8 +192,8 @@ export function setShapeStyleDropdown(styles, currentId, onChange) {
   const sel = document.createElement('select');
   sel.title = 'Bind this shape to a shape style';
   sel.style.cssText = [
-    'background:#1f2937', 'color:#e5e7eb',
-    'border:1px solid #334155', 'border-radius:6px',
+    'background:var(--field-bg)', 'color:var(--float-text)',   // V0.3.4.120 — theme-aware
+    'border:1px solid var(--field-line)', 'border-radius:6px',
     'height:28px', 'padding:0 6px', 'font-size:13px', 'cursor:pointer',
     'min-width:120px', 'order:-1',   // keep the picker leftmost
   ].join(';');

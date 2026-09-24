@@ -141,8 +141,8 @@ export function setStyleDropdown(templates, currentId, onChange) {
   const sel = document.createElement('select');
   sel.title = 'Bind this text box to a style template';
   sel.style.cssText = [
-    'background:#1f2937','color:#e5e7eb',
-    'border:1px solid #334155','border-radius:6px',
+    'background:var(--field-bg)','color:var(--float-text)',
+    'border:1px solid var(--field-line)','border-radius:6px',
     'height:28px','padding:0 6px','font-size:13px','cursor:pointer',
     'min-width:120px','order:-1',   // keep style picker leftmost in flex order
   ].join(';');
@@ -184,8 +184,8 @@ export function setConstDropdown(defs, currentId, onChange, onRename, onDelete) 
   const sel = document.createElement('select');
   sel.title = 'Attach this text box to a constant (pinned position + unified style)';
   sel.style.cssText = [
-    'background:#1f2937', 'color:#e5e7eb',
-    'border:1px solid #334155', 'border-radius:6px',
+    'background:var(--field-bg)', 'color:var(--float-text)',
+    'border:1px solid var(--field-line)', 'border-radius:6px',
     'height:28px', 'padding:0 6px', 'font-size:13px', 'cursor:pointer',
     'min-width:110px', 'order:-1',
   ].join(';');
@@ -207,7 +207,7 @@ export function setConstDropdown(defs, currentId, onChange, onRename, onDelete) 
   edit.textContent = '✏️';
   edit.title = 'Rename this constant';
   edit.style.cssText = [
-    'background:#1f2937', 'color:#e5e7eb', 'border:1px solid #334155',
+    'background:var(--field-bg)', 'color:var(--float-text)', 'border:1px solid var(--field-line)',
     'border-radius:6px', 'height:28px', 'width:30px', 'font-size:13px',
     'cursor:pointer', 'order:-1',
   ].join(';');
@@ -380,8 +380,8 @@ function _btn(label, title, onClick, labelStyle) {
   b.title     = title;
   b.textContent = label;
   b.style.cssText = [
-    'background:#1f2937','color:#e5e7eb',
-    'border:1px solid #334155','border-radius:6px',
+    'background:var(--field-bg)','color:var(--float-text)',
+    'border:1px solid var(--field-line)','border-radius:6px',
     'min-width:28px','height:28px','padding:0 6px',
     'cursor:pointer','font-size:13px','line-height:1',
   ].join(';');
@@ -395,7 +395,7 @@ function _btn(label, title, onClick, labelStyle) {
 
 function _sep() {
   const s = document.createElement('div');
-  s.style.cssText = 'width:1px;height:18px;background:#334155;margin:0 4px;';
+  s.style.cssText = 'width:1px;height:18px;background:var(--field-line);margin:0 4px;';
   return s;
 }
 
@@ -403,8 +403,8 @@ function _select(kind, options, onChange) {
   const sel = document.createElement('select');
   sel.title = kind === 'font' ? 'Font family' : 'Font size';
   sel.style.cssText = [
-    'background:#1f2937','color:#e5e7eb',
-    'border:1px solid #334155','border-radius:6px',
+    'background:var(--field-bg)','color:var(--float-text)',
+    'border:1px solid var(--field-line)','border-radius:6px',
     'height:28px','padding:0 4px','font-size:13px','cursor:pointer',
     kind === 'font' ? 'min-width:120px' : 'min-width:64px',
   ].join(';');
@@ -451,8 +451,8 @@ function _sizeBox() {
   const wrap = document.createElement('div');
   wrap.title = `Text size in pixels of the export frame (${SIZE_MIN}–${SIZE_MAX}). Click for presets, or type a size and press Enter.`;
   wrap.style.cssText = [
-    'background:#1f2937','color:#e5e7eb',
-    'border:1px solid #334155','border-radius:6px',
+    'background:var(--field-bg)','color:var(--float-text)',
+    'border:1px solid var(--field-line)','border-radius:6px',
     'height:28px','display:inline-flex','align-items:stretch','box-sizing:border-box','position:relative',
   ].join(';');
   const inp = document.createElement('input');
@@ -462,7 +462,7 @@ function _sizeBox() {
   const arrow = document.createElement('button');
   arrow.type = 'button'; arrow.textContent = '▾'; arrow.tabIndex = -1;
   arrow.title = 'Preset sizes';
-  arrow.style.cssText = 'background:transparent;color:#94a3b8;border:0;padding:0 5px 0 2px;cursor:pointer;font-size:12px;line-height:1;';
+  arrow.style.cssText = 'background:transparent;color:var(--float-muted);border:0;padding:0 5px 0 2px;cursor:pointer;font-size:12px;line-height:1;';
   wrap.append(inp, arrow);
   _sizeInput = inp;
 
@@ -492,7 +492,7 @@ function _sizeBox() {
     const list = document.createElement('div');
     list.dataset.sbsTextToolbar = '1';   // clicks inside never close the in-place editor
     const r = wrap.getBoundingClientRect();
-    list.style.cssText = `position:fixed;left:${Math.round(r.left)}px;top:${Math.round(r.bottom + 2)}px;z-index:10050;background:#0f172a;color:#e5e7eb;border:1px solid #334155;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:4px 0;min-width:${Math.round(r.width)}px;max-height:260px;overflow:auto;font-size:13px;`;
+    list.style.cssText = `position:fixed;left:${Math.round(r.left)}px;top:${Math.round(r.bottom + 2)}px;z-index:10050;background:var(--float-bg-solid);color:var(--float-text);border:1px solid var(--field-line);border-radius:6px;box-shadow:var(--shadow-float);padding:4px 0;min-width:${Math.round(r.width)}px;max-height:260px;overflow:auto;font-size:13px;`;
     for (const s of SIZES) {
       const it = document.createElement('div');
       it.textContent = String(s);
@@ -530,8 +530,8 @@ function _color(title, label = 'A', defaultBadge = '#fbbf24', onChange) {
   const wrap = document.createElement('label');
   wrap.title = title;
   wrap.style.cssText = [
-    'background:#1f2937','color:#e5e7eb',
-    'border:1px solid #334155','border-radius:6px',
+    'background:var(--field-bg)','color:var(--float-text)',
+    'border:1px solid var(--field-line)','border-radius:6px',
     'height:28px','min-width:36px','padding:0 6px',
     'display:inline-flex','align-items:center','justify-content:center',
     'cursor:pointer','font-size:13px','position:relative',
@@ -583,8 +583,8 @@ function _alpha(title, onChange) {
   const wrap = document.createElement('label');
   wrap.title = title;
   wrap.style.cssText = [
-    'background:#1f2937','color:#94a3b8',
-    'border:1px solid #334155','border-radius:6px',
+    'background:#1f2937','color:var(--float-muted)',
+    'border:1px solid var(--field-line)','border-radius:6px',
     'height:28px','padding:0 6px',
     'display:inline-flex','align-items:center','gap:4px',
     'cursor:ns-resize','font-size:11px',

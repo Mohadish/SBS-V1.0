@@ -259,14 +259,14 @@ function _renderCableRow(cable, placingId, depth = 0) {
     <div class="row" data-cbl-id="${_esc(cable.id)}"
          style="display:flex;align-items:center;gap:6px;padding:8px 10px 8px ${10 + indent}px;border-bottom:1px solid var(--line);cursor:pointer;${rowBg}">
       ${branchIndicator}
-      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${_esc(cable.style?.color || '#ffb24a')};flex-shrink:0;"></span>
-      <button class="btn icon" data-cbl-act="hide" title="Show / hide" style="width:24px;height:24px;padding:0;opacity:${cable.visible ? 1 : 0.4};">${eye}</button>
+      <span title="The cable's colour" style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${_esc(cable.style?.color || '#ffb24a')};box-shadow:0 0 0 1px rgba(127,127,127,.55), 0 0 0 2px var(--panel);flex-shrink:0;"></span>
+      <button class="btn icon" data-cbl-act="hide" title="Show / hide" style="width:24px;height:24px;padding:0;color:var(--text);font-size:14px;opacity:${cable.visible ? 1 : 0.4};">${eye}</button>
       <div style="flex:1;min-width:0;">
         <div class="small" style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(cable.name || '(unnamed)')}</div>
         <div class="small muted" style="font-size:11px;">${pointCount} point${pointCount === 1 ? '' : 's'}</div>
       </div>
-      <button class="btn icon" data-cbl-act="place" title="${_esc(placeTitle)}" style="width:24px;height:24px;padding:0;color:${placeColor};">${placeIcon}</button>
-      <button class="btn icon" data-cbl-act="highlight" title="Highlight" style="width:24px;height:24px;padding:0;color:${cable.highlight ? '#22d3ee' : 'var(--muted)'};">${highlight}</button>
+      <button class="btn icon" data-cbl-act="place" title="${_esc(placeTitle)}" style="width:24px;height:24px;padding:0;color:${placeColor};font-size:15px;font-weight:700;">${placeIcon}</button>
+      <button class="btn icon" data-cbl-act="highlight" title="Highlight" style="width:24px;height:24px;padding:0;color:${cable.highlight ? '#22d3ee' : 'var(--text)'};font-size:14px;opacity:${cable.highlight ? 1 : .8};">${highlight}</button>
       <button class="btn icon" data-cbl-act="delete" title="Delete" style="width:24px;height:24px;padding:0;color:#f87171;">✕</button>
     </div>
   `;

@@ -14,6 +14,22 @@
   --accent:#38bdf8;
   --hover:#1f2937;
 
+  /* V0.3.4.120 — the FLOATING chrome over the viewport (overlay toolbar,
+     helpers row + magnet settings, the floating item toolbar, text-effects
+     popover, table editor bar, work-camera + standard-view buttons, HUD
+     badges) and the fields inside them. They used to hard-code the dark
+     palette inline, so the light theme showed dark bars with white
+     dropdowns and near-white text. Both themes now flow through these. */
+  --float-bg:rgba(10,15,25,0.85);
+  --float-bg-solid:rgba(10,15,25,0.95);
+  --float-line:rgba(255,255,255,0.08);
+  --float-line-strong:rgba(255,255,255,0.14);
+  --float-text:#e5e7eb;
+  --float-muted:#94a3b8;
+  --field-bg:#1f2937;
+  --field-line:#334155;
+  --shadow-float:0 6px 20px rgba(0,0,0,0.45);
+
   --sidebar-left-width:  420px;
   --sidebar-right-width: 320px;
 }
@@ -43,6 +59,16 @@ html[data-theme="light"]{
   --muted:#737373;
   --accent:#0284c7;
   --hover:#f0f0f0;
+
+  --float-bg:rgba(255,255,255,0.93);
+  --float-bg-solid:rgba(255,255,255,0.98);
+  --float-line:rgba(15,23,42,0.14);
+  --float-line-strong:rgba(15,23,42,0.22);
+  --float-text:#1e293b;
+  --float-muted:#64748b;
+  --field-bg:#f8fafc;
+  --field-line:#cbd5e1;
+  --shadow-float:0 6px 20px rgba(15,23,42,0.18);
 }
 
 /* CHROMIUM CANVAS-COMPOSITOR ISOLATION — the actual fix.
@@ -195,32 +221,22 @@ html[data-theme="light"] .context-menu__item:not(:disabled):hover{
   background:#dbeafe;
 }
 
-/* Overlay toolbar (floats over the 3D viewport) — keeps its dark
-   look in both themes because it sits on top of the scene, not the
-   sidebars. The toolbar's hardcoded inline styles already handle the
-   dark backdrop; the buttons inside inherit the global .btn rule
-   which the light-theme override turns white — that mismatches the
-   dark toolbar. Re-pin the buttons inside to the dark-theme .btn
-   palette so the toolbar reads the same as it does in dark mode. */
-html[data-theme="light"] #overlay-helpers-bar .btn,
-html[data-theme="light"] #overlay-helpers-panel .btn,
-html[data-theme="light"] #overlay-toolbar .btn,
-html[data-theme="light"] #overlay-toolbar .filelabel,
-html[data-theme="light"] #overlay-toolbar .miniBtn{
-  background:#182233;color:#e5e7eb;border-color:#334155;
-}
-html[data-theme="light"] #overlay-helpers-bar .btn:hover,
-html[data-theme="light"] #overlay-helpers-panel .btn:hover,
-html[data-theme="light"] #overlay-toolbar .btn:hover,
-html[data-theme="light"] #overlay-toolbar .filelabel:hover,
-html[data-theme="light"] #overlay-toolbar .miniBtn:hover{
-  background:#213149;
-}
+/* Overlay toolbar, helpers row, floating item toolbar (V0.3.4.120):
+   LIGHT in the light theme, like everything else — the user: "the
+   overlay editing, the magnet, X-ray, the shape and text box editing
+   are all dark in light mode, and the dropdowns are white with
+   near-white text". Their inline styles now use the --float-* /
+   --field-* variables above; the buttons inside follow the global
+   light .btn rule. Fields inside them: the field palette, not the
+   panel's white, so they still read as fields on the bar. */
 html[data-theme="light"] #overlay-helpers-panel input,
 html[data-theme="light"] #overlay-toolbar input,
 html[data-theme="light"] #overlay-toolbar select,
-html[data-theme="light"] #overlay-toolbar textarea{
-  background:#111827 !important;color:#e5e7eb;border-color:#334155;
+html[data-theme="light"] #overlay-toolbar textarea,
+html[data-theme="light"] #overlay-float-toolbar input,
+html[data-theme="light"] #overlay-float-toolbar select,
+html[data-theme="light"] #overlay-float-toolbar textarea{
+  background:var(--field-bg) !important;color:var(--float-text);border-color:var(--field-line);
 }
 
 /* Scrollbars — barely-there neutrals so they don't add visual noise. */

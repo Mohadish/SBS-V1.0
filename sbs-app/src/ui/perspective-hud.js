@@ -23,9 +23,9 @@ function _ensure() {
   _el = document.createElement('div');
   _el.id = 'perspective-badge';
   _el.style.cssText = 'position:fixed;left:0;top:0;z-index:999;display:none;pointer-events:none;'
-    + 'background:rgba(10,15,25,0.92);border:1px solid rgba(255,255,255,0.10);border-radius:10px;'
-    + 'padding:7px 10px 6px;box-shadow:0 6px 20px rgba(0,0,0,0.45);'
-    + 'font:600 12px/1.25 system-ui,sans-serif;color:#e5e7eb;text-align:center;user-select:none;';
+    + 'background:var(--float-bg-solid);border:1px solid var(--float-line);border-radius:10px;'   // V0.3.4.120 — theme-aware
+    + 'padding:7px 10px 6px;box-shadow:var(--shadow-float);'
+    + 'font:600 12px/1.25 system-ui,sans-serif;color:var(--float-text);text-align:center;user-select:none;';
 
   _icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   _icon.setAttribute('viewBox', '0 0 56 48');

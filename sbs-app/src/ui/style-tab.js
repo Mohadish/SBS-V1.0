@@ -320,7 +320,7 @@ function _renderEditor() {
     <div class="section">
       <div class="title">Editing: ${_esc(tpl.name)}</div>
       <div id="style-toolbar-slot" style="margin-top:8px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;
-                                          background:rgba(10,15,25,0.85);border:1px solid rgba(255,255,255,0.08);
+                                          background:var(--float-bg);border:1px solid var(--float-line);
                                           border-radius:8px;padding:4px 6px;"></div>
       <div class="small muted" style="margin-top:8px;">Live preview:</div>
       <div id="style-preview" style="margin-top:4px;padding:12px;border-radius:8px;border:1px solid var(--line);
@@ -547,7 +547,7 @@ function _renderShapeEditor() {
     <div class="section">
       <div class="title">Editing: ${_esc(tpl.name)}</div>
       <div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;
-                  background:rgba(10,15,25,0.85);border:1px solid rgba(255,255,255,0.08);
+                  background:var(--float-bg);border:1px solid var(--float-line);
                   border-radius:8px;padding:8px;font-size:12px;">
         <label style="display:flex;align-items:center;gap:4px;" title="Fill colour">
           Fill <input id="ss-fill" type="color" value="${_esc(_fillHex(tpl.fill) || '#4a90d9')}"

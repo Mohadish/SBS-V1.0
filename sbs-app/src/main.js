@@ -1407,8 +1407,8 @@ window.sbsGroupFix.dryRun = (scope = 'all') => {
 const _saveOv = document.createElement('div');
 _saveOv.id = 'save-progress-overlay';
 _saveOv.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:3000;display:none;'
-  + 'background:rgba(15,23,42,0.94);color:#e2e8f0;padding:10px 16px;border-radius:10px;'
-  + 'font:13px sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.5);min-width:300px;pointer-events:none';
+  + 'background:var(--float-bg-solid);color:var(--float-text);padding:10px 16px;border-radius:10px;'
+  + 'font:13px sans-serif;box-shadow:var(--shadow-float);min-width:300px;pointer-events:none';
 _saveOv.innerHTML = '<div id="save-ov-text">Saving…</div>'
   + '<div style="margin-top:6px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px">'
   + '<div id="save-ov-bar" style="height:100%;width:0%;background:#3b82f6;border-radius:2px;transition:width .15s"></div></div>';
@@ -4795,14 +4795,14 @@ function _showPolyTransformPanel(clientX, clientY) {
     `left:${clientX + 12}px`,
     `top:${clientY - 8}px`,
     'z-index:9999',
-    'background:#1e293b',
-    'border:1px solid #334155',
+    'background:var(--panel)',   // V0.3.4.120 — theme-aware
+    'border:1px solid var(--line)',
     'border-radius:8px',
     'padding:12px 14px',
     'min-width:200px',
-    'box-shadow:0 8px 32px rgba(0,0,0,0.5)',
+    'box-shadow:var(--shadow-float)',
     'font-size:12px',
-    'color:#e2e8f0',
+    'color:var(--text)',
     'user-select:none',
   ].join(';');
   const fieldStyle = 'flex:1;background:var(--panel,#0f172a);border:1px solid var(--line,#334155);border-radius:4px;color:var(--text,#e2e8f0);padding:3px 6px;font-size:12px;outline:none;width:0;font-family:monospace;';
@@ -4812,7 +4812,7 @@ function _showPolyTransformPanel(clientX, clientY) {
       <input data-field="${id}" type="text" value="${value}" autocomplete="off" spellcheck="false" style="${fieldStyle}" />
     </div>`;
   panel.innerHTML = `
-    <div style="font-weight:700;font-size:13px;color:#f1f5f9;margin-bottom:10px;letter-spacing:0.3px;border-bottom:1px solid #1e293b;padding-bottom:6px;">Shape Transform</div>
+    <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:10px;letter-spacing:0.3px;border-bottom:1px solid var(--line);padding-bottom:6px;">Shape Transform</div>
     <div style="margin-bottom:8px;">
       <div style="font-size:10px;color:#64748b;margin-bottom:4px;letter-spacing:0.5px;">TRANSLATE (delta, plane-local)</div>
       ${row('tx', 'X',     '#e05555', '0')}
@@ -5005,7 +5005,7 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
   btn.className = 'btn';
   btn.style.cssText = 'position:absolute;top:8px;left:8px;z-index:30;'
     + 'height:24px;padding:0 8px;font-size:12px;'
-    + 'background:rgba(10,15,25,0.85);border:1px solid rgba(255,255,255,0.08);border-radius:8px;';
+    + 'background:var(--float-bg);border:1px solid var(--float-line);border-radius:8px;';   // V0.3.4.120 — theme-aware
   btn.addEventListener('click', () => state.setState({ workCamera: !state.get('workCamera') }));
   surf.appendChild(btn);
 
@@ -5015,7 +5015,7 @@ const _viewportSurfaceEl = document.getElementById('viewport-surface');
     btn.title = on
       ? 'Inspection mode is ON — steps play without moving the camera. Never rendered. Turning it off keeps the current view; the camera follows again on the next step.'
       : 'Inspection mode — orbit freely while stepping through; the camera stops following steps. Never rendered.';
-    btn.style.background = on ? 'rgba(217,119,6,0.35)' : 'rgba(10,15,25,0.85)';
+    btn.style.background = on ? 'rgba(217,119,6,0.35)' : 'var(--float-bg)';
     hint.textContent = `steps play without moving the camera — ${k} to exit`;
   };
   syncBtn(false);

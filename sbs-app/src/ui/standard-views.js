@@ -165,8 +165,8 @@ function _showPreview(view) {
 function _syncActive(active) {
   for (const [view, btn] of _btns) {
     const on = view === active;
-    btn.style.background = on ? `${AXIS[view].color}44` : 'rgba(10,15,25,0.85)';
-    btn.style.borderColor = on ? AXIS[view].color : 'rgba(255,255,255,0.08)';
+    btn.style.background = on ? `${AXIS[view].color}44` : 'var(--float-bg)';
+    btn.style.borderColor = on ? AXIS[view].color : 'var(--float-line)';
   }
 }
 
@@ -194,7 +194,7 @@ export function initStandardViews(surfaceEl) {
       b.textContent = cfg.label;
       b.title = `${cfg.title} — orthographic, keeping your framing. Turning the view with Alt + middle-drag leaves it.`;
       b.style.cssText = 'height:22px;min-width:58px;padding:0 8px;font-size:11px;font-weight:600;'
-        + 'background:rgba(10,15,25,0.85);border:1px solid rgba(255,255,255,0.08);border-radius:7px;'
+        + 'background:var(--float-bg);border:1px solid var(--float-line);border-radius:7px;'   // V0.3.4.120 — theme-aware
         + `color:${cfg.color};cursor:pointer;`;
       b.addEventListener('pointerenter', () => _showPreview(view));
       b.addEventListener('pointerleave', () => _clearPreview());

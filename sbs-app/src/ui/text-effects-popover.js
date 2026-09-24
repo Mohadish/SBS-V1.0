@@ -53,11 +53,11 @@ export function openTextEffectsPopover(anchorEl, getValues, onChange, onClose) {
   _pop.dataset.sbsTextToolbar = '1';   // don't dismiss the in-place editor
   _pop.style.cssText = [
     'position:fixed', 'z-index:45',
-    'background:rgba(10,15,25,0.97)',
-    'border:1px solid rgba(255,255,255,0.14)',
+    'background:var(--float-bg-solid)',   // V0.3.4.120 — theme-aware
+    'border:1px solid var(--float-line-strong)',
     'border-radius:8px', 'padding:10px 12px',
-    'box-shadow:0 10px 30px rgba(0,0,0,0.55)',
-    'font-size:12px', 'color:#e5e7eb', 'user-select:none',
+    'box-shadow:var(--shadow-float)',
+    'font-size:12px', 'color:var(--float-text)', 'user-select:none',
     'display:grid', 'gap:6px', 'min-width:250px',
   ].join(';');
 
