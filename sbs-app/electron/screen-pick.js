@@ -33,7 +33,7 @@
  *     left waiting behind its click veil.
  */
 
-const { BrowserWindow, screen, desktopCapturer, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, desktopCapturer, ipcMain } = require('electron');
 const path = require('path');
 
 const TIMING = !!process.env.SBS_PICK_TIMING;
@@ -68,8 +68,11 @@ function installScreenPick() {
     const p = _pool?.wins.find(x => !x.w.isDestroyed() && e.sender === x.w.webContents);
     if (p && p.shown) { try { p.w.focus(); } catch {} }
   });
-  // the pool is per display layout
-  for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(ev, () => dropScreenPickPool());
+  // the pool is per display layout. `screen` cannot be touched before the app is
+  // ready, and main.js calls this at load (V0.3.4.118 threw exactly that).
+  app.whenReady().then(() => {
+    for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(ev, () => dropScreenPickPool());
+  });
 }
 
 function dropScreenPickPool() {
