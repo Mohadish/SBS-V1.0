@@ -42,8 +42,8 @@ import {
 }                               from '../core/transforms.js';
 import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
-import { chooseFromButtons, chooseWithPreview } from './prompt.js';   // V0.3.4.122 — paste transforms to steps: scope + the differing-steps choice
-import { scanPasteTransformsToSteps, pasteTransformsToSteps } from '../systems/paste-xf-steps.js';
+import { chooseFromButtons }    from './prompt.js';
+import { scanTransformStructure, pasteTransforms } from '../systems/paste-transforms.js';   // V0.3.4.124 — Paste Transforms: one step or many, plain cascade
 import { showContextMenu, hideContextMenu, showConfirmDialog, canonicalizeMenuOrder } from './context-menu.js';
 import { showColorForNode, editHardwareTemplate } from './sidebar-left.js';
 import * as folderAlignPicker   from '../systems/folder-align-picker.js';
@@ -510,13 +510,15 @@ function _buildRow(node, depth) {
   transformGroup.style.display = (isTransformNode(node) && !node.archived) ? 'inline-flex' : 'none';
   transformGroup.style.gap = '1px';
   if (isTransformNode(node) && !node.archived) {
+    // V0.3.4.124 — move · rotate · pivot, in that order (the pivot used to
+    // sit between the two, which read as odd).
     transformGroup.append(
       _mkTransformBtn('✥', 'Move',   'moveEnabled',   node),
+      _mkTransformBtn('⟳', 'Rotate', 'rotateEnabled', node),
       // Pivot only on folders — the root model node carries the
       // imported asset's reference frame and shouldn't have its pivot
       // relocated (the user can't visually verify what that means).
       ...(node.type === 'folder' ? [_mkPivotBtn(node)] : []),
-      _mkTransformBtn('⟳', 'Rotate', 'rotateEnabled', node),
     );
   }
 
@@ -991,17 +993,10 @@ function _buildContextMenuItems(node) {
     const clip = _folderXfClipboard;
     items.push({
       label: clip
-        ? `📌 Paste Transforms (from "${(clip.rootName || '').slice(0, 24)}")`
-        : '📌 Paste Transforms',
+        ? `📌 Paste Transforms… (from "${(clip.rootName || '').slice(0, 24)}")`
+        : '📌 Paste Transforms…',
       disabled: !clip,
       action: () => _pasteFolderTransforms(node),
-    });
-    // V0.3.4.122 — the same paste into a scope of steps (ids, not names; the
-    // current step is the reference for "the same tree structure").
-    items.push({
-      label: '📌 Paste Transforms to steps…',
-      disabled: !clip,
-      action: () => _pasteFolderTransformsToSteps(node),
     });
 
   }
@@ -2701,75 +2696,79 @@ function _showFolderXfMismatchDialog(srcName, dstName, missing, extras) {
   });
 }
 
+/**
+ * V0.3.4.124 — Paste Transforms: one step or many. The copied poses (the
+ * folder + every part inside it) as a plain cascade, by node id, into the
+ * steps the user picks — the same scope prompt every multi-step change gets.
+ * The tree in those steps is never touched, the move / rotate / pivot toggles
+ * never flipped. Steps whose tree differs from this one are reported first:
+ * leave them out, or paste anyway. (systems/paste-transforms.js; one undo.)
+ */
 async function _pasteFolderTransforms(folderNode) {
   if (!folderNode || folderNode.type !== 'folder') return;
   if (!_folderXfClipboard) { setStatus('No transforms in clipboard.'); return; }
   const clip = _folderXfClipboard;
 
-  // ── Structure check ─────────────────────────────────────────────────────
+  // ── Structure check against THIS tree (names → ids) ─────────────────────
   const { matches, missing, extras } = _computeFolderXfMismatch(folderNode, clip.entries);
-
   if ((missing.length > 0 || extras.length > 0) && !(await _confirmFolderXfMismatch(clip, folderNode, missing, extras))) return;
-
-  // ── Cascade vs Keep position ────────────────────────────────────────────
-  const mode = await _showKeepPositionDialog(matches.size, folderNode.name, {
-    title: `Paste transforms onto "${folderNode.name}"`,
-    body: (
-      `Apply the captured pose to the folder + every matching descendant ` +
-      `(<strong>Cascade position</strong>), or apply only the descendant ` +
-      `deltas and leave the target folder's current pose alone ` +
-      `(<strong>keep position</strong>)?<br><br>` +
-      `<span class="muted" style="font-size:11px">` +
-      `Source: "${clip.rootName}" from step "${clip.sourceStepName}". ` +
-      `Paste writes the captured deltas into the CURRENT step only.` +
-      `</span>`
-    ),
-  });
-  if (mode === 'cancel') { setStatus('Paste cancelled.'); return; }
-  const includeRoot = (mode === 'rearrange');
-
-  // ── Build before/after snapshots for undo ───────────────────────────────
-  const before = [];
-  const after  = [];
+  const entries = [];
   for (const e of clip.entries) {
-    if (!includeRoot && e.relPath.length === 0) continue;
-    const key = e.relPath.join('/');
-    const target = matches.get(key);
-    if (!target) continue;
-    before.push({ id: target.id, snap: captureTransformSnapshot(target) });
-    after.push({
-      id: target.id,
-      snap: {
-        ...e.xf,
-        moveEnabled:   target.moveEnabled   !== false,
-        rotateEnabled: target.rotateEnabled !== false,
-        pivotEnabled:  target.pivotEnabled  !== false,
-      },
-    });
+    const t = matches.get(e.relPath.join('/'));
+    if (t) entries.push({ id: t.id, xf: { ...e.xf } });
   }
-  if (after.length === 0) { setStatus('Nothing to paste — no matching nodes.'); return; }
+  if (!entries.length) { setStatus('Nothing to paste — no matching nodes.'); return; }
+  const nParts = entries.filter(e => e.id !== folderNode.id).length;
 
-  const apply = (entries) => {
-    const nb = state.get('nodeById');
-    for (const e of entries) {
-      const n = nb?.get(e.id);
-      if (n) applyTransformSnapshot(n, e.snap);
-    }
-    const root = state.get('treeData');
-    if (root) applyAllTransforms(root, steps.object3dById);
-    steps.scheduleTransformSync();
-    state.emit('change:treeData', root);
-    state.markDirty?.();
-  };
-  const doApply   = () => apply(after);
-  const undoApply = () => apply(before);
-
-  doApply();
-  undoManager.push(
-    `Paste transforms onto "${folderNode.name}"${mode === 'keep' ? ' (folder pose kept)' : ''}`,
-    undoApply, doApply,
+  // ── Which steps — the prompt every multi-step change gets ───────────────
+  const allSteps  = state.get('steps') || [];
+  const activeId  = state.get('activeStepId');
+  const activeIdx = allSteps.findIndex(s => s.id === activeId);
+  const stepSel   = state.get('selectedStepIds');
+  const haveSel   = (stepSel instanceof Set) && stepSel.size >= 2;
+  const isGlobal  = !!state.get('globalMode');
+  const buttons = [];
+  if (haveSel) buttons.push({ id: 'selected', label: `Selected steps (${stepSel.size})`, primary: !isGlobal });
+  buttons.push({ id: 'all',     label: 'All steps', primary: isGlobal });
+  buttons.push({ id: 'earlier', label: 'Previous + this step' });
+  buttons.push({ id: 'later',   label: 'Following + this step' });
+  buttons.push({ id: 'this',    label: 'Just this step', primary: !isGlobal && !haveSel });
+  buttons.push({ id: 'cancel',  label: 'Cancel' });
+  const choice = await chooseFromButtons(
+    `📌 Paste transforms onto "${folderNode.name}" — apply to…`,
+    `The copied poses ("${clip.rootName}", step "${clip.sourceStepName}") — the folder and ${nParts} part(s) inside it — go into which steps? The move / rotate / pivot toggles stay as they are.`,
+    buttons,
   );
-  setStatus(`Pasted transforms onto "${folderNode.name}" — ${after.length} node(s)${mode === 'keep' ? ', folder pose preserved.' : '.'}`);
+  if (!choice || choice === 'cancel') { setStatus('Paste cancelled.'); return; }
+  const real = (list) => list.filter(s => !s.isBaseStep).map(s => s.id);
+  let stepIds;
+  if      (choice === 'this')     stepIds = [activeId];
+  else if (choice === 'all')      stepIds = real(allSteps);
+  else if (choice === 'earlier')  stepIds = real(allSteps.slice(0, activeIdx + 1));
+  else if (choice === 'later')    stepIds = real(allSteps.slice(Math.max(0, activeIdx)));
+  else if (choice === 'selected') stepIds = allSteps.filter(s => stepSel.has(s.id)).map(s => s.id);
+  else return;
+
+  // ── Steps whose tree differs from this one ──────────────────────────────
+  const { different } = scanTransformStructure(folderNode.id, entries.map(e => e.id), stepIds);
+  if (different.length) {
+    const names = different.slice(0, 8).map(d => d.stepName).join(', ') + (different.length > 8 ? ` … (+${different.length - 8} more)` : '');
+    const d = await chooseFromButtons(
+      `${different.length} step(s) don't use the same tree structure`,
+      `${names}. There "${folderNode.name}" sits under a different parent, or some of the copied parts are not inside it. Paste the poses there anyway (each part gets its copied pose wherever it is), or leave those steps out?`,
+      [
+        { id: 'skip',   label: 'Leave them out', primary: true },
+        { id: 'anyway', label: 'Paste anyway' },
+        { id: 'cancel', label: 'Cancel' },
+      ]);
+    if (!d || d === 'cancel') { setStatus('Paste cancelled.'); return; }
+    if (d === 'skip') { const skip = new Set(different.map(x => x.stepId)); stepIds = stepIds.filter(id => !skip.has(id)); }
+  }
+  if (!stepIds.length) { setStatus('Nothing pasted — no steps left.', 'warn', 4000); return; }
+
+  const rep = pasteTransforms({ folderName: folderNode.name, entries, stepIds });
+  if (!rep.steps) { setStatus('Nothing pasted — none of those steps hold these parts.', 'warn', 5000); return; }
+  setStatus(`Pasted transforms onto "${folderNode.name}" — ${rep.nodes} node(s) in ${rep.steps} step(s).`, 'success', 6000);
 }
 
 /** The structure-mismatch dialog + its Save As… branch; true = go on with the paste. */
@@ -2791,98 +2790,6 @@ async function _confirmFolderXfMismatch(clip, folderNode, missing, extras) {
   return true;   // 'proceed' (or after-save)
 }
 
-/**
- * V0.3.4.122 — paste onto this folder in MANY steps (systems/paste-xf-steps.js).
- * The current step is the reference: where this folder sits in the tree here
- * is "the same structure". Steps where it sits elsewhere get ONE choice for
- * all of them — keep the step's tree and place the folder as if it were under
- * the reference parent, move it back under that parent, or skip its own pose
- * there (descendants paste regardless). Matching by stable ids, one undo.
- */
-async function _pasteFolderTransformsToSteps(folderNode) {
-  if (!folderNode || folderNode.type !== 'folder') return;
-  if (!_folderXfClipboard) { setStatus('No transforms in clipboard.'); return; }
-  const clip = _folderXfClipboard;
-  const { matches, missing, extras } = _computeFolderXfMismatch(folderNode, clip.entries);
-  if ((missing.length > 0 || extras.length > 0) && !(await _confirmFolderXfMismatch(clip, folderNode, missing, extras))) return;
-
-  const mode = await _showKeepPositionDialog(matches.size, folderNode.name, {
-    title: `Paste transforms onto "${folderNode.name}" — in many steps`,
-    body: (
-      `Apply the captured pose to the folder + every matching descendant ` +
-      `(<strong>Cascade position</strong>), or only the descendants, leaving the ` +
-      `folder's own pose alone in every step (<strong>keep position</strong>)?<br><br>` +
-      `<span class="muted" style="font-size:11px">` +
-      `Source: "${clip.rootName}" from step "${clip.sourceStepName}". You choose the steps next.` +
-      `</span>`
-    ),
-  });
-  if (mode === 'cancel') { setStatus('Paste cancelled.'); return; }
-  const includeRoot = (mode === 'rearrange');
-
-  const scope = await chooseFromButtons('Which steps?',
-    `"${folderNode.name}" gets the pasted transforms in these steps. The current step is the reference: where "${folderNode.name}" sits in the tree here counts as "the same structure".`,
-    [
-      { id: 'all',      label: 'All steps', primary: true },
-      { id: 'forward',  label: 'This step → forward' },
-      { id: 'backward', label: 'Up to this step' },
-      { id: 'selected', label: 'Selected steps only' },
-      { id: 'cancel',   label: 'Cancel' },
-    ]);
-  if (!scope || scope === 'cancel') { setStatus('Paste cancelled.'); return; }
-
-  // the poses, by the ids the CURRENT tree resolves the copied entries to
-  const poses = [];
-  for (const e of clip.entries) {
-    const t = matches.get(e.relPath.join('/'));
-    if (t) poses.push({ id: t.id, xf: { ...e.xf } });
-  }
-  if (!poses.length) { setStatus('Nothing to paste — no matching nodes.'); return; }
-
-  const root = state.get('treeData');
-  const parent = findParent(root, folderNode.id);
-  const refParentId   = parent?.id || null;
-  const refSiblingIds = (parent?.children || []).filter(c => c.id !== folderNode.id).map(c => c.id);
-  const bName = parent?.name || 'its folder';
-  const args = { folderId: folderNode.id, folderName: folderNode.name, refParentId, refSiblingIds, scope };
-
-  let diffMode = 'skip';
-  if (includeRoot) {
-    const plan = scanPasteTransformsToSteps(args);
-    if (plan.diff.length) {
-      const nb = state.get('nodeById');
-      const nameOf = (id) => (id && nb?.get(id)?.name) || '(root)';
-      const rows = plan.diff.map(d => ({
-        label: d.stepName,
-        from:  `under "${nameOf(d.parentId)}"`,
-        to:    d.by === 'members' ? `"${nameOf(d.bId)}" — recognised by ${d.matched}/${refSiblingIds.length} of its objects` : `"${bName}"`,
-      }));
-      diffMode = await chooseWithPreview(
-        `${plan.diff.length} step(s): "${folderNode.name}" is not under "${bName}"`,
-        `The pasted pose is relative to "${bName}", and in these steps the folder sits elsewhere. Keep each step's tree and place the folder as if it were under "${bName}" (its own pose is recomputed under the real parent), move it back under "${bName}" in those steps, or leave its own pose alone there (descendants still paste)?`,
-        rows,
-        [
-          { id: 'virtual', label: 'Keep the tree — place as if under it', primary: true },
-          { id: 'cascade', label: `Move it back under "${bName}"` },
-          { id: 'skip',    label: 'Skip those steps' },
-          { id: 'cancel',  label: 'Cancel' },
-        ]);
-      if (!diffMode || diffMode === 'cancel') { setStatus('Paste cancelled.'); return; }
-    }
-  }
-
-  const rep = pasteTransformsToSteps({ ...args, poses, includeRoot, diffMode });
-  if (!rep.touched.length) { setStatus(`Nothing pasted — "${folderNode.name}" is in none of those steps.`, 'warn', 5000); return; }
-  const parts = [];
-  if (rep.same)    parts.push(`${rep.same} as is`);
-  if (rep.virtual) parts.push(`${rep.virtual} placed as if under "${bName}"`);
-  if (rep.cascade) parts.push(`${rep.cascade} moved back under "${bName}"`);
-  const skipped = rep.rootSkipped.length
-    ? ` Folder pose skipped in ${rep.rootSkipped.length}: ${rep.rootSkipped.slice(0, 4).map(x => `${x.stepName} (${x.why})`).join(', ')}${rep.rootSkipped.length > 4 ? '…' : ''}.`
-    : '';
-  const absent = rep.absent ? ` Not in ${rep.absent} step(s).` : '';
-  setStatus(`Pasted onto "${folderNode.name}" in ${rep.touched.length} step(s)${parts.length ? ` — ${parts.join(', ')}` : ''}; ${rep.descendants} descendant pose(s).${skipped}${absent}`, 'success', 9000);
-}
 
 
 // ── Move To Folder dialog ─────────────────────────────────────────────────────
