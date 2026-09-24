@@ -53,7 +53,8 @@ const ANAT = {
     middle: { mcp: [ 0.055, 0.57,  0.00], dir: [ 0.00, 1, 0], curl: [0, 0, -1], len: [0.24, 0.15, 0.11], r: 0.044, flexMax: [95, 105, 80], spread: 15 },
     ring:   { mcp: [-0.055, 0.56,  0.00], dir: [-0.05, 1, 0], curl: [0, 0, -1], len: [0.22, 0.14, 0.10], r: 0.041, flexMax: [95, 105, 80], spread: 15 },
     pinky:  { mcp: [-0.165, 0.53,  0.00], dir: [-0.12, 1, 0], curl: [0, 0, -1], len: [0.17, 0.10, 0.08], r: 0.036, flexMax: [95, 105, 80], spread: 25 },
-    thumb:  { mcp: [ 0.20,  0.14, -0.03], dir: [ 0.72, 0.58, -0.38], curl: [-0.55, 0.35, -0.75], len: [0.26, 0.17, 0.13], r: 0.050, flexMax: [45, 60, 80], spread: 30 },
+    // the thumb's base is a BALL joint in the IK (cone-limited), not a hinge — see _solveFinger
+    thumb:  { mcp: [ 0.20,  0.14, -0.03], dir: [ 0.72, 0.58, -0.38], curl: [-0.55, 0.35, -0.75], len: [0.26, 0.17, 0.13], r: 0.050, flexMax: [60, 70, 80], spread: 45, ball: 80 },
   },
   forearm: { len: 1.35, r: 0.075 },
   skin: '#e6b596',
@@ -65,56 +66,41 @@ const ANAT = {
 const REST = { index: [14, 12, 8], middle: [14, 12, 8], ring: [14, 12, 8], pinky: [14, 12, 8], thumb: [10, 12, 8] };
 const OPEN = { index: [-6, 0, 0, 6], middle: [-6, 0, 0, 0], ring: [-6, 0, 0, -6], pinky: [-6, 0, 0, -14], thumb: [0, 0, 0, 14] };
 
+// The ghost prop of each grip is LAID OUT FROM THE POSED FINGERS (V0.3.4.129 —
+// hand-placed constants sat through the index finger): the bar's axis from the
+// centroid of the curled fingers, the knob from the ring of fingertips, the
+// pinched part from the thumb–index gap, the trigger at the index tip. See
+// _layoutGhost. `points` only names the three mapping points, in order.
 export const HAND_POSES = {
   handle: {
     label: 'Handle / bar', icon: '🪛', hint: 'A power grip around a bar or a handle.',
     angles: { index: [70, 90, 55], middle: [72, 95, 58], ring: [74, 95, 60], pinky: [78, 95, 60], thumb: [30, 40, 35] },
-    ghost: { kind: 'cylinder', r: 0.09, len: 0.90, axis: 'x', at: [0, 0.42, -0.18] },
-    points: [
-      { at: [ 0.45, 0.42, -0.18], label: 'one end of the handle' },
-      { at: [-0.45, 0.42, -0.18], label: 'the other end of the handle' },
-      { at: [ 0.00, 0.51, -0.18], label: 'a point on the handle where the fingers wrap over it' },
-    ],
+    ghost: 'handle',
+    points: ['one end of the handle', 'the other end of the handle', 'the far side of the handle, where the fingers wrap over it'],
   },
   pistol: {
     label: 'Pistol grip + trigger', icon: '🔫', hint: 'The hand around a grip, the index finger on a trigger.',
     angles: { index: [22, 18, 10], middle: [70, 95, 60], ring: [72, 95, 60], pinky: [76, 95, 62], thumb: [28, 35, 30] },
-    ghost: { kind: 'pistol' },
-    points: [
-      { at: [0.00, 0.63, -0.16], label: 'the top of the grip, under the trigger guard' },
-      { at: [0.00, 0.17, -0.16], label: 'the bottom of the grip' },
-      { at: [0.22, 0.74, -0.12], label: 'the trigger' },
-    ],
+    ghost: 'pistol',
+    points: ['the top of the grip, under the trigger guard', 'the bottom of the grip', 'the trigger'],
   },
   pinch: {
     label: 'Pinch', icon: '🤏', hint: 'A small part between the thumb and the index finger.',
     angles: { index: [42, 55, 32], middle: [58, 72, 42], ring: [62, 80, 46], pinky: [66, 86, 50], thumb: [22, 32, 40] },
-    ghost: { kind: 'box', size: [0.12, 0.08, 0.05], at: [0.30, 0.86, -0.20] },
-    points: [
-      { at: [0.30, 0.86, -0.175], label: 'the face the index finger presses' },
-      { at: [0.30, 0.86, -0.225], label: 'the face the thumb presses' },
-      { at: [0.36, 0.86, -0.200], label: 'a point on the part\'s side (its direction)' },
-    ],
+    ghost: 'pinch',
+    points: ['the face the index finger presses', 'the face the thumb presses', 'a point on the part\'s side (its direction)'],
   },
   push: {
     label: 'Flat push', icon: '✋', hint: 'The open palm pressed on a surface or a big button.',
     angles: { index: [-4, 0, 0, 8], middle: [-4, 0, 0, 0], ring: [-4, 0, 0, -8], pinky: [-4, 0, 0, -16], thumb: [0, 6, 0, 20] },
-    ghost: { kind: 'box', size: [0.60, 0.70, 0.02], at: [0, 0.45, -0.08] },
-    points: [
-      { at: [0.00, 0.45, -0.09], label: 'the surface under the middle of the palm' },
-      { at: [0.00, 0.80, -0.09], label: 'the surface toward the fingertips' },
-      { at: [0.28, 0.45, -0.09], label: 'the surface toward the thumb' },
-    ],
+    ghost: 'push',
+    points: ['the surface under the middle of the palm', 'the surface toward the fingertips', 'the surface toward the thumb'],
   },
   knob: {
     label: 'Knob / dial', icon: '🎛', hint: 'Fingertips around a knob, seen end-on.',
     angles: { index: [34, 52, 34], middle: [36, 55, 36], ring: [38, 58, 38], pinky: [42, 60, 40], thumb: [22, 30, 26] },
-    ghost: { kind: 'cylinder', r: 0.24, len: 0.22, axis: 'z', at: [0, 0.74, -0.20] },
-    points: [
-      { at: [ 0.24,  0.740, -0.09], label: 'a point on the knob\'s rim' },
-      { at: [-0.12,  0.948, -0.09], label: 'a second point on the rim' },
-      { at: [-0.12,  0.532, -0.09], label: 'a third point on the rim' },
-    ],
+    ghost: 'knob',
+    points: ['a point on the knob\'s rim', 'a second point on the rim (a third of the way round)', 'a third point on the rim'],
   },
   relaxed: {
     label: 'Relaxed', icon: '🖐', hint: 'No grip — the hand rests. Place it with the gizmo.',
@@ -158,31 +144,107 @@ function _basis(dir, curl) {
   return new Th.Quaternion().setFromRotationMatrix(new Th.Matrix4().makeBasis(x, y, z));
 }
 
-/** The ghost prop of a pose, unit-hand frame scaled by L, mirrored for the left hand. */
-function _buildGhost(poseKey, L, left, mat) {
+/** Joint positions in the GROUP frame with the rig posed at `angles` (closed = 1). */
+function _fkPositions(rig, angles) {
+  const Th = T();
+  const group = rig.palm.parent;
+  _setPose(rig, angles, 1);
+  const at = (obj) => {
+    const m = new Th.Matrix4(); const chain = []; let o = obj;
+    while (o && o !== group) { chain.unshift(o); o = o.parent; }
+    for (const c of chain) { c.updateMatrix(); m.multiply(c.matrix); }
+    return new Th.Vector3().setFromMatrixPosition(m);
+  };
+  const out = {};
+  for (const f of HAND_FINGERS) { const fg = rig.fingers[f]; out[f] = { j1: at(fg.joints[0]), j2: at(fg.joints[1]), j3: at(fg.joints[2]), tip: at(fg.tip) }; }
+  return out;
+}
+const _mean = (pts) => { const Th = T(); const c = new Th.Vector3(); for (const p of pts) c.add(p); return c.multiplyScalar(1 / Math.max(1, pts.length)); };
+
+/**
+ * Where the prop sits, read off the posed fingers (group frame). Returns
+ * { meshes:[{geo, pos, quat?}], points:[Vector3 ×3] } or null for no prop.
+ */
+function _layoutGhost(poseKey, rig) {
   const Th = T();
   const P = HAND_POSES[poseKey];
   if (!P?.ghost) return null;
-  const g = P.ghost;
-  const grp = new Th.Group(); grp.name = 'ghost';
-  const place = (mesh, at) => { mesh.position.copy(_v(_mirror(at, left)).multiplyScalar(L)); grp.add(mesh); };
-  if (g.kind === 'cylinder') {
-    const geo = new Th.CylinderGeometry(g.r * L, g.r * L, g.len * L, 24);
-    if (g.axis === 'x') geo.rotateZ(Math.PI / 2); else if (g.axis === 'z') geo.rotateX(Math.PI / 2);
-    place(new Th.Mesh(geo, mat), g.at);
-  } else if (g.kind === 'box') {
-    place(new Th.Mesh(new Th.BoxGeometry(g.size[0] * L, g.size[1] * L, g.size[2] * L), mat), g.at);
-  } else if (g.kind === 'pistol') {
-    place(new Th.Mesh(new Th.BoxGeometry(0.30 * L, 0.46 * L, 0.16 * L), mat), [0, 0.40, -0.16]);
-    const guard = new Th.Mesh(new Th.TorusGeometry(0.075 * L, 0.012 * L, 8, 24), mat); guard.rotation.y = Math.PI / 2; place(guard, [0.20, 0.74, -0.12]);
-    const trig = new Th.Mesh(new Th.CylinderGeometry(0.02 * L, 0.02 * L, 0.10 * L, 10), mat); place(trig, [0.22, 0.74, -0.12]);
-    place(new Th.Mesh(new Th.BoxGeometry(0.18 * L, 0.22 * L, 0.55 * L), mat), [0.04, 0.72, -0.40]);   // the barrel, roughly
+  const L = rig.L, fk = _fkPositions(rig, P.angles);
+  const X = new Th.Vector3(1, 0, 0), Z = new Th.Vector3(0, 0, 1);
+  const fingerR = 0.045 * L;
+  const loop = (f) => _mean([fk[f].j1, fk[f].j2, fk[f].j3, fk[f].tip]);   // inside the curl
+  const loopR = (f, c) => _mean([fk[f].j1, fk[f].j2, fk[f].j3, fk[f].tip].map(p => new Th.Vector3(p.distanceTo(c), 0, 0))).x;
+  const meshes = [];
+  let points = [];
+
+  if (P.ghost === 'handle' || P.ghost === 'pistol') {
+    const fs = P.ghost === 'handle' ? ['index', 'middle', 'ring', 'pinky'] : ['middle', 'ring', 'pinky'];
+    const cs = fs.map(loop);
+    const C = _mean(cs);
+    const r = Math.max(0.06 * L, Math.min(0.13 * L, _mean(fs.map((f, i) => new Th.Vector3(loopR(f, cs[i]) - fingerR, 0, 0))).x));
+    if (P.ghost === 'handle') {
+      const len = 0.9 * L;
+      const geo = new Th.CylinderGeometry(r, r, len, 24); geo.rotateZ(Math.PI / 2);
+      meshes.push({ geo, pos: C });
+      points = [C.clone().addScaledVector(X, len / 2), C.clone().addScaledVector(X, -len / 2), C.clone().addScaledVector(Z, -r)];
+    } else {
+      // the grip: a bar under the three curled fingers, taller than wide; the trigger at the index tip
+      const len = 0.55 * L;
+      const geo = new Th.BoxGeometry(len, 2.2 * r, 1.6 * r);
+      meshes.push({ geo, pos: C });
+      const trig = fk.index.tip.clone();
+      const tg = new Th.CylinderGeometry(0.02 * L, 0.02 * L, 0.12 * L, 10); tg.rotateZ(Math.PI / 2);
+      meshes.push({ geo: tg, pos: trig });
+      const guard = new Th.TorusGeometry(0.07 * L, 0.011 * L, 8, 24); guard.rotateY(Math.PI / 2);
+      meshes.push({ geo: guard, pos: trig.clone().addScaledVector(Z, -0.02 * L) });
+      // the top of the grip is the index-side end (the web of the thumb), the bottom the pinky-side end
+      const sideX = rig.left ? -1 : 1;
+      points = [C.clone().addScaledVector(X, sideX * len / 2), C.clone().addScaledVector(X, -sideX * len / 2), trig.clone()];
+    }
+  } else if (P.ghost === 'pinch') {
+    const tT = fk.thumb.tip, tI = fk.index.tip;
+    const a = tI.clone().sub(tT); const d = a.length(); a.normalize();
+    const thick = Math.max(0.02 * L, d - 2 * 0.04 * L);
+    const C = _mean([tT, tI]);
+    const q = new Th.Quaternion().setFromUnitVectors(Z, a);
+    meshes.push({ geo: new Th.BoxGeometry(0.14 * L, 0.10 * L, thick), pos: C, quat: q });
+    let s = new Th.Vector3().crossVectors(a, new Th.Vector3(0, 1, 0)); if (s.lengthSq() < 1e-6) s = X.clone(); s.normalize();
+    points = [C.clone().addScaledVector(a, thick / 2), C.clone().addScaledVector(a, -thick / 2), C.clone().addScaledVector(s, 0.07 * L)];
+  } else if (P.ghost === 'push') {
+    const z = -(ANAT.palm.t * 0.5 + 0.03) * L;
+    const C = new Th.Vector3(0, ANAT.palm.y * L + 0.05 * L, z);
+    meshes.push({ geo: new Th.BoxGeometry(0.62 * L, 0.72 * L, 0.02 * L), pos: C });
+    const sideX = rig.left ? -1 : 1;
+    points = [C.clone(), C.clone().add(new Th.Vector3(0, 0.34 * L, 0)), C.clone().add(new Th.Vector3(sideX * 0.28 * L, 0, 0))];
+  } else if (P.ghost === 'knob') {
+    const tips = HAND_FINGERS.map(f => fk[f].tip);
+    const c = _mean(tips);
+    const R = Math.max(0.10 * L, _mean(tips.map(p => new Th.Vector3(Math.hypot(p.x - c.x, p.y - c.y), 0, 0))).x + 0.02 * L);
+    const zFace = _mean(tips).z;
+    const h = 0.22 * L;
+    const geo = new Th.CylinderGeometry(R, R, h, 32); geo.rotateX(Math.PI / 2);
+    meshes.push({ geo, pos: new Th.Vector3(c.x, c.y, zFace - h / 2) });
+    points = [0, 2 * Math.PI / 3, 4 * Math.PI / 3].map(t => new Th.Vector3(c.x + R * Math.cos(t), c.y + R * Math.sin(t), zFace));
   }
-  // the three mapping points, numbered
-  P.points.forEach((pt, i) => {
+  return { meshes, points };
+}
+
+/** The ghost prop group from a layout. */
+function _buildGhost(layout, L, mat) {
+  const Th = T();
+  if (!layout) return null;
+  const grp = new Th.Group(); grp.name = 'ghost';
+  for (const m of layout.meshes) {
+    const mesh = new Th.Mesh(m.geo, mat);
+    mesh.position.copy(m.pos);
+    if (m.quat) mesh.quaternion.copy(m.quat);
+    grp.add(mesh);
+  }
+  layout.points.forEach((pt, i) => {
     const m = new Th.Mesh(new Th.SphereGeometry(0.028 * L, 12, 12), new Th.MeshBasicMaterial({ color: ['#fbbf24', '#f472b6', '#4ade80'][i], depthTest: false, transparent: true, opacity: 0.95 }));
     m.renderOrder = 998; m.name = `ghost-pt-${i + 1}`;
-    place(m, pt.at);
+    m.position.copy(pt);
+    grp.add(m);
   });
   grp.traverse(o => { o.userData.isHandGhost = true; });
   return grp;
@@ -250,18 +312,23 @@ export function ensureHandObject3D(node) {
     handle.userData.handControl = { nodeId: node.id, key: f }; handle.renderOrder = 999; handle.visible = false; handle.name = `${f}-handle`;
     tip.add(handle);
     group.add(j1);
-    fingers[f] = { joints, bones, tip, handle, basis, alpha: 0, phi: [0, 0, 0], flexMax: a.flexMax.map(d => d * DEG), spread: a.spread * DEG };
+    fingers[f] = { joints, bones, tip, handle, basis, alpha: 0, phi: [0, 0, 0], ball: null, ballCone: a.ball ? a.ball * DEG : 0, flexMax: a.flexMax.map(d => d * DEG), spread: a.spread * DEG };
   }
   const foreHandle = new Th.Mesh(new Th.SphereGeometry(0.045 * L, 12, 12), handleMat.clone());
   foreHandle.material.color.set('#fbbf24'); foreHandle.userData.handControl = { nodeId: node.id, key: 'forearm' }; foreHandle.renderOrder = 999; foreHandle.visible = false;
   foreHandle.position.set(0, -ANAT.forearm.len * L, 0);
   group.add(foreHandle);
 
-  const ghost = _buildGhost(p.pose, L, left, ghostMat);
-  if (ghost) group.add(ghost);
-
   for (const c of kept) group.add(c);
-  group.userData.rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost, mat };
+  const rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], mat };
+  group.userData.rig = rig;
+  // the prop is laid out from the POSED fingers (the solve re-poses the rig right after)
+  const layout = _layoutGhost(p.pose, rig);
+  if (layout) {
+    rig.ghost = _buildGhost(layout, L, ghostMat);
+    rig.ghostPoints = layout.points.map(v => v.clone());
+    group.add(rig.ghost);
+  }
   node.object3d = group;
   _sigCache.delete(node.id);
   return group;
@@ -271,7 +338,8 @@ function _setFingerAngles(fg) {
   const Th = T();
   const rx = (a) => new Th.Quaternion().setFromAxisAngle(new Th.Vector3(1, 0, 0), a);
   const rz = (a) => new Th.Quaternion().setFromAxisAngle(new Th.Vector3(0, 0, 1), a);
-  fg.joints[0].quaternion.copy(fg.basis).multiply(rz(fg.alpha)).multiply(rx(fg.phi[0]));
+  if (fg.ball) fg.joints[0].quaternion.copy(fg.ball);   // the thumb's base, driven as a ball joint by the IK
+  else fg.joints[0].quaternion.copy(fg.basis).multiply(rz(fg.alpha)).multiply(rx(fg.phi[0]));
   fg.joints[1].quaternion.copy(rx(fg.phi[1]));
   fg.joints[2].quaternion.copy(rx(fg.phi[2]));
 }
@@ -282,6 +350,7 @@ function _setPose(rig, angles, t) {
     const a = angles[f] || REST[f], r = REST[f];
     for (let i = 0; i < 3; i++) fg.phi[i] = (r[i] + ((a[i] ?? r[i]) - r[i]) * t) * DEG;
     fg.alpha = ((a[3] || 0) * t) * DEG * (rig.left ? -1 : 1);
+    fg.ball = null;
     _setFingerAngles(fg);
   }
 }
@@ -323,6 +392,23 @@ function _solveFinger(fg, targetW) {
       fg.tip.getWorldPosition(tip); j.getWorldPosition(jp);
       if (tip.distanceTo(targetW) < 0.3) return 0;
       const u = tip.clone().sub(jp), v = targetW.clone().sub(jp);
+      if (ji === 0 && fg.ballCone) {
+        // the thumb's base: a BALL joint — the shortest arc taking the tip toward the
+        // target, then held inside a cone about the rest direction (opposition is free,
+        // the hinge-plus-spread of the other knuckles was what made it feel stuck)
+        if (u.lengthSq() > 1e-9 && v.lengthSq() > 1e-9) {
+          const qw = new Th.Quaternion().setFromUnitVectors(u.clone().normalize(), v.clone().normalize());
+          const pq = j.parent.getWorldQuaternion(new Th.Quaternion());
+          const cur = pq.clone().multiply(j.quaternion);
+          let local = pq.clone().invert().multiply(qw.multiply(cur));
+          const restY = new Th.Vector3(0, 1, 0).applyQuaternion(fg.basis), newY = new Th.Vector3(0, 1, 0).applyQuaternion(local);
+          const ang = restY.angleTo(newY);
+          if (ang > fg.ballCone) local = fg.basis.clone().slerp(local, fg.ballCone / ang);
+          fg.ball = local;
+          _setFingerAngles(fg);
+        }
+        continue;
+      }
       if (ji === 0) {
         const d = _signedAngle(worldAxis(j, Z), u, v);
         fg.alpha = _clamp(fg.alpha + d, -fg.spread, fg.spread);
@@ -401,12 +487,11 @@ export function controlWorld(node, key) {
 /** The pose's three mapping points in WORLD space (null for a pose without a prop). */
 export function ghostPointsWorld(node) {
   const group = node?.object3d; const rig = group?.userData?.rig;
-  const P = HAND_POSES[node?.handParams?.pose];
-  if (!rig || !P?.ghost) return null;
+  if (!rig || !rig.ghost || rig.ghostPoints.length !== 3) return null;
   group.updateMatrixWorld(true);
-  return P.points.map(pt => group.localToWorld(_v(_mirror(pt.at, rig.left)).multiplyScalar(rig.L)));
+  return rig.ghostPoints.map(pt => group.localToWorld(pt.clone()));
 }
-export function ghostPointLabels(node) { return (HAND_POSES[node?.handParams?.pose]?.points || []).map(p => p.label); }
+export function ghostPointLabels(node) { return [...(HAND_POSES[node?.handParams?.pose]?.points || [])]; }
 
 /** Handle meshes of every live hand (for picking). */
 export function handleMeshes() {

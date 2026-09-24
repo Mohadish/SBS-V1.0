@@ -137,7 +137,7 @@ function _renderEditor(host, h) {
           <button class="btn primary" id="hand-align" ${pose.ghost && !p.released ? '' : 'disabled'} title="${pose.ghost ? 'Click, on the real part, the three points the ghost prop names — the hand lands on it' : 'This pose holds nothing — place it with the gizmo'}">🎯 Align (3 points)</button>
           <label class="small" style="display:flex;align-items:center;gap:6px;" title="The translucent prop with its three numbered points"><input type="checkbox" id="hand-ghost" ${p.ghost !== false ? 'checked' : ''} ${pose.ghost && !p.released ? '' : 'disabled'}> ghost</label>
         </div>
-        ${pose.ghost ? `<div class="small muted" style="line-height:1.45;">${pose.points.map((pt, i) => `<span style="color:${['#fbbf24', '#f472b6', '#4ade80'][i]};font-weight:700;">${i + 1}</span> ${_esc(pt.label)}`).join('<br>')}</div>` : ''}
+        ${pose.ghost ? `<div class="small muted" style="line-height:1.45;">${pose.points.map((label, i) => `<span style="color:${['#fbbf24', '#f472b6', '#4ade80'][i]};font-weight:700;">${i + 1}</span> ${_esc(label)}`).join('<br>')}</div>` : ''}
       </div>
       <div class="card" style="margin-top:8px;padding:8px 10px;display:flex;flex-direction:column;gap:8px;">
         <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="hand-released" ${p.released ? 'checked' : ''}> Release at this step <span class="small muted">— lets go, moves as a unit</span></label>
