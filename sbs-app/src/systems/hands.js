@@ -357,11 +357,22 @@ function _setPose(rig, angles, t) {
 
 // ── targets (fine-tune pins) ─────────────────────────────────────────────────
 
-/** World position of a finger's pinned target (null when unpinned / unresolved). */
+/**
+ * World position of a finger's pinned target (null when unpinned / unresolved).
+ * Three forms: on a part { nodeId, anchorLocal } (rides the part), in the HAND's
+ * frame { local } (rides the hand — V0.3.4.130: a fingertip adjusted off the grip
+ * used to be a world point and stayed behind when the hand's group moved), or
+ * a legacy world point { pos }.
+ */
 export function targetWorld(node, finger) {
   const t = node?.handParams?.targets?.[finger];
   if (!t) return null;
   const Th = T();
+  if (Array.isArray(t.local)) {
+    const g = node.object3d; if (!g) return null;
+    g.updateMatrixWorld(true);
+    return g.localToWorld(_v(t.local));
+  }
   if (Array.isArray(t.pos)) return _v(t.pos);
   if (t.nodeId && Array.isArray(t.anchorLocal)) {
     const r = resolveNodeWorldPosition({ anchorType: 'mesh', nodeId: t.nodeId, anchorLocal: t.anchorLocal, cachedWorldPos: t.cachedWorldPos }, { makeVec3: (x, y, z) => new Th.Vector3(x, y, z) });
@@ -455,10 +466,12 @@ export function solveHand(node) {
   group.updateMatrixWorld(true);
   for (const f of pinned) _solveFinger(rig.fingers[f], tips[f]);
 
-  // the forearm bone aims at the forearm point (or straight back)
+  // the forearm bone aims at the forearm point (in the hand's frame; a legacy world point still reads) or straight back
   {
     const fa = rig.forearm, fh = rig.foreHandle;
-    const localTarget = Array.isArray(p.forearm) ? group.worldToLocal(_v(p.forearm)) : new Th.Vector3(0, -ANAT.forearm.len * L, 0);
+    const localTarget = Array.isArray(p.forearmLocal) ? _v(p.forearmLocal)
+      : Array.isArray(p.forearm) ? group.worldToLocal(_v(p.forearm))
+      : new Th.Vector3(0, -ANAT.forearm.len * L, 0);
     const dir = localTarget.clone().normalize();
     fa.quaternion.setFromUnitVectors(new Th.Vector3(0, 1, 0), dir.lengthSq() ? dir : new Th.Vector3(0, -1, 0));
     const len = _clamp(localTarget.length(), 0.6 * L, 2.2 * L);
@@ -516,7 +529,7 @@ let _hooked = false;
 
 function _signature(node) {
   const p = node.handParams || {};
-  const parts = [node.handSide, p.scale, p.pose, p.closed, p.ghost === false ? 0 : 1, p.released ? 1 : 0, p.open, JSON.stringify(p.forearm), JSON.stringify(node.localOffset), JSON.stringify(node.localQuaternion), node.moveEnabled === false ? 0 : 1, node.rotateEnabled === false ? 0 : 1];
+  const parts = [node.handSide, p.scale, p.pose, p.closed, p.ghost === false ? 0 : 1, p.released ? 1 : 0, p.open, JSON.stringify(p.forearm), JSON.stringify(p.forearmLocal), JSON.stringify(node.localOffset), JSON.stringify(node.localQuaternion), node.moveEnabled === false ? 0 : 1, node.rotateEnabled === false ? 0 : 1];
   for (const f of HAND_FINGERS) { const t = p.released ? null : targetWorld(node, f); parts.push(t ? `${t.x.toFixed(2)},${t.y.toFixed(2)},${t.z.toFixed(2)}` : '-'); }
   const g = node.object3d;
   if (g?.parent) { const e = g.parent.matrixWorld.elements; parts.push(e[12].toFixed(1), e[13].toFixed(1), e[14].toFixed(1), e[0].toFixed(3), e[5].toFixed(3), e[6].toFixed(3)); }

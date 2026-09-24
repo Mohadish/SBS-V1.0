@@ -147,7 +147,7 @@ function _renderEditor(host, h) {
       <div class="card" style="margin-top:8px;padding:8px 10px;">
         <div style="display:flex;align-items:center;gap:8px;">
           <button class="btn" id="hand-fine" style="flex:1;${fine ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="Show the fingertip + forearm handles (or double-click the hand)">${fine ? '✓ Fine-tune fingers' : 'Fine-tune fingers…'}</button>
-          <button class="btn" id="hand-unpin" ${pinned.length || p.forearm ? '' : 'disabled'}>Reset</button>
+          <button class="btn" id="hand-unpin" ${pinned.length || p.forearm || p.forearmLocal ? '' : 'disabled'}>Reset</button>
         </div>
         ${fine ? `
           ${pk ? `<div class="small" style="margin-top:8px;color:#fca5a5;font-weight:600;">◉ ${hands.FINGER_LABEL[pk.finger]}: click the object where the fingertip touches · Esc stops</div>` : ''}

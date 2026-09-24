@@ -243,7 +243,9 @@ export function setHandFingerFromHit(id, finger, hit) {
     const nl = hit.face?.normal ? hit.face.normal.clone().normalize() : null;
     t = { nodeId: meshId, anchorLocal: [local.x, local.y, local.z], normalLocal: nl ? [nl.x, nl.y, nl.z] : null, cachedWorldPos: [hit.point.x, hit.point.y, hit.point.z] };
   } else {
-    t = { pos: [hit.point.x, hit.point.y, hit.point.z] };
+    const g = n.object3d; if (g) g.updateMatrixWorld(true);
+    const l = g ? g.worldToLocal(hit.point.clone()) : hit.point;
+    t = { local: [l.x, l.y, l.z] };   // not on a part (empty space / the hand itself): in the hand's frame
   }
   const cur = _clone(n.handParams || hands.defaultHandParams());
   setHandParams(id, { targets: { ...cur.targets, [finger]: t } }, `Pin ${hands.FINGER_LABEL[finger]}`);
@@ -264,7 +266,7 @@ export function clearAllFingers(id) {
   const n = _node(id);
   if (!n) return false;
   const targets = {}; for (const f of hands.HAND_FINGERS) targets[f] = null;
-  return setHandParams(id, { targets, forearm: null }, 'Unpin every finger');
+  return setHandParams(id, { targets, forearm: null, forearmLocal: null }, 'Unpin every finger');
 }
 
 // ── controls: live moves from the gizmo, one undo on commit ──────────────────
@@ -280,16 +282,18 @@ export function moveHandControlLive(id, key, worldPos) {
   const n = _node(id);
   if (!n) return;
   const p = _clone(n.handParams || hands.defaultHandParams());
+  const g = n.object3d; if (g) g.updateMatrixWorld(true);
+  const inHand = (w) => { const l = g ? g.worldToLocal(w.clone()) : w; return [l.x, l.y, l.z]; };
   if (key === 'forearm') {
-    p.forearm = [worldPos.x, worldPos.y, worldPos.z];
+    p.forearmLocal = inHand(worldPos); delete p.forearm;   // V0.3.4.130 — in the hand's frame: rides the hand and its group
   } else if (hands.HAND_FINGERS.includes(key)) {
     const t = p.targets?.[key];
     if (t?.nodeId) {   // keep it riding the same part: re-express under that part
       const host = state.get('nodeById')?.get(t.nodeId)?.object3d;
       if (host) { const l = host.worldToLocal(worldPos.clone()); t.anchorLocal = [l.x, l.y, l.z]; t.cachedWorldPos = [worldPos.x, worldPos.y, worldPos.z]; }
-      else p.targets[key] = { pos: [worldPos.x, worldPos.y, worldPos.z] };
+      else p.targets[key] = { local: inHand(worldPos) };
     } else {
-      p.targets[key] = { pos: [worldPos.x, worldPos.y, worldPos.z] };
+      p.targets[key] = { local: inHand(worldPos) };   // not on a part: in the hand's frame, so it follows the hand
     }
   } else return;
   _applyParams(id, p, { flush: false });
