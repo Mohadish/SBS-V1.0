@@ -30,6 +30,24 @@
   --field-line:#334155;
   --shadow-float:0 6px 20px rgba(0,0,0,0.45);
 
+  /* V0.3.4.123 — the DOCUMENT workspace (ui/document-workspace.js + the
+     template editor): its chrome was dark in both themes. Its menus, bars
+     and dialogs mount on <body>, so the palette lives here, not on the
+     workspace element. Dark values = what it always was. */
+  --dw-bg:#0b1220;        /* the workspace behind everything */
+  --dw-panel:#0f172a;     /* the side panels, menus, dialogs, floating bars */
+  --dw-panel2:#111a2c;    /* the top bar, page boxes */
+  --dw-line:#334155;      /* borders; also the desk the pages lie on */
+  --dw-line2:#1e293b;     /* hairlines between rows */
+  --dw-text:#e2e8f0;
+  --dw-strong:#cbd5e1;    /* labels a step up from muted */
+  --dw-muted:#94a3b8;
+  --dw-dim:#64748b;
+  --dw-field:#0b1220;     /* inputs, pickers, number badges */
+  --dw-btn:#1e293b;
+  --dw-btn-hover:#263449;
+  --dw-thumb:#1e293b;     /* thumbnail placeholders */
+
   --sidebar-left-width:  420px;
   --sidebar-right-width: 320px;
 }
@@ -69,6 +87,20 @@ html[data-theme="light"]{
   --field-bg:#f8fafc;
   --field-line:#cbd5e1;
   --shadow-float:0 6px 20px rgba(15,23,42,0.18);
+
+  --dw-bg:#f1f5f9;
+  --dw-panel:#ffffff;
+  --dw-panel2:#f8fafc;
+  --dw-line:#cbd5e1;
+  --dw-line2:#e2e8f0;
+  --dw-text:#1e293b;
+  --dw-strong:#334155;
+  --dw-muted:#64748b;
+  --dw-dim:#94a3b8;
+  --dw-field:#ffffff;
+  --dw-btn:#f1f5f9;
+  --dw-btn-hover:#e2e8f0;
+  --dw-thumb:#e2e8f0;
 }
 
 /* CHROMIUM CANVAS-COMPOSITOR ISOLATION — the actual fix.

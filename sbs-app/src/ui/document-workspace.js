@@ -107,73 +107,74 @@ function _build() {
   _root = document.createElement('div');
   _root.id = 'document-workspace';
   _root.tabIndex = -1;
-  _root.style.cssText = 'position:fixed;inset:0;z-index:9000;display:flex;flex-direction:column;background:#0b1220;color:#e2e8f0;font-size:13px;outline:none;';
+  // V0.3.4.123 — theme-aware: the --dw-* palette (base.css) has a light set too
+  _root.style.cssText = 'position:fixed;inset:0;z-index:9000;display:flex;flex-direction:column;background:var(--dw-bg);color:var(--dw-text);font-size:13px;outline:none;';
   _root.innerHTML = `
     <style>
-      #document-workspace .dw-btn { background:#1e293b;color:#e2e8f0;border:1px solid #334155;border-radius:7px;padding:5px 12px;font:inherit;font-size:12.5px;cursor:pointer; }
-      #document-workspace .dw-btn:hover:not(:disabled) { background:#273449; }
+      #document-workspace .dw-btn { background:var(--dw-btn);color:var(--dw-text);border:1px solid var(--dw-line);border-radius:7px;padding:5px 12px;font:inherit;font-size:12.5px;cursor:pointer; }
+      #document-workspace .dw-btn:hover:not(:disabled) { background:var(--dw-btn-hover); }
       #document-workspace .dw-btn:disabled { opacity:.4;cursor:default; }
-      #document-workspace .dw-btn.primary { color:#22d3ee;font-weight:600; }
+      #document-workspace .dw-btn.primary { color:var(--accent);font-weight:600; }
       #document-workspace .dw-btn.warn { color:#fbbf24;font-weight:600;border-color:#b45309; }
-      #document-workspace .dw-in { background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:4px 7px;font:inherit;font-size:12.5px;width:100%;box-sizing:border-box; }
+      #document-workspace .dw-in { background:var(--dw-field);color:var(--dw-text);border:1px solid var(--dw-line);border-radius:6px;padding:4px 7px;font:inherit;font-size:12.5px;width:100%;box-sizing:border-box; }
       #document-workspace select.dw-in { height:27px;padding:2px 5px; }
-      #document-workspace .dw-h { font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:#94a3b8;margin:14px 0 6px; }
-      #document-workspace .dw-lab { font-size:10.5px;color:#94a3b8;display:flex;flex-direction:column;gap:2px;margin-bottom:6px; }
-      #document-workspace a { color:#93c5fd;cursor:pointer;text-decoration:none; } #document-workspace a:hover { text-decoration:underline; }
-      #document-workspace .dw-pagebox { border:1px solid #334155;border-radius:9px;margin:0 8px 8px;background:#111a2c;overflow:hidden; }
+      #document-workspace .dw-h { font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dw-muted);margin:14px 0 6px; }
+      #document-workspace .dw-lab { font-size:10.5px;color:var(--dw-muted);display:flex;flex-direction:column;gap:2px;margin-bottom:6px; }
+      #document-workspace a { color:var(--accent);cursor:pointer;text-decoration:none; } #document-workspace a:hover { text-decoration:underline; }
+      #document-workspace .dw-pagebox { border:1px solid var(--dw-line);border-radius:9px;margin:0 8px 8px;background:var(--dw-panel2);overflow:hidden; }
       #document-workspace .dw-pagebox.cur { border-color:#38bdf8;box-shadow:0 0 0 1px #38bdf8; }
       #document-workspace .dw-pagebox.flag { border-color:#f59e0b; }
-      #document-workspace .dw-pagehead { display:flex;gap:6px;align-items:center;padding:4px 8px;font-size:11px;color:#94a3b8;background:#0f172a;cursor:pointer; }
-      #document-workspace .dw-step { display:flex;gap:8px;align-items:center;padding:5px 8px;cursor:pointer;border-top:1px solid #1e293b;user-select:none; }
-      #document-workspace .dw-step:hover { background:#16213a; }
-      #document-workspace .dw-step.sel { background:#1d3a5f; }
+      #document-workspace .dw-pagehead { display:flex;gap:6px;align-items:center;padding:4px 8px;font-size:11px;color:var(--dw-muted);background:var(--dw-panel);cursor:pointer; }
+      #document-workspace .dw-step { display:flex;gap:8px;align-items:center;padding:5px 8px;cursor:pointer;border-top:1px solid var(--dw-line2);user-select:none; }
+      #document-workspace .dw-step:hover { background:rgba(56,189,248,.10); }
+      #document-workspace .dw-step.sel { background:rgba(56,189,248,.22); }
       #document-workspace .dw-step.pending { opacity:.5; }
       #document-workspace .dw-step.hid > :not(.dw-eye) { opacity:.38; }
       #document-workspace .dw-step.hid .dw-name { text-decoration:line-through; }
       #document-workspace .dw-eye { flex:0 0 auto;width:26px;text-align:center;font-size:14px;opacity:.25;border-radius:5px;padding:2px 0; }
       #document-workspace .dw-step:hover .dw-eye, #document-workspace .dw-step.hid .dw-eye { opacity:1; }
-      #document-workspace .dw-eye:hover { background:#273449;text-decoration:none; }
-      #document-workspace .dw-thumb { width:84px;height:48px;flex:0 0 auto;border-radius:4px;background:#1e293b;border:1px solid #334155;object-fit:cover;display:block; }
-      #document-workspace .dw-no { flex:0 0 auto;min-width:26px;text-align:center;font-weight:700;font-size:11.5px;background:#0b1220;border:1px solid #334155;border-radius:9px;padding:1px 6px; }
+      #document-workspace .dw-eye:hover { background:var(--dw-btn-hover);text-decoration:none; }
+      #document-workspace .dw-thumb { width:84px;height:48px;flex:0 0 auto;border-radius:4px;background:var(--dw-thumb);border:1px solid var(--dw-line);object-fit:cover;display:block; }
+      #document-workspace .dw-no { flex:0 0 auto;min-width:26px;text-align:center;font-weight:700;font-size:11.5px;background:var(--dw-field);border:1px solid var(--dw-line);border-radius:9px;padding:1px 6px; }
       #document-workspace .dw-pgrow { display:flex;gap:9px;align-items:center; }
       #document-workspace .dw-pagehead.dw-pgrow { padding:6px 8px; }
-      #document-workspace .dw-pagehead.sel { background:#1d3a5f; }
-      #document-workspace .dw-pagethumb { flex:0 0 auto;display:block;width:64px;height:91px;border:1px solid #334155;border-radius:3px;background:#1e293b;overflow:hidden; }
+      #document-workspace .dw-pagehead.sel { background:rgba(56,189,248,.22); }
+      #document-workspace .dw-pagethumb { flex:0 0 auto;display:block;width:64px;height:91px;border:1px solid var(--dw-line);border-radius:3px;background:var(--dw-thumb);overflow:hidden; }
       #document-workspace .dw-step.mini { padding:3px 8px 3px 14px;gap:7px; }
-      #document-workspace .dw-grip { flex:0 0 auto;cursor:grab;color:#64748b;font-size:15px;padding:0 1px;user-select:none;touch-action:none; }
+      #document-workspace .dw-grip { flex:0 0 auto;cursor:grab;color:var(--dw-dim);font-size:15px;padding:0 1px;user-select:none;touch-action:none; }
       #document-workspace .dw-grip:hover { color:#38bdf8; }
-      #document-workspace .dw-pagebox.movable { border-style:solid;border-color:#475569;background:#0f1b30; }
+      #document-workspace .dw-pagebox.movable { border-style:solid;border-color:var(--dw-line);background:var(--dw-panel2); }
       #document-workspace .dw-pagebox.dragging { opacity:.45; }
       #document-workspace #dw-list { position:relative; }
       #document-workspace .dw-dropline { position:absolute;left:6px;right:6px;height:3px;border-radius:2px;background:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,.25);pointer-events:none; }
-      #document-workspace .dw-split { flex:0 0 7px;cursor:col-resize;background:#0b1220;border-left:1px solid #334155;border-right:1px solid #334155;touch-action:none; }
+      #document-workspace .dw-split { flex:0 0 7px;cursor:col-resize;background:var(--dw-field);border-left:1px solid var(--dw-line);border-right:1px solid var(--dw-line);touch-action:none; }
       #document-workspace .dw-split:hover, #document-workspace .dw-split.on { background:#38bdf8; }
-      #document-workspace .dw-chap { margin:10px 10px 6px;font-size:11px;font-weight:700;color:#cbd5e1;letter-spacing:.04em; }
-      #document-workspace .dw-menu { position:fixed;z-index:9100;background:#0f172a;border:1px solid #334155;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:4px;min-width:230px;max-height:60vh;overflow:auto; }
-      #document-workspace .dw-menu > div { padding:6px 10px;border-radius:5px;cursor:pointer;font-size:12.5px; } #document-workspace .dw-menu > div:hover { background:#1d3a5f; }
-      #document-workspace .dw-menu > div.cur { background:#16324f;box-shadow:inset 3px 0 0 #38bdf8; }
+      #document-workspace .dw-chap { margin:10px 10px 6px;font-size:11px;font-weight:700;color:var(--dw-strong);letter-spacing:.04em; }
+      #document-workspace .dw-menu { position:fixed;z-index:9100;background:var(--dw-panel);border:1px solid var(--dw-line);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.6);padding:4px;min-width:230px;max-height:60vh;overflow:auto; }
+      #document-workspace .dw-menu > div { padding:6px 10px;border-radius:5px;cursor:pointer;font-size:12.5px; } #document-workspace .dw-menu > div:hover { background:rgba(56,189,248,.22); }
+      #document-workspace .dw-menu > div.cur { background:rgba(56,189,248,.16);box-shadow:inset 3px 0 0 #38bdf8; }
       #document-workspace .dw-prow { display:flex;gap:10px;align-items:center; }
-      #document-workspace .dw-pthumb { position:relative;flex:0 0 auto;width:96px;height:54px;border-radius:5px;border:1px solid #334155;background:#1e293b;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:10.5px; }
+      #document-workspace .dw-pthumb { position:relative;flex:0 0 auto;width:96px;height:54px;border-radius:5px;border:1px solid var(--dw-line);background:var(--dw-thumb);overflow:hidden;display:flex;align-items:center;justify-content:center;color:var(--dw-dim);font-size:10.5px; }
       #document-workspace .dw-pthumb img { width:100%;height:100%;object-fit:cover;display:block; }
       #document-workspace .dw-pthumb .tag { position:absolute;left:0;bottom:0;background:#f59e0b;color:#111;font-size:9.5px;font-weight:700;padding:0 5px;border-top-right-radius:4px; }
-      #document-workspace .dw-pick { display:flex;gap:9px;align-items:center;width:100%;box-sizing:border-box;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:7px;padding:4px 8px 4px 4px;font:inherit;font-size:12px;cursor:pointer;text-align:start; }
+      #document-workspace .dw-pick { display:flex;gap:9px;align-items:center;width:100%;box-sizing:border-box;background:var(--dw-field);color:var(--dw-text);border:1px solid var(--dw-line);border-radius:7px;padding:4px 8px 4px 4px;font:inherit;font-size:12px;cursor:pointer;text-align:start; }
       #document-workspace .dw-pick:hover { border-color:#38bdf8; }
       #document-workspace .dw-pick .dw-pthumb { width:64px;height:36px; }
     </style>
-    <div id="dw-top" style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 12px;background:#111a2c;border-bottom:1px solid #334155;">
+    <div id="dw-top" style="flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--dw-panel2);border-bottom:1px solid var(--dw-line);">
       <span style="font-weight:700;font-size:14px;">📄 Document</span>
-      <span id="dw-status" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;font-size:12px;padding:0 10px;"></span>
+      <span id="dw-status" style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dw-muted);font-size:12px;padding:0 10px;"></span>
       <span id="dw-actions" style="display:flex;gap:8px;align-items:center;"></span>
       <input type="file" id="dw-asset-file" accept="image/*" hidden>
       <button class="dw-btn" data-act="close" title="Close the document workspace — nothing is lost, the document is part of the project">◀ Edit animation</button>
     </div>
     <div style="flex:1 1 auto;min-height:0;display:flex;">
-      <div id="dw-left"  style="flex:0 0 290px;min-width:0;min-height:0;overflow:auto;padding:4px 14px 16px;background:#0f172a;box-sizing:border-box;"></div>
+      <div id="dw-left"  style="flex:0 0 290px;min-width:0;min-height:0;overflow:auto;padding:4px 14px 16px;background:var(--dw-panel);box-sizing:border-box;"></div>
       <div class="dw-split" data-split="l" title="Drag to resize · double-click to fold the settings away"></div>
-      <div id="dw-center" style="flex:1 1 auto;min-width:0;min-height:0;overflow:auto;background:#334155;position:relative;"></div>
+      <div id="dw-center" style="flex:1 1 auto;min-width:0;min-height:0;overflow:auto;background:var(--dw-line);position:relative;"></div>
       <div class="dw-split" data-split="r" title="Drag to resize · double-click to fold the page list away"></div>
-      <div id="dw-right" style="flex:0 0 330px;min-width:0;min-height:0;display:flex;flex-direction:column;background:#0f172a;">
-        <div id="dw-selbar" style="flex:0 0 auto;padding:8px;border-bottom:1px solid #334155;display:flex;flex-direction:column;gap:6px;"></div>
+      <div id="dw-right" style="flex:0 0 330px;min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--dw-panel);">
+        <div id="dw-selbar" style="flex:0 0 auto;padding:8px;border-bottom:1px solid var(--dw-line);display:flex;flex-direction:column;gap:6px;"></div>
         <div id="dw-list" style="flex:1 1 auto;min-height:0;overflow:auto;padding-top:6px;"></div>
       </div>
     </div>`;
@@ -330,7 +331,7 @@ function _build() {
   const bar = document.getElementById('status-bar');
   if (bar) {
     const out = _root.querySelector('#dw-status');
-    const sync = () => { out.textContent = bar.textContent || ''; out.style.color = /--(warn|danger)/.test(bar.className) ? '#fbbf24' : /--(ok|success)/.test(bar.className) ? '#4ade80' : '#94a3b8'; };
+    const sync = () => { out.textContent = bar.textContent || ''; out.style.color = /--(warn|danger)/.test(bar.className) ? '#fbbf24' : /--(ok|success)/.test(bar.className) ? '#4ade80' : 'var(--dw-muted)'; };
     _statusObs = new MutationObserver(sync);
     _statusObs.observe(bar, { childList: true, characterData: true, subtree: true, attributes: true });
   }
@@ -376,9 +377,9 @@ function _renderEmpty() {
   let e = c.querySelector('#dw-empty');
   if (!e) { e = document.createElement('div'); e.id = 'dw-empty'; c.appendChild(e); }
   e.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;';
-  e.innerHTML = `<div style="max-width:520px;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:26px 28px;line-height:1.6;">
+  e.innerHTML = `<div style="max-width:520px;background:var(--dw-panel);border:1px solid var(--dw-line);border-radius:12px;padding:26px 28px;line-height:1.6;">
       <div style="font-size:17px;font-weight:700;margin-bottom:8px;">Turn the animation into a printed manual</div>
-      <div style="color:#94a3b8;">Every page covers one or more steps: their text on top — the voiceover, until you rewrite it here — and a picture of their final state, inside a fixed A4 template with a header and a footer. The document keeps its own copy of everything: nothing you do here changes the animation.</div>
+      <div style="color:var(--dw-muted);">Every page covers one or more steps: their text on top — the voiceover, until you rewrite it here — and a picture of their final state, inside a fixed A4 template with a header and a footer. The document keeps its own copy of everything: nothing you do here changes the animation.</div>
       <div style="margin-top:16px;"><button class="dw-btn primary" data-act="build" style="padding:8px 18px;font-size:13.5px;">Build the pages — one per step</button></div>
     </div>`;
 }
@@ -390,9 +391,9 @@ function _renderTop(c) {
   _root.querySelector('#dw-actions').innerHTML = `
     <button class="dw-btn${pending ? ' warn' : ''}" data-act="sync" title="Bring the pages in line with the animation as it is now: new steps get pages, deleted ones leave. Every page the sync had to touch is marked ❗ so you can see what changed — nothing is broken.">${pending ? '⟳ The animation changed — sync' : '⟳ Sync with the animation'}</button>
     ${flagged ? `<button class="dw-btn" data-act="reviewed-all" title="❗ marks the pages the last sync adjusted because the animation changed. Click a marked page to read what changed on it. This clears the marks on all ${flagged} page(s) — the pages themselves are not touched.">✓ Clear all ❗ (${flagged})</button>` : ''}
-    <span style="display:inline-flex;border:1px solid #334155;border-radius:7px;overflow:hidden;">
-      <button class="dw-btn" data-act="zoom-fit" style="border:0;border-radius:0;${_zoom === 'fit' ? 'background:#1d3a5f;' : ''}">Fit</button>
-      <button class="dw-btn" data-act="zoom-100" style="border:0;border-radius:0;${_zoom === '100' ? 'background:#1d3a5f;' : ''}">100%</button>
+    <span style="display:inline-flex;border:1px solid var(--dw-line);border-radius:7px;overflow:hidden;">
+      <button class="dw-btn" data-act="zoom-fit" style="border:0;border-radius:0;${_zoom === 'fit' ? 'background:rgba(56,189,248,.22);' : ''}">Fit</button>
+      <button class="dw-btn" data-act="zoom-100" style="border:0;border-radius:0;${_zoom === '100' ? 'background:rgba(56,189,248,.22);' : ''}">100%</button>
     </span>
     <button class="dw-btn primary" data-act="export">⬇ Export PDF…</button>`;
 }
@@ -419,8 +420,8 @@ function _renderLeft(c) {
     if (!t.text.trim() && !t.edited && !(page.stepIds || []).includes(sid)) return '';
     return `<div style="margin:0 0 7px;font-size:11.5px;line-height:1.45;">
       <b>${_esc(c.nums.get(sid)?.label || '•')}</b>
-      ${t.edited ? (t.drifted ? '<span style="color:#fbbf24;">⚠ the voiceover changed after you rewrote this</span>' : '<span style="color:#60a5fa;">rewritten for the document</span>') : '<span style="color:#94a3b8;">follows the voiceover</span>'}
-      ${t.drifted ? `<div dir="auto" style="color:#94a3b8;margin:2px 0;">voiceover now: “${_esc(String(s.narration?.text ?? s.voiceText ?? ''))}”</div>` : ''}
+      ${t.edited ? (t.drifted ? '<span style="color:#fbbf24;">⚠ the voiceover changed after you rewrote this</span>' : '<span style="color:#60a5fa;">rewritten for the document</span>') : '<span style="color:var(--dw-muted);">follows the voiceover</span>'}
+      ${t.drifted ? `<div dir="auto" style="color:var(--dw-muted);margin:2px 0;">voiceover now: “${_esc(String(s.narration?.text ?? s.voiceText ?? ''))}”</div>` : ''}
       ${t.edited ? `<div><a data-act="reset-text" data-step="${_esc(sid)}">use the voiceover again</a>${t.drifted ? ` · <a data-act="accept-drift" data-step="${_esc(sid)}">keep mine</a>` : ''}</div>` : ''}
     </div>`;
   }).join('');
@@ -430,33 +431,33 @@ function _renderLeft(c) {
     ${[['title', 'Title'], ['company', 'Company'], ['docNo', 'Document no.'], ['rev', 'Revision']].map(([k, l]) => `<label class="dw-lab">${l}<input class="dw-in" data-field="${k}" value="${_esc(f[k] || '')}" dir="auto"></label>`).join('')}
     <label class="dw-lab">Step numbers
       <select class="dw-in" data-opt="numbering">${[['step', 'The same numbers as the animation'], ['page', '1, 2, 3 restarting with each chapter'], ['none', 'No numbers']].map(([v, l]) => `<option value="${v}"${(c.doc.options?.numbering || 'step') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
-    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A step with no text — one that only moves the camera or slides a part into place — gets no line and no number, and the lines below close up. Its pictures stay. Switch this off to see every empty step as a numbered line again (that is also where you type to give one a sentence)."><input type="checkbox" data-opt="dropSilent"${c.doc.options?.dropSilent !== false ? ' checked' : ''}> Leave out steps that have no text</label>
-    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A step that shows an interface is pictured on the interface: the picture is zoomed so the panel fills its frame. Move any picture yourself and your framing is kept — switching this off and on again never takes it back."><input type="checkbox" data-opt="ifaceFit"${c.doc.options?.ifaceFit === true ? ' checked' : ''}> 🎯 Frame the picture on the interface</label>
-    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
-    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px 22px;font-size:11.5px;color:${c.doc.options?.toc !== false ? '#cbd5e1' : '#64748b'};" title="Under each chapter, every step of that chapter with the page it is on."><input type="checkbox" data-opt="tocSteps"${c.doc.options?.tocSteps !== false ? ' checked' : ''}${c.doc.options?.toc !== false ? '' : ' disabled'}> …and the steps under each chapter</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:var(--dw-strong);"><input type="checkbox" data-opt="pictureNumbers"${c.doc.options?.pictureNumbers !== false ? ' checked' : ''}> Step number on each picture (pages with several steps)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:var(--dw-strong);" title="A step with no text — one that only moves the camera or slides a part into place — gets no line and no number, and the lines below close up. Its pictures stay. Switch this off to see every empty step as a numbered line again (that is also where you type to give one a sentence)."><input type="checkbox" data-opt="dropSilent"${c.doc.options?.dropSilent !== false ? ' checked' : ''}> Leave out steps that have no text</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:var(--dw-strong);" title="A step that shows an interface is pictured on the interface: the picture is zoomed so the panel fills its frame. Move any picture yourself and your framing is kept — switching this off and on again never takes it back."><input type="checkbox" data-opt="ifaceFit"${c.doc.options?.ifaceFit === true ? ' checked' : ''}> 🎯 Frame the picture on the interface</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px;font-size:11.5px;color:var(--dw-strong);" title="A contents page opens the document: every chapter with the page it starts on. It counts as page 1."><input type="checkbox" data-opt="toc"${c.doc.options?.toc !== false ? ' checked' : ''}> Table of contents (chapters → pages)</label>
+    <label style="display:flex;gap:8px;align-items:center;margin:0 0 7px 22px;font-size:11.5px;color:${c.doc.options?.toc !== false ? 'var(--dw-strong)' : 'var(--dw-dim)'};" title="Under each chapter, every step of that chapter with the page it is on."><input type="checkbox" data-opt="tocSteps"${c.doc.options?.tocSteps !== false ? ' checked' : ''}${c.doc.options?.toc !== false ? '' : ' disabled'}> …and the steps under each chapter</label>
     <label class="dw-lab">Reading direction
       <select class="dw-in" data-opt="direction">${(() => { const r = directionOf(c.doc, c.steps, c.chapters); const cur = c.doc.options?.direction || 'auto'; return [['auto', `Automatic — now ${r.detected === 'rtl' ? 'right-to-left (Hebrew / Arabic text)' : 'left-to-right'}`], ['ltr', 'Left-to-right'], ['rtl', 'Right-to-left']].map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join(''); })()}</select></label>
     <div class="dw-lab">Header and footer${c.doc.bands ? ' — your own design' : ' — standard'}
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:11.5px;"><button class="dw-btn" data-act="band-edit" data-side="header" title="Place the logo, texts, page numbers and pictures of the header and the footer yourself — or click the header / footer on the page">✎ Edit…</button>${c.doc.bands ? '<a data-act="band-reset">back to the standard one</a>' : ''}</div></div>`;
   const pageHtml = `
     <div class="dw-h">Page ${c.model.pages.find(p => p.id === page.id)?.number ?? '—'} of ${c.model.total}</div>
-    <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
+    <div style="font-size:12px;color:var(--dw-strong);margin-bottom:8px;">${_esc(pageRangeLabel(page, c.steps, c.chapters, c.perChapter, c.doc.hiddenSteps))}</div>
     ${flags.length ? `<div style="margin:0 0 10px;padding:7px 9px;border-radius:7px;background:rgba(245,158,11,.13);border:1px solid #b45309;font-size:11.5px;line-height:1.5;"><div style="color:#fbbf24;font-weight:600;margin-bottom:3px;">❗ ${FLAG_WHAT}</div>${flags.map(x => `${FLAG_ICON[x.kind] || '•'} ${_esc(x.note)}`).join('<br>')}
-      <div style="margin-top:5px;color:#94a3b8;">${FLAG_DO}</div>
+      <div style="margin-top:5px;color:var(--dw-muted);">${FLAG_DO}</div>
       <div style="margin-top:3px;"><a data-act="reviewed">✓ Seen — clear the mark</a></div></div>` : ''}
     <label class="dw-lab">Page template
       <select class="dw-in" data-page-opt="template"><option value=""${page.templateAuto !== false ? ' selected' : ''}>Automatic — ${_esc(tplNow.name)}</option>${tpls.map(t => `<option value="${_esc(t.id)}"${(page.templateAuto === false && t.id === page.templateId) ? ' selected' : ''}>${_esc(t.name)}</option>`).join('')}</select></label>
-    <div style="font-size:11px;color:#64748b;margin:-2px 0 4px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
+    <div style="font-size:11px;color:var(--dw-dim);margin:-2px 0 4px;">Automatic = as many pictures as the page has steps (2, 3, 4).</div>
     <div style="font-size:11.5px;margin:0 0 9px;display:flex;gap:10px;flex-wrap:wrap;"><a data-act="tpl-new" title="Draw your own layout: where the text goes and where each picture frame goes. It starts from this page's layout.">📐 New template…</a>${tplNow.builtin ? '' : `<a data-act="tpl-edit">✎ Edit “${_esc(tplNow.name)}”</a><a data-act="tpl-delete" style="color:#fca5a5;">Delete it</a>`}</div>
     ${(tplNow.images || []).map((_, k) => { const ch = _pictureChoice(c, page, k, modelPage); return `<div class="dw-lab">Picture ${k + 1}
-      <button class="dw-pick" data-act="slot-pick" data-slot="${k}" title="Choose which picture goes into this frame">${_thumbBox(ch.thumb, ch.before)}<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(ch.text)}</span><span style="color:#64748b;">▾</span></button></div>`; }).join('')}
-    <div style="font-size:11.5px;color:#94a3b8;margin:0 0 6px;">Click a picture on the page: drag moves it behind its frame, the wheel scales it.</div>
+      <button class="dw-pick" data-act="slot-pick" data-slot="${k}" title="Choose which picture goes into this frame">${_thumbBox(ch.thumb, ch.before)}<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_esc(ch.text)}</span><span style="color:var(--dw-dim);">▾</span></button></div>`; }).join('')}
+    <div style="font-size:11.5px;color:var(--dw-muted);margin:0 0 6px;">Click a picture on the page: drag moves it behind its frame, the wheel scales it.</div>
     <div style="font-size:11.5px;margin:0 0 8px;"><a data-act="rerender-pictures" title="Pictures refresh by themselves when a step, its overlay, a colour or a style changes. Use this after anything else — a reloaded model, render settings.">↻ Render the pictures again</a></div>
     ${page.stepIds.length > 1 ? `<div style="margin:4px 0 0;"><button class="dw-btn" data-act="split-all" title="Undo the merge: every step of this page gets a page of its own again">Un-merge — one page per step</button></div>` : ''}
 
     <div class="dw-h">Text on this page</div>
-    <div style="font-size:11.5px;color:#94a3b8;margin-bottom:8px;">Click a line on the page to rewrite it. The voiceover is never changed from here.</div>
+    <div style="font-size:11.5px;color:var(--dw-muted);margin-bottom:8px;">Click a line on the page to rewrite it. The voiceover is never changed from here.</div>
     ${lines}`;
   // two halves: the fields half is NOT rebuilt while one of its inputs has the
   // focus — Tab from Title to Company commits Title, and a rebuild would throw
@@ -468,7 +469,7 @@ function _renderLeft(c) {
   } else docBox.innerHTML = docHtml;
   _renderWatermarkBox(wmBox, watermarkOf(c.doc));
   pageBox.innerHTML = _bandEdit ? _bandLeftHtml() : custom ? _customLeftHtml(c, custom) : onToc
-    ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:#94a3b8;line-height:1.5;">Built from the chapters — and, unless you switch it off, every step under its chapter, with the page it is on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
+    ? `<div class="dw-h">Contents — page 1${c.model.toc?.pages.length > 1 ? `–${c.model.toc.pages.length}` : ''} of ${c.model.total}</div><div style="font-size:11.5px;color:var(--dw-muted);line-height:1.5;">Built from the chapters — and, unless you switch it off, every step under its chapter, with the page it is on. The numbers follow by themselves when you join, split or leave out steps. In the PDF every line is a link.<br><br>It counts as page 1, so the first step page is page ${(c.model.toc?.pages.length || 0) + 1}. Switch it off with <b>Table of contents</b> above.</div>`
     : pageHtml;
   left.scrollTop = keep;
 }
@@ -484,15 +485,15 @@ function _renderWatermarkBox(box, w) {
   if (inside && (act.tagName === 'TEXTAREA' || (act.tagName === 'INPUT' && /^(text|number)$/.test(act.type)))) return;
   const refocus = inside ? act.dataset?.wm || null : null;
   const summary = !w.enabled ? 'off' : w.kind === 'image' ? (w.image ? `image · ${_pct(w.opacity)}` : 'image — none chosen yet') : `“${w.text.trim().slice(0, 18) || '…'}” · ${_pct(w.opacity)}`;
-  const row = 'display:flex;align-items:center;gap:8px;margin:0 0 7px;font-size:11.5px;color:#cbd5e1;';
+  const row = 'display:flex;align-items:center;gap:8px;margin:0 0 7px;font-size:11.5px;color:var(--dw-strong);';
   const textControls = `
         <label class="dw-lab">Text<textarea class="dw-in" data-wm="text" rows="2" dir="auto" style="resize:vertical;">${_esc(w.text)}</textarea></label>
         <div style="${row}"><span style="flex:0 0 52px;">Size</span><input class="dw-in" data-wm="fontSize" type="number" min="6" max="600" step="1" value="${w.fontSize}" style="width:74px;" title="Any size, in points"><span>pt</span>
-          <span style="flex:1"></span><span>Colour</span><input data-wm="color" type="color" value="${_esc(w.color)}" style="width:34px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;"></div>`;
+          <span style="flex:1"></span><span>Colour</span><input data-wm="color" type="color" value="${_esc(w.color)}" style="width:34px;height:24px;padding:0;border:1px solid var(--dw-line);border-radius:5px;background:none;"></div>`;
   const imageControls = `
         <div style="${row}align-items:flex-start;">
-          <div style="flex:0 0 96px;height:64px;border:1px solid #334155;border-radius:6px;background:repeating-conic-gradient(#cbd5e1 0% 25%, #f8fafc 0% 50%) 0 0/14px 14px;display:flex;align-items:center;justify-content:center;overflow:hidden;">${w.image ? `<img src="${_esc(w.image.dataUrl)}" alt="" style="max-width:100%;max-height:100%;">` : '<span style="color:#475569;font-size:10.5px;">no image</span>'}</div>
-          <div style="min-width:0;flex:1;"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#94a3b8;margin-bottom:5px;">${_esc(w.image?.name || '')}</div>
+          <div style="flex:0 0 96px;height:64px;border:1px solid var(--dw-line);border-radius:6px;background:repeating-conic-gradient(#cbd5e1 0% 25%, #f8fafc 0% 50%) 0 0/14px 14px;display:flex;align-items:center;justify-content:center;overflow:hidden;">${w.image ? `<img src="${_esc(w.image.dataUrl)}" alt="" style="max-width:100%;max-height:100%;">` : '<span style="color:var(--dw-dim);font-size:10.5px;">no image</span>'}</div>
+          <div style="min-width:0;flex:1;"><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dw-muted);margin-bottom:5px;">${_esc(w.image?.name || '')}</div>
             <button class="dw-btn" data-act="wm-choose">${w.image ? 'Replace image…' : 'Choose image…'}</button><input type="file" data-wm-file accept="image/*" hidden></div></div>
         <div style="${row}"><span style="flex:0 0 52px;">Width</span><input data-wm="imageWidth" type="range" min="5" max="150" step="1" value="${w.imageWidth}" style="flex:1;"><span data-wm-out="imageWidth" style="flex:0 0 40px;text-align:right;">${Math.round(w.imageWidth)}%</span></div>`;
   const body = !_wmOpen ? '' : `
@@ -508,7 +509,7 @@ function _renderWatermarkBox(box, w) {
     </div>`;
   box.innerHTML = `
     <div class="dw-h" data-act="wm-toggle" style="cursor:pointer;display:flex;gap:6px;align-items:center;" title="A mark printed on every page of the PDF — DRAFT, CONFIDENTIAL, a logo…">
-      <span>${_wmOpen ? '▾' : '▸'} 💧 Watermark</span><span data-wm-summary style="text-transform:none;letter-spacing:0;color:${w.enabled ? '#4ade80' : '#64748b'};">${_esc(summary)}</span></div>${body}`;
+      <span>${_wmOpen ? '▾' : '▸'} 💧 Watermark</span><span data-wm-summary style="text-transform:none;letter-spacing:0;color:${w.enabled ? '#4ade80' : 'var(--dw-dim)'};">${_esc(summary)}</span></div>${body}`;
   if (refocus) box.querySelector(`[data-wm="${refocus}"]`)?.focus({ preventScroll: true });
 }
 
@@ -553,18 +554,18 @@ async function _openWatermarkDialog(srcUrl, name) {
   dlg.id = 'dw-wm-dialog';
   dlg.style.cssText = 'position:fixed;inset:0;z-index:9200;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;';
   const opt = (v, label) => `<label style="display:flex;gap:8px;align-items:flex-start;margin:0 0 7px;cursor:pointer;"><input type="radio" name="wm-mode" value="${v}"${st.mode === v ? ' checked' : ''} style="margin-top:2px;"><span>${label}${detected === v ? ' <span style="color:#4ade80;">— looks like this one</span>' : ''}</span></label>`;
-  dlg.innerHTML = `<div style="width:640px;max-width:94vw;background:#0f172a;border:1px solid #334155;border-radius:12px;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.6);font-size:12.5px;line-height:1.5;">
+  dlg.innerHTML = `<div style="width:640px;max-width:94vw;background:var(--dw-panel);border:1px solid var(--dw-line);border-radius:12px;padding:18px 20px;box-shadow:0 20px 60px rgba(0,0,0,.6);font-size:12.5px;line-height:1.5;">
       <div style="font-size:15px;font-weight:700;margin-bottom:4px;">💧 Watermark image</div>
-      <div style="color:#94a3b8;margin-bottom:12px;">${_esc(name || '')} · ${size.w} × ${size.h} px. Shown at full strength; on the page it gets the opacity you set.</div>
+      <div style="color:var(--dw-muted);margin-bottom:12px;">${_esc(name || '')} · ${size.w} × ${size.h} px. Shown at full strength; on the page it gets the opacity you set.</div>
       <div style="display:flex;gap:12px;margin-bottom:14px;">
-        <div style="flex:1;"><canvas data-pv="light" width="290" height="180" style="width:100%;border-radius:8px;border:1px solid #334155;display:block;"></canvas><div style="color:#94a3b8;font-size:11px;margin-top:3px;">over the white page</div></div>
-        <div style="flex:1;"><canvas data-pv="dark" width="290" height="180" style="width:100%;border-radius:8px;border:1px solid #334155;display:block;"></canvas><div style="color:#94a3b8;font-size:11px;margin-top:3px;">over a dark picture</div></div>
+        <div style="flex:1;"><canvas data-pv="light" width="290" height="180" style="width:100%;border-radius:8px;border:1px solid var(--dw-line);display:block;"></canvas><div style="color:var(--dw-muted);font-size:11px;margin-top:3px;">over the white page</div></div>
+        <div style="flex:1;"><canvas data-pv="dark" width="290" height="180" style="width:100%;border-radius:8px;border:1px solid var(--dw-line);display:block;"></canvas><div style="color:var(--dw-muted);font-size:11px;margin-top:3px;">over a dark picture</div></div>
       </div>
       <div style="font-weight:600;margin-bottom:6px;">What kind of image is this?</div>
       ${opt('white', 'Artwork on a <b>white</b> background — make the white transparent')}
       ${opt('black', 'Artwork on a <b>black</b> background — make the black transparent')}
       ${opt('keep', 'It already has a <b>transparent</b> background — keep it as it is')}
-      <label style="display:flex;gap:8px;align-items:center;margin:10px 0 0;cursor:pointer;"><input type="checkbox" data-wmd="tintOn"> Make it one flat colour <input type="color" data-wmd="tint" value="${st.tint}" style="width:34px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;"><span style="color:#94a3b8;">(a grey mark from a coloured logo, for instance)</span></label>
+      <label style="display:flex;gap:8px;align-items:center;margin:10px 0 0;cursor:pointer;"><input type="checkbox" data-wmd="tintOn"> Make it one flat colour <input type="color" data-wmd="tint" value="${st.tint}" style="width:34px;height:24px;padding:0;border:1px solid var(--dw-line);border-radius:5px;background:none;"><span style="color:var(--dw-muted);">(a grey mark from a coloured logo, for instance)</span></label>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;"><button class="dw-btn" data-wmd="cancel">Cancel</button><button class="dw-btn primary" data-wmd="use">Use this image</button></div>
     </div>`;
   const paint = () => {
@@ -625,12 +626,12 @@ function _renderList(c) {
   // part now carries the GROUP's name and says which part it is.
   const parts = partInfo(c.units);
   const nameOf = (u) => c.stepById.get(parts.get(u.id)?.root || u.id)?.name || u.id;
-  const partTag = (u) => { const pi = parts.get(u.id); return pi ? ` <span title="This group has more than 4 steps in it, so it is spread over ${pi.n} pages — 4 pictures is the most one page takes. To have it all on one page: select the parts and merge them (and give the page a template with enough picture frames)." style="color:#7dd3fc;font-weight:400;cursor:help;">· part ${pi.k} of ${pi.n}</span>` : ''; };
+  const partTag = (u) => { const pi = parts.get(u.id); return pi ? ` <span title="This group has more than 4 steps in it, so it is spread over ${pi.n} pages — 4 pictures is the most one page takes. To have it all on one page: select the parts and merge them (and give the page a template with enough picture frames)." style="color:var(--accent);font-weight:400;cursor:help;">· part ${pi.k} of ${pi.n}</span>` : ''; };
   const textOf = (u) => { const s = c.stepById.get(u.id); return s ? docTextFor(s, c.doc.texts, srcHashOf).text : ''; };
-  const subs = (u) => (u.contOf ? ` <span style="color:#94a3b8;font-weight:400;">${u.members.length} sub</span>` : u.members.length > 1 ? ` <span style="color:#94a3b8;font-weight:400;">+${u.members.length - 1} sub</span>` : '');
+  const subs = (u) => (u.contOf ? ` <span style="color:var(--dw-muted);font-weight:400;">${u.members.length} sub</span>` : u.members.length > 1 ? ` <span style="color:var(--dw-muted);font-weight:400;">+${u.members.length - 1} sub</span>` : '');
   const tip = 'Click to show the page · Shift / Ctrl-click selects the whole range · right-click for more';
 
-  const pendingRow = (u) => `<div class="dw-pagebox" style="border-style:dashed;"><div class="dw-step pending" data-unit="${_esc(u.id)}" title="Not in the document yet — sync to add it"><span class="dw-pagethumb"></span><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div style="min-width:0;flex:1;"><div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(c.stepById.get(u.id)?.name || u.id)}</div><div style="font-size:11px;color:#94a3b8;">new in the animation — sync to add</div></div></div></div>`;
+  const pendingRow = (u) => `<div class="dw-pagebox" style="border-style:dashed;"><div class="dw-step pending" data-unit="${_esc(u.id)}" title="Not in the document yet — sync to add it"><span class="dw-pagethumb"></span><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div style="min-width:0;flex:1;"><div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(c.stepById.get(u.id)?.name || u.id)}</div><div style="font-size:11px;color:var(--dw-muted);">new in the animation — sync to add</div></div></div></div>`;
 
   let html = '', lastChapter, nextPending = 0;
   const flushPending = (uptoIndex) => { for (; nextPending < c.units.length && nextPending < uptoIndex; nextPending++) { const u = c.units[nextPending]; if (!c.pageOfUnit.has(u.id)) html += pendingRow(u); } };
@@ -640,18 +641,18 @@ function _renderList(c) {
       if (!c.model.toc) return;                                       // switched off (or no chapters): it prints nothing, so it is not listed
       const t = c.model.toc;
       html += `<div class="dw-pagebox movable${_pageId === TOC ? ' cur' : ''}" data-pagebox="${TOC}" data-seq="${si}" data-extra="${TOC}">
-        <div class="dw-pagehead dw-pgrow" data-goto-page="${TOC}"><span class="dw-grip" data-grip="${TOC}" title="Drag to move the contents — or right-click">⠿</span>${thumb(TOC)}<div style="min-width:0;flex:1;"><div><b style="color:#e2e8f0;">Page ${t.number}${t.pages.length > 1 ? `–${t.number + t.pages.length - 1}` : ''}</b></div><div style="font-size:12px;font-weight:600;color:#e2e8f0;">📑 ${_esc(t.title)}</div><div style="font-size:11px;color:#94a3b8;">Contents — ${(() => { const L = t.pages.flatMap(p => p.lines); const ch = L.filter(l => l.kind !== 'step').length, st = L.length - ch; return `${ch} chapter${ch === 1 ? '' : 's'}${st ? ` · ${st} step${st === 1 ? '' : 's'}` : ''}`; })()}</div></div></div></div>`;
+        <div class="dw-pagehead dw-pgrow" data-goto-page="${TOC}"><span class="dw-grip" data-grip="${TOC}" title="Drag to move the contents — or right-click">⠿</span>${thumb(TOC)}<div style="min-width:0;flex:1;"><div><b style="color:var(--dw-text);">Page ${t.number}${t.pages.length > 1 ? `–${t.number + t.pages.length - 1}` : ''}</b></div><div style="font-size:12px;font-weight:600;color:var(--dw-text);">📑 ${_esc(t.title)}</div><div style="font-size:11px;color:var(--dw-muted);">Contents — ${(() => { const L = t.pages.flatMap(p => p.lines); const ch = L.filter(l => l.kind !== 'step').length, st = L.length - ch; return `${ch} chapter${ch === 1 ? '' : 's'}${st ? ` · ${st} step${st === 1 ? '' : 's'}` : ''}`; })()}</div></div></div></div>`;
       return;
     }
     if (e.kind === 'custom') {
       html += `<div class="dw-pagebox movable${_pageId === e.id ? ' cur' : ''}" data-pagebox="${_esc(e.id)}" data-seq="${si}" data-extra="${_esc(e.id)}">
-        <div class="dw-pagehead dw-pgrow" data-goto-page="${_esc(e.id)}"><span class="dw-grip" data-grip="${_esc(e.id)}" title="Drag to move this page — or right-click">⠿</span>${thumb(e.id)}<div style="min-width:0;flex:1;"><div><b style="color:#e2e8f0;">Page ${pageNo(e.id)}</b></div><div class="dw-name" style="font-size:12px;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">✎ ${_esc(e.extra.name || 'Custom page')}</div><div style="font-size:11px;color:#94a3b8;">custom page · ${(e.extra.items || []).length} item${(e.extra.items || []).length === 1 ? '' : 's'}</div></div></div></div>`;
+        <div class="dw-pagehead dw-pgrow" data-goto-page="${_esc(e.id)}"><span class="dw-grip" data-grip="${_esc(e.id)}" title="Drag to move this page — or right-click">⠿</span>${thumb(e.id)}<div style="min-width:0;flex:1;"><div><b style="color:var(--dw-text);">Page ${pageNo(e.id)}</b></div><div class="dw-name" style="font-size:12px;font-weight:600;color:var(--dw-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">✎ ${_esc(e.extra.name || 'Custom page')}</div><div style="font-size:11px;color:var(--dw-muted);">custom page · ${(e.extra.items || []).length} item${(e.extra.items || []).length === 1 ? '' : 's'}</div></div></div></div>`;
       return;
     }
     const p = e.page;
     const us = (p.stepIds || []).map(id => c.units.find(u => u.id === id)).filter(Boolean);
     if (!us.length) {                                                 // a page with no steps left (flagged ∅ by a sync) — only deletable
-      html += `<div class="dw-pagebox flag" data-seq="${si}" title="Every step this page showed was deleted (or hidden) in the animation, so it has nothing left to show and is not printed. It is kept only so you can see it happened — delete it."><div class="dw-pagehead"><b style="color:#e2e8f0;">Empty page</b><span>· its steps were deleted in the animation</span><span style="flex:1"></span><a data-act="delete-page" data-page="${_esc(p.id)}" style="color:#fca5a5;">delete</a></div></div>`;
+      html += `<div class="dw-pagebox flag" data-seq="${si}" title="Every step this page showed was deleted (or hidden) in the animation, so it has nothing left to show and is not printed. It is kept only so you can see it happened — delete it."><div class="dw-pagehead"><b style="color:var(--dw-text);">Empty page</b><span>· its steps were deleted in the animation</span><span style="flex:1"></span><a data-act="delete-page" data-page="${_esc(p.id)}" style="color:#fca5a5;">delete</a></div></div>`;
       return;
     }
     flushPending(unitAt.get(us[0].id));
@@ -662,18 +663,18 @@ function _renderList(c) {
     }
     const allHidden = us.every(u => c.hidden.has(u.id));
     const cls = `dw-pagebox${p.id === _pageId ? ' cur' : ''}${(p.flags || []).length ? ' flag' : ''}`;
-    const no = `<b style="color:#e2e8f0;">Page ${pageNo(p.id)}</b>${allHidden ? ' <span style="color:#f87171;font-size:11px;">· not printed</span>' : ''}`;
+    const no = `<b style="color:var(--dw-text);">Page ${pageNo(p.id)}</b>${allHidden ? ' <span style="color:#f87171;font-size:11px;">· not printed</span>' : ''}`;
     if (us.length === 1) {
       const u = us[0], hid = c.hidden.has(u.id);
       html += `<div class="${cls}" data-pagebox="${_esc(p.id)}" data-seq="${si}"><div class="dw-step dw-pgrow${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}">${thumb(p.id)}
         <div style="min-width:0;flex:1;"><div style="display:flex;gap:6px;align-items:center;">${no}<span style="flex:1"></span>${flagsHtml(p)}</div>
         <div class="dw-name" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span class="dw-no" style="margin-inline-end:5px;">${_esc(c.nums.get(u.id)?.label || '–')}</span>${_esc(nameOf(u))}${partTag(u)}${subs(u)}</div>
-        <div dir="auto" style="font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${hid ? 'left out of the document' : _esc(textOf(u))}</div></div>${eye(u, hid)}</div></div>`;
+        <div dir="auto" style="font-size:11px;color:var(--dw-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${hid ? 'left out of the document' : _esc(textOf(u))}</div></div>${eye(u, hid)}</div></div>`;
     } else {
       const a = c.nums.get(us[0].id)?.label || '', b = c.nums.get(us[us.length - 1].id)?.label || '';
       html += `<div class="${cls}" data-pagebox="${_esc(p.id)}" data-seq="${si}">
         <div class="dw-pagehead dw-pgrow${us.every(u => _sel.has(u.id)) ? ' sel' : ''}" data-goto-page="${_esc(p.id)}" data-select-page="${_esc(p.id)}" title="${tip}">${thumb(p.id)}<div style="min-width:0;flex:1;"><div style="display:flex;gap:6px;align-items:center;">${no}<span style="flex:1"></span>${flagsHtml(p)}</div>
-          <div style="font-size:12px;font-weight:600;color:#e2e8f0;">${us.length} steps merged <span style="font-weight:400;color:#94a3b8;">(steps ${_esc(a)}–${_esc(b)})</span></div></div></div>
+          <div style="font-size:12px;font-weight:600;color:var(--dw-text);">${us.length} steps merged <span style="font-weight:400;color:var(--dw-muted);">(steps ${_esc(a)}–${_esc(b)})</span></div></div></div>
         ${us.map(u => { const hid = c.hidden.has(u.id); return `<div class="dw-step mini${_sel.has(u.id) ? ' sel' : ''}${hid ? ' hid' : ''}" data-unit="${_esc(u.id)}" title="${hid ? 'Left out of the document — the eye puts it back' : tip}"><span class="dw-no">${_esc(c.nums.get(u.id)?.label || '–')}</span><div class="dw-name" style="min-width:0;flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${_esc(nameOf(u))}${partTag(u)}${subs(u)}</div>${eye(u, hid)}</div>`; }).join('')}</div>`;
     }
     nextPending = Math.max(nextPending, unitAt.get(us[us.length - 1].id) + 1);
@@ -721,8 +722,8 @@ function _renderSelBar(c) {
   _selBarActions = [a.merge, a.split, a.hide && a.sel.length > 1 ? a.hide : null, a.show && a.sel.length > 1 ? a.show : null].filter(Boolean);
   const html = _selBarActions.map((it, i) => `<button class="dw-btn${it === a.merge ? ' primary' : ''}" data-act="sel-action" data-i="${i}" title="The document only — the animation and its step numbers stay as they are">${it === a.merge ? '⤵ ' : it === a.split ? '✂ ' : ''}${_esc(it.label)}</button>`).join('');
   bar.innerHTML = (html || (a.sel.length >= 2
-    ? '<div style="font-size:11.5px;color:#94a3b8;">These steps are already on one page.</div>'
-    : '<div style="font-size:11.5px;color:#94a3b8;line-height:1.45;">Select a range of pages (Shift- or Ctrl-click the other end) to join them into one page. Right-click for more.</div>'))
+    ? '<div style="font-size:11.5px;color:var(--dw-muted);">These steps are already on one page.</div>'
+    : '<div style="font-size:11.5px;color:var(--dw-muted);line-height:1.45;">Select a range of pages (Shift- or Ctrl-click the other end) to join them into one page. Right-click for more.</div>'))
     + `<button class="dw-btn" data-act="add-custom" title="A page that is not made of steps — a cover, a safety notice, a parts list. It goes after the page you are on; drag its grip to move it.">＋ Custom page</button>`;
 }
 let _selBarActions = [];
@@ -809,7 +810,7 @@ function _renderPage(c) {
   const mp = model.pages.find(p => p.id === _pageId);
   _pageModel = mp || null; _dropWheelFit(); _pageLang = model.lang || null;
   if (_slotSel != null && (!mp || _slotSel >= mp.images.length)) _slotSel = null;
-  if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:#e2e8f0;padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
+  if (!mp) { _placeSlotBar(); _shadow.innerHTML = `<style>${EDIT_CSS}</style><div style="font:13px Arial;color:var(--dw-text);padding:30px;">${(D.getDocument()?.pages.find(p => p.id === _pageId)?.stepIds || []).length ? 'Every step of this page is left out of the document, so the page is not printed. Click the eye of a step on the right to put it back.' : 'This page has no steps left. Delete it from the list on the right.'}</div>`; _fit(); return; }
   const need = stillsNeeded({ pages: [mp] });
   const have = D.cachedStills(need);
   _shadow.innerHTML = `<style>${DOCUMENT_CSS}${watermarkCss(model.watermark)}${EDIT_CSS}</style><div class="fit">${renderPageHtml(mp, { stills: have, logo: D.documentLogo(), watermark: model.watermark, dir: model.dir, lang: model.lang })}</div>`;
@@ -981,7 +982,7 @@ function _placeSlotBar() {
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'dw-slotbar';
-    bar.style.cssText = 'position:fixed;z-index:9050;display:flex;gap:4px;align-items:center;background:#0f172a;border:1px solid #38bdf8;border-radius:8px;padding:4px 6px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;white-space:nowrap;';
+    bar.style.cssText = 'position:fixed;z-index:9050;display:flex;gap:4px;align-items:center;background:var(--dw-panel);border:1px solid #38bdf8;border-radius:8px;padding:4px 6px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:var(--dw-muted);white-space:nowrap;';
     _root.appendChild(bar);
   }
   // Don't rebuild the bar out from under a percentage being typed (this bar is
@@ -993,12 +994,12 @@ function _placeSlotBar() {
     ${has ? `<button class="dw-btn" data-act="slot-fill" style="padding:2px 9px;" title="Fill the frame, centred (cropping what does not fit)">Fill</button>
     <button class="dw-btn" data-act="slot-whole" style="padding:2px 9px;" title="Show the whole picture inside the frame">Whole</button>
 ${im?.stepId && im.moment !== 'start' && _ifaceOn(im) ? (im.ifaceFramed
-      ? '<span style="padding:0 4px;color:#7dd3fc;" title="This picture follows the standard interface framing. Drag or zoom it and your own framing is kept instead.">🎯 on the interface</span>'
+      ? '<span style="padding:0 4px;color:var(--accent);" title="This picture follows the standard interface framing. Drag or zoom it and your own framing is kept instead.">🎯 on the interface</span>'
       : '<button class="dw-btn" data-act="slot-iface-std" style="padding:2px 9px;" title="Frame it on the interface again, the standard way">🎯 Standard framing</button>'
         + '<button class="dw-btn" data-act="slot-iface-set" style="padding:2px 9px;" title="Make THIS framing the standard one for every interface in the document">⊹ Set as standard</button>') : ''}
     ${im?.stepId && im.moment !== 'start' && D.stepClips(im.stepId).length ? `<button class="dw-btn" data-act="slot-frame" style="padding:2px 9px;" title="This step holds a video — choose which frame of it this picture shows">🎞 Frame${im.atMs != null ? ` ${(im.atMs / 1000).toFixed(2)}s` : ''}…</button>` : ''}
     <button class="dw-btn" data-act="slot-zoom" data-d="-1" style="padding:2px 8px;" title="5% smaller">−</button><input class="dw-in" data-slot-zoom type="text" inputmode="decimal" data-slot="${_slotSel}" value="${zoomPercent(im ? im.fit.zoom : 1)}" title="How big the picture is inside its frame. 100% fills the frame. Type a number and press Enter." style="width:52px;text-align:right;padding:1px 4px;"><span style="margin-inline-start:-2px;">%</span><button class="dw-btn" data-act="slot-zoom" data-d="1" style="padding:2px 8px;" title="5% larger">+</button>
-    <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:#64748b;">${_esc(what)}</span>`;
+    <span style="padding:0 4px;">drag to move · wheel to scale</span>` : ''}<span style="padding:0 4px;color:var(--dw-dim);">${_esc(what)}</span>`;
   _placeSlotBarAt(bar, el);
 }
 
@@ -1151,14 +1152,14 @@ function _slotMenu(slot, x, y) {
   const row = (thumb, before, html) => `<span class="dw-prow">${_thumbBox(thumb, before)}<span style="min-width:0;">${html}</span></span>`;
   const no = (sid) => `<span class="dw-no" style="margin-inline-end:6px;">${_esc(c.nums.get(sid)?.label || '–')}</span>`;
   _openMenu([
-    { cur: st === 'auto', html: row(autoStep ? thumbs.end.get(autoStep) : '', false, `<b>Automatic</b><div style="color:#94a3b8;font-size:11px;">follows the steps of the page${autoStep ? ` — now step ${_esc(c.nums.get(autoStep)?.label || '')}` : ''}</div>`), run: () => D.setPagePicture(_pageId, slot, null) },
+    { cur: st === 'auto', html: row(autoStep ? thumbs.end.get(autoStep) : '', false, `<b>Automatic</b><div style="color:var(--dw-muted);font-size:11px;">follows the steps of the page${autoStep ? ` — now step ${_esc(c.nums.get(autoStep)?.label || '')}` : ''}</div>`), run: () => D.setPagePicture(_pageId, slot, null) },
     { sep: true },
     ...members.flatMap(sid => [
       { cur: st === 'step' && im?.stepId === sid && im?.moment !== 'start', html: row(thumbs.end.get(sid), false, `${no(sid)}<b>${_esc(c.stepById.get(sid)?.name || sid)}</b>`), run: () => D.setPagePicture(_pageId, slot, sid) },
-      { cur: st === 'step' && im?.stepId === sid && im?.moment === 'start', html: `<span style="display:block;padding-inline-start:22px;">${row(thumbs.start.get(sid), true, `↳ <b>before</b> step ${_esc(c.nums.get(sid)?.label || '')}<div style="color:#94a3b8;font-size:11px;">the state it starts from, seen from its camera</div>`)}</span>`, run: () => D.setPagePicture(_pageId, slot, sid, 'start') },
+      { cur: st === 'step' && im?.stepId === sid && im?.moment === 'start', html: `<span style="display:block;padding-inline-start:22px;">${row(thumbs.start.get(sid), true, `↳ <b>before</b> step ${_esc(c.nums.get(sid)?.label || '')}<div style="color:var(--dw-muted);font-size:11px;">the state it starts from, seen from its camera</div>`)}</span>`, run: () => D.setPagePicture(_pageId, slot, sid, 'start') },
     ]),
     { sep: true },
-    { cur: st === 'asset', html: row(st === 'asset' ? (c.doc.assets?.[im.assetId]?.dataUrl || '') : '', false, `🖼 <b>External image…</b><div style="color:#94a3b8;font-size:11px;">a photo, a drawing — not from the animation${st === 'asset' ? ` · now: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}` : ''}</div>`), run: () => { _assetSlot = slot; _root.querySelector('#dw-asset-file')?.click(); } },
+    { cur: st === 'asset', html: row(st === 'asset' ? (c.doc.assets?.[im.assetId]?.dataUrl || '') : '', false, `🖼 <b>External image…</b><div style="color:var(--dw-muted);font-size:11px;">a photo, a drawing — not from the animation${st === 'asset' ? ` · now: ${_esc(c.doc.assets?.[im.assetId]?.name || 'image')}` : ''}</div>`), run: () => { _assetSlot = slot; _root.querySelector('#dw-asset-file')?.click(); } },
     { cur: st === 'empty', label: 'Leave this frame empty', run: () => D.setPagePicture(_pageId, slot, 'empty') },
   ], x, y);
 }
@@ -1316,7 +1317,7 @@ const CUSTOM_CSS = `
 .csel i[data-colg]:hover, .csel i[data-rowg]:hover, .csel i.gripon { opacity: 1; }
 .ctb .tdrop { position: absolute; background: #f59e0b; }
 .csel i { position: absolute; width: 3mm; height: 3mm; margin: -1.5mm 0 0 -1.5mm; background: #fff; border: 0.5mm solid #f59e0b; border-radius: 0.5mm; pointer-events: auto; box-sizing: border-box; }
-.cempty { position: absolute; left: 12mm; right: 12mm; top: 120mm; text-align: center; color: #94a3b8; font-size: 12pt; pointer-events: none; }
+.cempty { position: absolute; left: 12mm; right: 12mm; top: 120mm; text-align: center; color: var(--dw-muted); font-size: 12pt; pointer-events: none; }
 .fit:not(.bandmode) .ci[data-band] { cursor: pointer; }
 .fit:not(.bandmode) .ci[data-band]:hover { outline: 0.3mm dashed #60a5fa; }
 .bandmode .cguide { border-color: #f59e0b; }
@@ -1810,18 +1811,18 @@ function _placeCustomBar() {
   if (!bar) {
     bar = document.createElement('div');
     bar.id = 'dw-custombar';
-    bar.style.cssText = 'position:absolute;z-index:5;left:50%;top:8px;transform:translateX(-50%);display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:center;width:max-content;max-width:96%;box-sizing:border-box;background:#0f172a;border:1px solid #38bdf8;border-radius:9px;padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:#94a3b8;';
+    bar.style.cssText = 'position:absolute;z-index:5;left:50%;top:8px;transform:translateX(-50%);display:flex;gap:5px;align-items:center;flex-wrap:wrap;justify-content:center;width:max-content;max-width:96%;box-sizing:border-box;background:var(--dw-panel);border:1px solid #38bdf8;border-radius:9px;padding:5px 8px;box-shadow:0 6px 20px rgba(0,0,0,.5);font-size:11.5px;color:var(--dw-muted);';
     _root.querySelector('#dw-center').appendChild(bar);
   }
   bar.style.borderColor = host === 'band' ? '#f59e0b' : '#38bdf8';
   if (bar.contains(document.activeElement) && /^(INPUT)$/.test(document.activeElement.tagName)) return;   // typing a size, or holding a colour swatch open
   const it = _customModel?.items.find(i => i.id === _customSel) || null;
   const stored = it ? _itemsNow().find(i => i.id === it.id) : null;
-  const b = (act, label, title, on = false, style = '', attrs = '') => `<button class="dw-btn" data-act="${act}" ${attrs} title="${_esc(title)}" style="padding:2px 9px;${on ? 'background:#1d3a5f;border-color:#38bdf8;' : ''}${style}">${label}</button>`;
-  const sep = '<span style="width:1px;height:18px;background:#334155;margin:0 3px;"></span>';
-  const seg = (side, label) => `<button class="dw-btn" data-act="band-side" data-side="${side}" title="Edit the ${side}" style="border:0;border-radius:0;padding:2px 10px;${_bandEdit === side ? 'background:#1d3a5f;color:#38bdf8;font-weight:600;' : ''}">${label}</button>`;
+  const b = (act, label, title, on = false, style = '', attrs = '') => `<button class="dw-btn" data-act="${act}" ${attrs} title="${_esc(title)}" style="padding:2px 9px;${on ? 'background:rgba(56,189,248,.22);border-color:#38bdf8;' : ''}${style}">${label}</button>`;
+  const sep = '<span style="width:1px;height:18px;background:var(--dw-line);margin:0 3px;"></span>';
+  const seg = (side, label) => `<button class="dw-btn" data-act="band-side" data-side="${side}" title="Edit the ${side}" style="border:0;border-radius:0;padding:2px 10px;${_bandEdit === side ? 'background:rgba(56,189,248,.22);color:#38bdf8;font-weight:600;' : ''}">${label}</button>`;
   const lead = host === 'band'
-    ? `<span style="display:inline-flex;border:1px solid #334155;border-radius:7px;overflow:hidden;">${seg('header', 'Header')}${seg('footer', 'Footer')}</span>${sep}`
+    ? `<span style="display:inline-flex;border:1px solid var(--dw-line);border-radius:7px;overflow:hidden;">${seg('header', 'Header')}${seg('footer', 'Footer')}</span>${sep}`
       + b('ci-add-text', '＋ Text', 'A new text box') + b('ci-add-field', '＋ Field ▾', 'A value that fills itself in on every page: the title, the chapter, the page number…')
       + b('ci-add-picture', '＋ Picture ▾', 'The project’s logo, or a picture from a file')
       + b('band-rule', '▁ Line', `The line between the ${_bandEdit} and the page`, bandsOf(D.getDocument())[_bandEdit]?.rule !== false)
@@ -1841,7 +1842,7 @@ function _placeCustomBar() {
             const tb = _tableNow();
             const canM = tb && !s.none && canMerge(tb, s.r0, s.c0, s.r1, s.c1);
             const canU = tb && !s.none && !!mergeAt(tb, s.r0, s.c0);
-            return `<span style="padding:0 2px;color:${s.none ? '#94a3b8' : '#7dd3fc'};">${it.rows}×${it.cols} · `
+            return `<span style="padding:0 2px;color:${s.none ? 'var(--dw-muted)' : 'var(--accent)'};">${it.rows}×${it.cols} · `
               + `${s.none ? 'nothing picked — the whole table' : `picked: ${_esc(where)}`}</span>`
               + b('ci-row-above', '＋ Row ▲', 'A row above the picked one')
               + b('ci-row-below', '＋ Row ▼', 'A row below the picked one')
@@ -1861,20 +1862,20 @@ function _placeCustomBar() {
               + b('ci-cell-center', '⫿', 'Centre')
               + b('ci-cell-end', '⫸', 'Align to the end')
               + `<label style="display:flex;gap:3px;align-items:center;">Size <input class="dw-in" data-ci="cellsize" type="number" min="5" max="40" step="0.5" value="${(s.none ? it.size : (tb?.fmt?.[`${s.r0},${s.c0}`]?.s ?? it.size))}" title="${s.none ? 'Text size for the whole table' : 'Text size in the picked cells'}" style="width:54px;"> pt</label>`
-              + `<input data-ci="cellfg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.c || it.color)}" title="Text colour in the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
-              + `<input data-ci="cellbg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.bg || '#ffffff')}" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+              + `<input data-ci="cellfg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.c || it.color)}" title="Text colour in the picked cells" style="width:30px;height:24px;padding:0;border:1px solid var(--dw-line);border-radius:5px;background:none;">`
+              + `<input data-ci="cellbg" type="color" value="${_esc(tb?.fmt?.[`${s.r0},${s.c0}`]?.bg || '#ffffff')}" title="Shade the picked cells" style="width:30px;height:24px;padding:0;border:1px solid var(--dw-line);border-radius:5px;background:none;">`
               + b('ci-cell-clear', '⌫ Look', 'Clear the look of the picked cells (colour, shade, size, bold…)')
               + sep;
           })()
           + b('ci-head', 'Header', 'The first row is a heading', it.head !== false)
           + b('ci-grid', 'Grid', 'Lines around every cell — off leaves a line under each row', it.grid !== false)
           + b('ci-zebra', 'Stripes', 'Shade every other row', !!it.zebra)
-          + `<span style="padding:0 4px;color:#64748b;">click a cell to pick it, drag to pick more · double-click to type · Tab moves on · <kbd>Ctrl</kbd>+C copies the picked cells · drag a blue grip to move a row or column</span>`
+          + `<span style="padding:0 4px;color:var(--dw-dim);">click a cell to pick it, drag to pick more · double-click to type · Tab moves on · <kbd>Ctrl</kbd>+C copies the picked cells · drag a blue grip to move a row or column</span>`
         : it.type === 'text'
         ? `<label style="display:flex;gap:4px;align-items:center;">Size <input class="dw-in" data-ci="size" type="number" min="6" max="120" step="1" value="${it.size}" style="width:58px;"> pt</label>`
           + b('ci-bold', '<b>B</b>', 'Bold', it.bold) + b('ci-italic', '<i>I</i>', 'Italic', it.italic)
           + b('ci-align-start', '⫷', 'Align to the start', it.align === 'start') + b('ci-align-center', '⫿', 'Centre', it.align === 'center') + b('ci-align-end', '⫸', 'Align to the end', it.align === 'end')
-          + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid #334155;border-radius:5px;background:none;">`
+          + `<input data-ci="color" type="color" value="${_esc(it.color)}" title="Text colour" style="width:30px;height:24px;padding:0;border:1px solid var(--dw-line);border-radius:5px;background:none;">`
         : it.logo ? '<span style="padding:0 4px;">the project’s logo — always shown whole</span>'
         : (stored?.stepId ? b('ci-step', `🎞 Step ${_esc(it.label || '—')} ▾`, 'Choose another step of the animation') + b('ci-moment', '↳ Before', 'Show the state this step STARTS from (seen from its camera) instead of its final state', stored.moment === 'start')
             + (stored.moment !== 'start' && D.stepClips(stored.stepId).length ? b('ci-frame', `🎞 Frame${stored.atMs != null ? ` ${(stored.atMs / 1000).toFixed(2)}s` : ''}…`, 'This step holds a video — choose which frame of it this picture shows') : '') : '') + fitBtns)
@@ -1886,7 +1887,7 @@ function _customLeftHtml(c, x) {
   const no = c.model.sequence.find(e => e.id === x.id)?.number ?? '—';
   return `<div class="dw-h">Page ${no} of ${c.model.total} — custom page</div>
     <label class="dw-lab">Name (shown in the list only)<input class="dw-in" data-custom-name value="${_esc(x.name || '')}" dir="auto"></label>
-    <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">A page that is not made of steps — a cover, a safety notice, a parts list. It has the document's header and footer; between them you place what you want with the bar above the page:<br>
+    <div style="font-size:11.5px;color:var(--dw-muted);line-height:1.55;">A page that is not made of steps — a cover, a safety notice, a parts list. It has the document's header and footer; between them you place what you want with the bar above the page:<br>
       • <b>＋ Text</b> adds a text box.<br>• <b>＋ Picture ▾</b> adds a picture from a file — or a picture of <b>any step of the animation</b> (its final state, or the state it starts from).<br>• <b>＋ Table</b> adds a table: double-click a cell to type, <b>Tab</b> moves to the next one, and the bar adds or removes rows and columns. Drag a <b>blue bar on a column border</b> to change how wide that column is.<br>• Drag an item to move it, drag a handle to resize it; arrows nudge 1 mm (Shift 5).<br>• <b>Double-click a text</b> to type; click away to finish, Esc to abandon.<br>• Text wears the document's font — size, bold, italic, alignment and colour are yours.<br>• Delete removes the selected item.<br><br>
       Drag the <b>⠿</b> grip of the page in the list (or right-click it) to move the page anywhere in the document.</div>
     <div style="margin-top:10px;"><button class="dw-btn" data-act="custom-delete" style="color:#fca5a5;">🗑 Delete this page</button></div>`;
@@ -1895,8 +1896,8 @@ function _customLeftHtml(c, x) {
 const FIELD_LABELS = [['title', 'Title'], ['company', 'Company'], ['docNo', 'Document no.'], ['rev', 'Revision'], ['project', 'Project name'], ['chapter', 'Chapter name'], ['chapterNo', 'Chapter number'], ['page', 'Page number'], ['pages', 'Number of pages'], ['date', 'Date of the export']];
 function _bandLeftHtml() {
   return `<div class="dw-h">✎ Header and footer</div>
-    <div style="font-size:11.5px;color:#94a3b8;line-height:1.55;">What you design here is printed on <b>every page</b> — step pages, the contents, custom pages. The page behind is only there to show you the result (← → walk the pages).<br><br>
-      • <b>Header / Footer</b> on the bar chooses which one you are editing — or click an item of the other one.<br>• <b>＋ Text</b> adds a text box; <b>double-click</b> a text to type.<br>• <b>＋ Field ▾</b> adds a value that fills itself in: <span style="color:#cbd5e1;">{title} {chapter} {page}…</span> While you type you see the {name}; on the page you see the value. One box can mix both: <span style="color:#cbd5e1;">Page {page} / {pages}</span>.<br>• <b>＋ Picture ▾</b> adds the project's logo or a picture from a file.<br>• <b>▁ Line</b> shows or hides the rule.<br>• Drag to move, handles to resize, arrows nudge 1 mm (Shift 5), Delete removes. Items stay inside the dashed band.<br>• On a right-to-left document the whole design is mirrored by itself.<br><br>
+    <div style="font-size:11.5px;color:var(--dw-muted);line-height:1.55;">What you design here is printed on <b>every page</b> — step pages, the contents, custom pages. The page behind is only there to show you the result (← → walk the pages).<br><br>
+      • <b>Header / Footer</b> on the bar chooses which one you are editing — or click an item of the other one.<br>• <b>＋ Text</b> adds a text box; <b>double-click</b> a text to type.<br>• <b>＋ Field ▾</b> adds a value that fills itself in: <span style="color:var(--dw-strong);">{title} {chapter} {page}…</span> While you type you see the {name}; on the page you see the value. One box can mix both: <span style="color:var(--dw-strong);">Page {page} / {pages}</span>.<br>• <b>＋ Picture ▾</b> adds the project's logo or a picture from a file.<br>• <b>▁ Line</b> shows or hides the rule.<br>• Drag to move, handles to resize, arrows nudge 1 mm (Shift 5), Delete removes. Items stay inside the dashed band.<br>• On a right-to-left document the whole design is mirrored by itself.<br><br>
       <b>↺ Standard</b> throws the design away. <b>✓ Done</b> or Esc goes back to the page.</div>`;
 }
 
@@ -2265,7 +2266,7 @@ function _customAct(act, el) {
     return true;
   }
   if (act === 'ci-add-field') {
-    _openMenu(FIELD_LABELS.map(([k, l]) => ({ html: `<b>${_esc(l)}</b> <span style="color:#64748b;">{${k}}</span>`, run: () => {
+    _openMenu(FIELD_LABELS.map(([k, l]) => ({ html: `<b>${_esc(l)}</b> <span style="color:var(--dw-dim);">{${k}}</span>`, run: () => {
       const sel = _itemsNow().find(i => i.id === _customSel && i.type === 'text');
       if (sel) _patchItem({ text: `${sel.text}${sel.text && !/\s$/.test(sel.text) ? ' ' : ''}{${k}}` }, 'Add field');      // into the selected text…
       else addText(`{${k}}`);                                                                                              // …or a box of its own
@@ -2274,16 +2275,16 @@ function _customAct(act, el) {
   }
   if (act === 'ci-add-image') { _root.querySelector('#dw-ci-file')?.click(); return true; }
   if (act === 'ci-add-picture') {
-    const file = { html: '🖼 <b>From a file…</b><div style="color:#94a3b8;font-size:11px;">a photo, a drawing, a symbol</div>', run: () => _root.querySelector('#dw-ci-file')?.click() };
+    const file = { html: '🖼 <b>From a file…</b><div style="color:var(--dw-muted);font-size:11px;">a photo, a drawing, a symbol</div>', run: () => _root.querySelector('#dw-ci-file')?.click() };
     if (host === 'band') {
       const has = _itemsNow().some(i => i.logo), logo = D.documentLogo();
-      _openMenu([{ html: `<span class="dw-prow">${_thumbBox(logo || '')}<span><b>The project’s logo</b><div style="color:#94a3b8;font-size:11px;">${!logo ? 'this project has no logo yet — Header tab ▸ 🏷 + Logo (or tick “This is the project’s logo” on a header image)' : has ? 'already in this band — adds another one' : 'follows the project: change the logo there (Header tab) and it changes here'}</div></span></span>`, run: () => {
+      _openMenu([{ html: `<span class="dw-prow">${_thumbBox(logo || '')}<span><b>The project’s logo</b><div style="color:var(--dw-muted);font-size:11px;">${!logo ? 'this project has no logo yet — Header tab ▸ 🏷 + Logo (or tick “This is the project’s logo” on a header image)' : has ? 'already in this band — adds another one' : 'follows the project: change the logo there (Header tab) and it changes here'}</div></span></span>`, run: () => {
         const items = _itemsNow(), id = _newItemId('b', items.length), h = Math.min(14, A.h);
         _customSel = id;
         _commitItems([...items, { id, type: 'image', logo: true, ..._clampItemRect({ x: A.x, y: A.y + (A.h - h) / 2, w: 32, h }) }], 'Add logo');
       } }, file], r.left, r.bottom + 4);
     } else {
-      _openMenu([file, { html: '🎞 <b>From the animation…</b><div style="color:#94a3b8;font-size:11px;">a picture of any step — it follows the step when it changes</div>', run: () => _stepPictureMenu(r.left, r.bottom + 4, null, (sid) => {
+      _openMenu([file, { html: '🎞 <b>From the animation…</b><div style="color:var(--dw-muted);font-size:11px;">a picture of any step — it follows the step when it changes</div>', run: () => _stepPictureMenu(r.left, r.bottom + 4, null, (sid) => {
         const items = _itemsNow(), id = _newItemId('ci', items.length), w = Math.min(120, A.w), h = _snap(w * 9 / 16);
         _customSel = id;
         _commitItems([...items, { id, type: 'image', stepId: sid, moment: 'end', ..._clampItemRect({ x: A.x + (A.w - w) / 2, y: A.y + 20, w, h }) }], 'Add picture');
@@ -2461,7 +2462,7 @@ function _openMenu(items, x, y) {
   _closeMenu();
   _menu = document.createElement('div');
   _menu.className = 'dw-menu';
-  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid #334155;margin:4px 2px;">' : it.head ? `<p style="margin:8px 10px 3px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;">${_esc(it.head)}</p>` : `<div data-i="${i}"${it.cur ? ' class="cur"' : ''}>${it.html || _esc(it.label)}</div>`).join('');
+  _menu.innerHTML = items.map((it, i) => it.sep ? '<hr style="border:0;border-top:1px solid var(--dw-line);margin:4px 2px;">' : it.head ? `<p style="margin:8px 10px 3px;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dw-muted);">${_esc(it.head)}</p>` : `<div data-i="${i}"${it.cur ? ' class="cur"' : ''}>${it.html || _esc(it.label)}</div>`).join('');
   _menu.addEventListener('click', (ev) => {
     const d = ev.target.closest('.dw-menu > [data-i]'); if (!d) return;
     ev.stopPropagation();

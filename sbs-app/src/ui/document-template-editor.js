@@ -44,11 +44,11 @@ export function openTemplateEditor({ host, template, isNew = true, onSave, onCan
   const el = document.createElement('div');
   el.id = 'dw-tpled';
   el.tabIndex = -1;
-  el.style.cssText = 'position:absolute;inset:0;z-index:6;background:#334155;display:flex;flex-direction:column;outline:none;';
+  el.style.cssText = 'position:absolute;inset:0;z-index:6;background:var(--dw-line);display:flex;flex-direction:column;outline:none;';   // V0.3.4.123 — theme-aware (base.css --dw-*)
   el.innerHTML = `
     <style>
-      #dw-tpled .te-bar { flex:0 0 auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;background:#0f172a;border-bottom:1px solid #38bdf8;font-size:12px;color:#cbd5e1; }
-      #dw-tpled .te-in { background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:3px 6px;font:inherit;font-size:12px; }
+      #dw-tpled .te-bar { flex:0 0 auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 12px;background:var(--dw-panel);border-bottom:1px solid #38bdf8;font-size:12px;color:var(--dw-strong); }
+      #dw-tpled .te-in { background:var(--dw-field);color:var(--dw-text);border:1px solid var(--dw-line);border-radius:6px;padding:3px 6px;font:inherit;font-size:12px; }
       #dw-tpled .te-num { width:58px;text-align:right; }
       #dw-tpled .te-stage { flex:1 1 auto;min-height:0;overflow:auto;position:relative; }
       #dw-tpled .te-page { position:absolute;background:#fff;box-shadow:0 6px 30px rgba(0,0,0,.55);user-select:none;touch-action:none; }
@@ -73,7 +73,7 @@ export function openTemplateEditor({ host, template, isNew = true, onSave, onCan
       <button class="dw-btn primary" data-te="save">Save template</button>
     </div>
     <div class="te-stage"><div class="te-page"></div></div>
-    <div class="te-bar" style="border-top:1px solid #334155;border-bottom:0;color:#94a3b8;font-size:11.5px;">Drag a box to move it · drag a corner or an edge to resize · drag on empty paper to draw a new picture frame · arrows nudge 1 mm (Shift 5) · Delete removes the selected frame · the pictures fill the frames in number order</div>`;
+    <div class="te-bar" style="border-top:1px solid var(--dw-line);border-bottom:0;color:var(--dw-muted);font-size:11.5px;">Drag a box to move it · drag a corner or an edge to resize · drag on empty paper to draw a new picture frame · arrows nudge 1 mm (Shift 5) · Delete removes the selected frame · the pictures fill the frames in number order</div>`;
   host.appendChild(el);
   const stage = el.querySelector('.te-stage'), page = el.querySelector('.te-page');
 
