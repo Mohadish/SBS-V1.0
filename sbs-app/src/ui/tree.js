@@ -588,6 +588,7 @@ function _typeIcon(type) {
     case 'flatShape':    return '▰';   // M1: 2D shape in 3D
     case 'replaceModel': return '🔄';  // B.2-NEW: container that replaces an object
     case 'hardwareInstance': return '🔩';  // V0.2.22.38: procedural fastener
+    case 'hand':         return '🖐';  // V0.3.4.127: the procedural hand
     default:             return '📄';
   }
 }

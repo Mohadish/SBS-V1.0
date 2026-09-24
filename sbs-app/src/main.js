@@ -23,6 +23,8 @@ import { initAlteredStars } from './systems/altered-stars.js';
 import { initBrand } from './systems/brand.js';   // 🏷 V0.3.3.12 — brand kit link + newer-revision notice
 import { initColorPick } from './ui/color-pick.js';   // V0.3.4.108 — right-click a colour swatch: pick from anywhere on screen
 import { checkCoreVersion } from './ui/core-version-check.js';   // V0.3.4.118 — a Ctrl+R after a core update leaves the interface newer than its core: say so
+import * as handActions from './systems/hand-actions.js';   // 🖐 V0.3.4.127 — hands: pick mode, controls, gizmo
+import * as hands       from './systems/hands.js';
 import { materials }      from './systems/materials.js';
 import { setOutlinePreview, clearOutlinePreview } from './systems/outline-pass.js';
 import * as actions from './systems/actions.js';
@@ -123,6 +125,8 @@ initAlteredStars();        // ★ V0.3.2.253: definition / tool / order edits st
 initBrand();               // 🏷 V0.3.3.12: notices a newer revision of the linked brand after a project loads
 initColorPick();           // V0.3.4.108: right-click any colour swatch → pick a colour from anywhere on screen (left click = the usual dialog)
 checkCoreVersion();        // V0.3.4.118: interface vs core version — a pinned warning when Ctrl+R left an old core running
+hands.initHands();         // 🖐 V0.3.4.127: the hand rigs re-solve when their inputs move
+handActions.initHandActions();
 actions.initSpotlight();   // 🔦 V0.3.4.82: spotlighted objects follow the camera while authoring
 
 // Debug surface — exposes core handles on window.__sbs for live console
@@ -2002,10 +2006,23 @@ function _syncGizmoToSelection() {
     gizmo.hide();
     return;
   }
+  // 🖐 V0.3.4.127: a hand control — fingertip / forearm translate, the palm translates + rotates.
+  const handSel = state.get('selectedHandControl');
+  if (handSel) {
+    const t = _buildHandControlGizmoTarget(handSel.nodeId, handSel.key);
+    if (t) { gizmo.showForCableTarget(t, handSel.key === 'palm' ? 'all' : 'translate'); return; }
+    gizmo.hide();
+    return;
+  }
   const selId  = state.get('selectedId');
   const nodeById = state.get('nodeById');
   if (!selId || !nodeById) { gizmo.hide(); return; }
   const node = nodeById.get(selId);
+  // 🖐 a PINNED hand selected as a whole: its palm is the thing to move (the fingertips stay put)
+  if (node?.type === 'hand' && handActions.isPinned(node)) {
+    const t = _buildHandControlGizmoTarget(node.id, 'palm');
+    if (t) { gizmo.showForCableTarget(t, 'all'); return; }
+  }
   // Hide gizmo for types that don't carry their own transforms: mesh,
   // scene, note, and replaceModel (RM is a container — its children
   // inherit via Three.js parenting; the RM itself never gets a gizmo
@@ -2018,6 +2035,29 @@ function _syncGizmoToSelection() {
   const obj3d = steps.object3dById?.get(selId);
   if (!obj3d) { gizmo.hide(); return; }
   gizmo.show(node, obj3d);
+}
+
+/**
+ * 🖐 V0.3.4.127 — a hand control as a gizmo target (the cable-target contract:
+ * getWorldPos / getWorldQuat / beginMove / applyCumulativeDelta / commitMove,
+ * rotate for the palm). Moves are live; the commit is one undo entry.
+ */
+function _buildHandControlGizmoTarget(nodeId, key) {
+  const T = window.THREE;
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'hand' || !node.object3d) return null;
+  let start = null, before = null, startQ = null;
+  return {
+    isMulti: false,
+    getWorldPos()  { return hands.controlWorld(node, key); },
+    getWorldQuat() { return key === 'palm' ? handActions.palmWorldQuat(nodeId) : new T.Quaternion(); },
+    beginMove()    { before = handActions.snapshotParams(nodeId); start = this.getWorldPos(); },
+    applyCumulativeDelta(worldD) { if (start) handActions.moveHandControlLive(nodeId, key, start.clone().add(worldD)); },
+    commitMove()   { handActions.commitHandControl(nodeId, key, before); before = null; start = null; },
+    beginRotate()  { before = handActions.snapshotParams(nodeId); startQ = handActions.palmWorldQuat(nodeId); },
+    applyRotateAroundAxis(axis, angle) { if (key === 'palm') handActions.rotatePalmLive(nodeId, axis, angle, startQ); },
+    commitRotate() { handActions.commitHandControl(nodeId, key, before); before = null; startQ = null; },
+  };
 }
 
 /**
@@ -2265,6 +2305,7 @@ state.on('selection:change',            _syncGizmoToSelection);
 state.on('change:treeData',             _syncGizmoToSelection);
 state.on('change:selectedCablePoint',   _syncGizmoToSelection);
 state.on('change:selectedCablePoints',  _syncGizmoToSelection);   // V0.3.0.119 multi-move
+state.on('change:selectedHandControl',  _syncGizmoToSelection);   // 🖐 V0.3.4.127
 state.on('change:selectedCableSocket',  _syncGizmoToSelection);
 state.on('change:shapeDrawing',         _syncGizmoToSelection);
 
@@ -2290,6 +2331,10 @@ state.on('change:pivotSnapPickingNodeId', id => {
 // C3: same crosshair signal for cable placement mode.
 state.on('change:cablePlacingId', id => {
   canvas.style.cursor = id ? 'crosshair' : '';
+});
+// 🖐 V0.3.4.127: crosshair while a fingertip waits for its click.
+state.on('change:handPicking', p => {
+  canvas.style.cursor = p ? 'crosshair' : '';
 });
 // C5-C: same crosshair signal for cable re-anchor pick mode.
 state.on('change:cableReanchorPickingId', target => {
@@ -2853,6 +2898,17 @@ canvas.addEventListener('pointerdown', e => {
   // cable in air, future helper/null tree nodes will provide an
   // attachable surface. Stays in placement mode for repeated
   // clicks; user exits via Esc or the Stop Placement button.
+  // 🖐 V0.3.4.127: a fingertip waits for its click — pin it where the click lands.
+  const handPick = state.get('handPicking');
+  if (handPick) {
+    e.preventDefault();
+    e.stopPropagation();
+    const hit = sceneCore.pick(e.clientX, e.clientY);
+    if (hit) handActions.setHandFingerFromHit(handPick.nodeId, handPick.finger, hit);
+    else setStatus('Click ON an object — where the fingertip touches it.', 'warn', 2000);
+    return;
+  }
+
   const placingCableId = state.get('cablePlacingId');
   if (placingCableId) {
     e.preventDefault();
@@ -3198,6 +3254,22 @@ function _pickCablePoint(clientX, clientY) {
   };
 }
 
+/** 🖐 V0.3.4.127 — a hand's handle under the pointer: { nodeId, key } or null. */
+function _pickHandControl(clientX, clientY) {
+  if (!window.THREE) return null;
+  const meshes = hands.handleMeshes().filter(m => m.visible);
+  if (!meshes.length) return null;
+  const T = window.THREE;
+  const rect = canvas.getBoundingClientRect();
+  const ndc = new T.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+  const ray = new T.Raycaster();
+  ray.setFromCamera(ndc, sceneCore.camera);
+  const hits = ray.intersectObjects(meshes, false).filter(h => _visibleInWorld(h.object));
+  if (!hits.length) return null;
+  const c = hits[0].object.userData.handControl;
+  return c ? { nodeId: c.nodeId, key: c.key } : null;
+}
+
 /** World distance from point P to segment AB. */
 function _distPointToSegment(p, a, b) {
   const ab = b.clone().sub(a);
@@ -3330,6 +3402,12 @@ canvas.addEventListener('click', e => {
   // Phase A: cable points have priority over mesh selection AND don't
   // require a loaded tree (cables can exist without a model). Run this
   // BEFORE the tree/nbm guard or cables-only sessions never select.
+  // 🖐 V0.3.4.127: a hand's control handle (fingertip / palm / forearm) wins first.
+  const handCtl = _pickHandControl(e.clientX, e.clientY);
+  if (handCtl) {
+    handActions.selectHandControl(handCtl.nodeId, handCtl.key);
+    return;
+  }
   const cableHit = _pickCablePoint(e.clientX, e.clientY);
   if (cableHit) {
     // V0.3.0.119 — Shift adds/removes the point from the multi-select set so
@@ -5525,6 +5603,9 @@ window.addEventListener('keydown', async e => {
     }
     // C3: cable placement is a modal too — Esc exits without
     // touching the rest of the selection.
+    // 🖐 V0.3.4.127: a waiting fingertip / a selected hand control — Esc lets go.
+    if (state.get('handPicking')) { handActions.stopHandPick(); return; }
+    if (state.get('selectedHandControl')) { state.setState({ selectedHandControl: null }); return; }
     if (state.get('cablePlacingId')) {
       actions.stopCablePlacement();
       return;

@@ -1105,6 +1105,7 @@ export const SESSION_MODAL_KEYS = [
   'selectedCableSocket',
   'cableReanchorPickingId', 'cableInsertPickingTarget',
   'cableSocketReanchorPickingId', 'cableSocketConnectPickingId',
+  'handPicking', 'selectedHandControl',   // 🖐 V0.3.4.127
 ];
 
 export function applyProjectToState(project) {
@@ -1816,6 +1817,20 @@ export function applySpecFieldsToNodes(specNode, nodeById, parentSpec = null) {
       // (parent id not remapped / parent outside the walked subtree) is visible.
       console.warn('[load] flatShape NOT reattached — parent missing in live map',
         { id: specNode.id, name: specNode.name, parentId, templateId: specNode.templateId });
+    }
+    return;
+  }
+
+  // 🖐 V0.3.4.127 — a hand: procedural like a primitive, re-attached from the
+  // saved spec (side + params ride the spread); the rig is built on the next
+  // step activation (steps.js rebuildFromTreeSpec → ensureHandObject3D).
+  if (specNode.type === 'hand') {
+    const parentId   = parentSpec?.id ?? null;
+    const parentLive = parentId ? nodeById.get(parentId) : null;
+    if (parentLive && !(parentLive.children || []).some(c => c.id === specNode.id)) {
+      const live = { ...specNode, object3d: null, children: [] };
+      parentLive.children = [...(parentLive.children || []), live];
+      nodeById.set(live.id, live);
     }
     return;
   }

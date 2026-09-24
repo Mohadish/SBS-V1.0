@@ -32,6 +32,7 @@ import * as overlaySystem           from './overlay.js';   // H2: overlay phase 
 import * as videoOverlay            from './video-overlay.js';   // 🎬 V0.3.2.84 — video stretches the overlay block
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { ensurePrimitiveObject3D }   from './primitives.js';  // V0.2.22.90: parametric primitives — build mesh on demand
+import { ensureHandObject3D, markHandDirty } from './hands.js';   // 🖐 V0.3.4.127: the procedural hand — rig on demand, per-step params
 import { ensureHardwareInstanceObject3D, ensureHardwareNutObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot, pickCameraView, pickCameraOrbit } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
@@ -4141,6 +4142,29 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
         obj.userData.meshNodeId      = node.id;
         obj.userData.nodeId          = node.id;
       }
+    }
+
+  } else if (specType === 'hand') {
+    // 🖐 V0.3.4.127 — the procedural hand. Self-contained in the spec (side +
+    // params), so it materialises from the spec when no live node exists (a
+    // load, a hand nested under a model's folders). Params are PER STEP: the
+    // step's spec always wins, unlike a primitive's definition.
+    node = nodeById.get(spec.id);
+    if (!node) { node = { id: spec.id, type: 'hand' }; nodeById.set(spec.id, node); }
+    node.name         = spec.name || node.name || 'Hand';
+    node.localVisible = spec.localVisible !== false;
+    node.handSide     = spec.handSide === 'left' ? 'left' : (node.handSide || 'right');
+    if (spec.handParams) node.handParams = JSON.parse(JSON.stringify(spec.handParams));
+    node.children     = [];
+    const obj = ensureHandObject3D(node);
+    if (obj) {
+      node.object3d = obj;
+      object3dById.set(spec.id, obj);
+      if (parentObject3d && obj.parent !== parentObject3d) {
+        if (obj.parent) obj.parent.remove(obj);
+        parentObject3d.add(obj);
+      }
+      markHandDirty(node.id);   // the params may have changed with the step → re-solve on the next frame
     }
 
   } else if (specType === 'hardwareNut') {

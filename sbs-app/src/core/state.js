@@ -367,6 +367,11 @@ function createInitialState() {
     // socket plugs in (socket.connectTarget). Cleared on Esc / successful pick.
     cableSocketConnectPickingId: null,     // { cableId, nodeId } | null
 
+    // 🖐 V0.3.4.127 — a hand's fingertip awaits its viewport click: { nodeId, finger } | null;
+    // and the hand control the gizmo drives: { nodeId, key: finger | 'palm' | 'forearm' } | null.
+    handPicking:         null,
+    selectedHandControl: null,
+
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open
     gridVisible:        false,

@@ -99,6 +99,7 @@ import { renderAnimationTab } from './animation-tab.js';
 import { renderHeaderTab }    from './header-tab.js';
 import { renderStyleTab }     from './style-tab.js';
 import { renderCableTab, clearActiveCable } from './cable-tab.js';
+import { renderHandTab } from './hand-tab.js';   // 🖐 V0.3.4.127
 import { renderReviewNotesTab } from './review-notes-tab.js';   // 📝 V0.3.3.8 — remarks from translation sheets
 export { clearActiveCable };
 import { renderHardwareTab, startEditTemplate as _hwStartEditTemplate } from './hardware-tab.js';
@@ -111,7 +112,7 @@ import { buildRenderSettingsPanel } from './render-settings-panel.js';
 import * as narrationCache  from '../systems/narration-cache.js';
 import { perspectiveShort } from '../core/perspective.js';   // 🔲 lens readout on a camera template
 
-const TABS = ['files', 'env', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'review', 'export'];
+const TABS = ['files', 'env', 'tree', 'colors', 'select', 'cameras', 'animation', 'header', 'style', 'cables', 'hands', 'notes', 'shapes', 'primitives', 'hardware', 'undo', 'review', 'export'];
 let _activeTab   = 'files';
 let _container   = null;
 let _treeInited  = false;
@@ -136,6 +137,7 @@ export function initSidebarLeft() {
       <button class="tabBtn"        data-tab="header">Header</button>
       <button class="tabBtn"        data-tab="style">Style</button>
       <button class="tabBtn"        data-tab="cables">🔌</button>
+      <button class="tabBtn"        data-tab="hands" title="Hands — a hand that grips what you point at">🖐</button>
       <button class="tabBtn"        data-tab="notes">💬</button>
       <button class="tabBtn"        data-tab="shapes">▰</button>
       <button class="tabBtn"        data-tab="primitives">⬡</button>
@@ -278,6 +280,9 @@ export function initSidebarLeft() {
   state.on('change:selectedCableIds',    () => { if (_activeTab === 'cables') _renderCableTabPanel(); });   // V0.3.0.166 multi-cable
   state.on('change:cableDefaultDiameter', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
+  // 🖐 V0.3.4.127 — the hands tab follows the pick mode and the selection
+  state.on('change:handPicking', () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
+  state.on('change:selectedId',  () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
   state.on('change:styleTemplates',        () => {
     _maybeRenderStyleTab();                                 // skips values-only edits — see _maybeRenderStyleTab
     if (_activeTab === 'header') _renderHeaderTabPanel();   // P4b: row dropdowns refresh + Save button enable
@@ -393,6 +398,7 @@ function _renderActiveTab() {
     case 'header':    _renderHeaderTabPanel(); break;
     case 'style':     _renderStyleTabPanel();  break;
     case 'cables':    _renderCableTabPanel();  break;
+    case 'hands':     renderHandTab(_panel('hands')); break;   // 🖐 V0.3.4.127
     case 'notes':     _renderNotesTab();   break;
     case 'shapes':    _renderShapesTab();  break;
     case 'primitives': _renderPrimitivesTabPanel(); break;

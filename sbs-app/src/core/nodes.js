@@ -593,6 +593,13 @@ export function serializeModelTree(node) {
     // base-on-surface transform sinks it half-into the surface on reload.
     if (node.baseAtOrigin != null) spec.baseAtOrigin = node.baseAtOrigin;
   }
+  // 🖐 V0.3.4.127 — a hand rebuilds its rig from side + params; the params are
+  // PER STEP by design (the grip differs from step to step), so the step spec
+  // is the truth for them, not a project-level registry.
+  if (node.type === 'hand') {
+    spec.handSide   = node.handSide === 'left' ? 'left' : 'right';
+    spec.handParams = node.handParams ? JSON.parse(JSON.stringify(node.handParams)) : null;
+  }
   return spec;
 }
 
