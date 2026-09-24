@@ -7,8 +7,8 @@
  * previous / following / selected), then a PLAIN CASCADE — the copied local
  * poses of the folder and of every part inside it, written by node id into
  * each chosen step. The tree there is never touched; the move / rotate /
- * pivot toggles are never flipped (a pasted pose shows when the toggle is
- * on, exactly as the single-step paste always did). Steps whose tree differs
+ * pivot toggles come along AS THEY WERE ON THE COPY (V0.3.4.125: move on /
+ * rotation off / pivot off → pasted exactly so). Steps whose tree differs
  * from this one are reported first: leave them out, or paste anyway.
  *
  * HOW A STEP IS WRITTEN — the lesson of .122:
@@ -28,8 +28,11 @@ import { undoManager } from './undo.js';
 import { findParent }  from '../core/nodes.js';
 import { captureTransformSnapshot, applyTransformSnapshot, applyAllTransforms } from '../core/transforms.js';
 
-/** The pose fields a paste carries. Flags, scale and the spotlight stay the target's. */
+/** The pose fields a paste carries. Scale and the spotlight stay the target's. */
 const XF_KEYS = ['localOffset', 'localQuaternion', 'orientationSteps', 'pivotLocalOffset', 'pivotLocalQuaternion'];
+/** V0.3.4.125 — the toggles travel with the copy when it carries them (move on / rotation off /
+ *  pivot off → pasted exactly so); an older clipboard without them leaves the target's alone. */
+const FLAG_KEYS = ['moveEnabled', 'rotateEnabled', 'pivotEnabled'];
 
 function _findSpec(spec, id) {
   if (!spec) return null;
@@ -44,7 +47,12 @@ function _parentIdOf(spec, id, parent = null) {
   for (const c of (spec.children || [])) { const r = _parentIdOf(c, id, spec); if (r !== undefined) return r; }
   return undefined;
 }
-const _pick = (xf) => { const o = {}; for (const k of XF_KEYS) if (Array.isArray(xf?.[k])) o[k] = [...xf[k]]; return o; };
+const _pick = (xf) => {
+  const o = {};
+  for (const k of XF_KEYS)   if (Array.isArray(xf?.[k]))       o[k] = [...xf[k]];
+  for (const k of FLAG_KEYS) if (typeof xf?.[k] === 'boolean') o[k] = xf[k];
+  return o;
+};
 const _name = (s, i) => s?.name || `Step ${i + 1}`;
 
 /**

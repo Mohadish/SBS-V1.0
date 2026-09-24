@@ -2580,6 +2580,12 @@ function _captureFolderXfSubtree(folderNode) {
           orientationSteps:     [...(node.orientationSteps     || [0, 0, 0])],
           pivotLocalOffset:     [...(node.pivotLocalOffset     || [0, 0, 0])],
           pivotLocalQuaternion: [...(node.pivotLocalQuaternion || [0, 0, 0, 1])],
+          // V0.3.4.125 — the toggles travel WITH the copy (the user: "if the copy
+          // had move on and rotation off, paste it like that; the pivot too —
+          // its orientation, and off stays off"). Pivot: blue only when === true.
+          moveEnabled:   node.moveEnabled   !== false,
+          rotateEnabled: node.rotateEnabled !== false,
+          pivotEnabled:  node.pivotEnabled  === true,
         },
       });
     }
@@ -2736,7 +2742,7 @@ async function _pasteFolderTransforms(folderNode) {
   buttons.push({ id: 'cancel',  label: 'Cancel' });
   const choice = await chooseFromButtons(
     `📌 Paste transforms onto "${folderNode.name}" — apply to…`,
-    `The copied poses ("${clip.rootName}", step "${clip.sourceStepName}") — the folder and ${nParts} part(s) inside it — go into which steps? The move / rotate / pivot toggles stay as they are.`,
+    `The copied poses ("${clip.rootName}", step "${clip.sourceStepName}") — the folder and ${nParts} part(s) inside it — go into which steps? The move / rotate / pivot toggles come along as they were on the copy.`,
     buttons,
   );
   if (!choice || choice === 'cancel') { setStatus('Paste cancelled.'); return; }
