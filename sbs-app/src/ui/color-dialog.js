@@ -180,7 +180,12 @@ export function openColorDialog(input) {
   modeSel.addEventListener('change', () => { mode = modeSel.value; renderFields(); });
   drop.addEventListener('click', async (e) => {
     e.stopPropagation();
-    if (!window.sbsNative?.pickScreenColor) { const { setStatus } = await import('./status.js'); setStatus('Picking from the screen needs a full restart of SBS (the new version\'s bridge is not loaded yet).', 'warn', 8000); return; }
+    if (!window.sbsNative?.pickScreenColor || !window.sbsNative?.prepareScreenPick) {
+      // the interface is newer than the running core (Ctrl+R after an update): old main + new picker page = black, inert screens (.117 field test)
+      const { setStatus } = await import('./status.js');
+      setStatus('SBS\'s core is still the previous version — Ctrl+R reloads only the interface. Close and reopen SBS, then pick from the screen.', 'warn', 12000);
+      return;
+    }
     if (drop.disabled) return;   // one pick at a time
     // V0.3.4.117 — the wait is visible: the button spins, the pointer shows the
     // busy ring, clicks inside SBS are held until the picker is up.

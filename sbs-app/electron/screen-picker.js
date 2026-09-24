@@ -22,6 +22,10 @@
   let active = false;   // a session is on and this display has its snapshot
   let done = false;     // this session answered already
   const finish = (hex) => { if (!active || done) return; done = true; api.done(hex); };
+  // The way out, whatever state this page is in: a visible picker that cannot
+  // be dismissed is the worst case (V0.3.4.117 first field test: a stale main
+  // process showed this page black and inert — Esc did nothing, nothing did).
+  const bail = () => { if (done) return; done = true; api.done(null); };
 
   // … and scaled to the window (for looking at)
   const fit = () => {
@@ -54,7 +58,7 @@
     tagSw.style.background = s.hex; tagTx.textContent = s.hex;
   });
   window.addEventListener('mousedown', (e) => {
-    if (!active) return;
+    if (!active) { bail(); return; }   // a click on a picker that has nothing to pick from = cancel
     if (e.button === 0) finish(sampleAt(e.clientX, e.clientY).hex);
     else finish(null);
   });
@@ -65,30 +69,43 @@
     api.focus();
   });
   window.addEventListener('contextmenu', (e) => e.preventDefault());
-  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') finish(null); });
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') bail(); });   // always — session or not
   // (no blur → cancel: with one picker window per display, moving to another display's window blurs this one)
 
   const hide = () => { loupe.style.display = 'none'; tag.style.display = 'none'; };
 
+  // The snapshot into `nat`: raw RGBA { width, height, rgba } (main ≥ .117), or a
+  // PNG data URL (a main process older than this page — the app was Ctrl+R'd
+  // after an update, so the interface is newer than its core). Both draw.
+  const draw = async (shotData) => {
+    if (typeof shotData === 'string' && shotData.startsWith('data:image/')) {
+      const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = shotData; });
+      nat.width = im.naturalWidth; nat.height = im.naturalHeight;
+      ng.drawImage(im, 0, 0);
+      return true;
+    }
+    if (!shotData || !shotData.width || !shotData.height || !shotData.rgba) return false;
+    const { width, height, rgba } = shotData;
+    nat.width = width; nat.height = height;
+    const px = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+    ng.putImageData(new ImageData(px, width, height), 0, 0);
+    return true;
+  };
+
   // a pick begins: the snapshot (main answers when the capture is in) → draw → 'drawn' → main shows us
   const session = async () => {
+    if (active) return;   // this session is already drawn (the on-load ask and main's 'session' can both land)
     done = false;
-    let shotData = null;
-    try { shotData = await api.image(); } catch {}
-    if (!shotData || !shotData.width || !shotData.height || !shotData.rgba) return;   // no snapshot for this display this time: stay hidden
-    const { width, height, rgba } = shotData;
-    try {
-      nat.width = width; nat.height = height;
-      const px = rgba instanceof Uint8ClampedArray ? rgba : new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
-      ng.putImageData(new ImageData(px, width, height), 0, 0);
-    } catch (e) { console.warn('[pick] snapshot draw failed:', e?.message); return; }
+    let ok = false;
+    try { ok = await draw(await api.image()); } catch (e) { console.warn('[pick] snapshot draw failed:', e?.message); }
+    if (!ok) return;   // no snapshot for this display this time: stay hidden
     hide();
     active = true;
     fit();
     // straight away, not on requestAnimationFrame: this window is HIDDEN until
     // main shows it, and a hidden page gets no animation frames (the report
     // would never come — seen in the probe on the second session)
-    api.drawn();
+    api.drawn?.();
   };
   // the pick is over: forget the snapshot (the window stays, hidden, for the next one)
   const end = () => {
@@ -97,6 +114,11 @@
     nat.width = nat.height = 1;
     shot.width = shot.height = 1;
   };
-  api.onSession(session);
-  api.onEnd(end);
+  api.onSession?.(session);
+  api.onEnd?.(end);
+  // On load, ask once anyway: a main process older than this page (see `draw`)
+  // sends no 'session' — it shows the window on its own and expects the page to
+  // fetch the snapshot itself. Under a current main this answers null outside a
+  // pick (the pool warming up) and the page simply waits for its session.
+  session();
 })();

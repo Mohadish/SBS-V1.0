@@ -37,10 +37,12 @@ let _busy = false;
 
 async function _pickInto(input) {
   if (_busy) return;
-  if (!window.sbsNative?.pickScreenColor) {
-    // the renderer is newer than the running main process (Ctrl+R, no restart)
+  if (!window.sbsNative?.pickScreenColor || !window.sbsNative?.prepareScreenPick) {
+    // the interface is newer than the running core (Ctrl+R after an update, no
+    // restart): the picker page on disk and the old main do not speak the same
+    // protocol — V0.3.4.117's first field test showed black, inert screens
     const { setStatus } = await import('./status.js');
-    setStatus('Picking a colour from the screen needs a full restart of SBS (the new version\'s bridge is not loaded yet) — close and open the app.', 'warn', 9000);
+    setStatus('SBS\'s core is still the previous version — Ctrl+R reloads only the interface. Close and reopen SBS, then pick from the screen.', 'warn', 12000);
     return;
   }
   _busy = true;
