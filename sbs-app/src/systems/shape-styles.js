@@ -160,6 +160,10 @@ function _applySnap(id, snap) {
   state.emit('shapeStyle:updated', { id, patch: snap });
 }
 
+/** V0.3.4.116 — list-only put / drop, no undo entry: the caller owns one (systems/style-rebind.js). */
+export function putShapeStyleRaw(tpl) { if (tpl && !getShapeStyle(tpl.id)) _addToList(tpl); }
+export function dropShapeStyleRaw(id) { _flushBatch(); if (getShapeStyle(id)) _removeFromList(id); }
+
 function _addToList(tpl) {
   const items = listShapeStyles().slice();
   items.push(tpl);

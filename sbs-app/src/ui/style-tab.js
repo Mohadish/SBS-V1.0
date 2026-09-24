@@ -46,7 +46,8 @@ import {
 import { exportHeaderSetup, importHeaderSetup } from '../systems/header.js';
 import { pickHeaderSetupPayload } from './header-tab.js';   // 📥 shared source picker (.sbsheader or .sbsproj)
 import { setStatus }    from './status.js';
-import { promptString, chooseFromButtons } from './prompt.js';
+import { promptString, chooseFromButtons, chooseFromList } from './prompt.js';
+import { textStyleUsage, shapeStyleUsage, describeUsage, deleteTextStyleInto, deleteShapeStyleInto } from '../systems/style-rebind.js';   // V0.3.4.116 — delete-in-use asks what takes over
 import { mountTextToolbar, unmountTextToolbar, setToolbarValues, setTextEffects } from './text-toolbar.js';
 import { textEffectsCss } from '../systems/text-effects.js';
 
@@ -162,13 +163,7 @@ function _renderTextBody(container) {
     if (!row) return;
     const id = row.dataset.styleId;
     const act = e.target.closest('[data-style-act]')?.dataset.styleAct;
-    if (act === 'delete') {
-      if (confirm('Delete this style? Any text boxes using it will be unbound.')) {
-        removeStyleTemplate(id);
-        if (_activeId === id) _activeId = null;
-      }
-      return;
-    }
+    if (act === 'delete') { _deleteTextStyle(id); return; }
     if (act === 'rename') {
       // Electron renderer blocks window.prompt — use the shared modal.
       const tpl = listStyleTemplates().find(t => t.id === id);
@@ -197,6 +192,78 @@ function _renderTextBody(container) {
   } else {
     _activeId = null;
   }
+}
+
+const UNBIND = '__unbind';
+
+/**
+ * V0.3.4.116 — deleting a style that is IN USE asks which style takes its
+ * place: every text box on every step, header item and constant title bound
+ * to it moves onto the style the user picks — nothing is thrown out (one undo
+ * entry, systems/style-rebind.js). Unbinding stays on the list as an
+ * explicit choice, at the bottom. An unused style just asks "sure?".
+ */
+async function _deleteTextStyle(id) {
+  const tpl = listStyleTemplates().find(t => t.id === id);
+  if (!tpl) return;
+  const use = textStyleUsage(id);
+  const done = () => { if (_activeId === id) _activeId = null; if (_container) renderStyleTab(_container); };
+  if (!use.total) {
+    if (!confirm(`Delete the style "${tpl.name}"? Nothing uses it.`)) return;
+    removeStyleTemplate(id);
+    done();
+    return;
+  }
+  const items = listStyleTemplates().filter(t => t.id !== id).map(t => ({
+    id: t.id, label: t.name || 'Untitled',
+    detail: `${t.fontFamily || ''} · ${t.fontSize || 16}px · ${t.color || '#fff'}`,
+  }));
+  items.push({ id: UNBIND, label: 'No style — unbind them',
+    detail: 'The text boxes keep the formatting they have now; header items and constant titles fall back to the default look.' });
+  const pick = await chooseFromList(`Delete "${tpl.name}" — which style takes over?`,
+    `${describeUsage(use)} use it. A style in use is never just thrown away: everything bound to it moves to the style you pick here.`,
+    items);
+  if (!pick) return;
+  if (pick === UNBIND) {
+    removeStyleTemplate(id);
+    setStatus(`Deleted "${tpl.name}" — ${describeUsage(use)} unbound (they keep their look).`, 'info', 6000);
+  } else {
+    const into = listStyleTemplates().find(t => t.id === pick);
+    if (deleteTextStyleInto(id, pick)) setStatus(`Deleted "${tpl.name}" — ${describeUsage(use)} now use "${into?.name || 'the other style'}".`, 'success', 7000);
+  }
+  done();
+}
+
+/** Shape-side twin of _deleteTextStyle: shapes on every step move to the picked shape style. */
+async function _deleteShapeStyle(id) {
+  const tpl = listShapeStyles().find(t => t.id === id);
+  if (!tpl) return;
+  const use = shapeStyleUsage(id);
+  const done = () => { if (_activeShapeId === id) _activeShapeId = null; if (_container) renderStyleTab(_container); };
+  if (!use.total) {
+    if (!confirm(`Delete the shape style "${tpl.name}"? Nothing uses it.`)) return;
+    removeShapeStyle(id);
+    done();
+    return;
+  }
+  const items = listShapeStyles().filter(t => t.id !== id).map(t => ({
+    id: t.id, label: t.name || 'Untitled',
+    detail: `${t.fill ? 'fill' : 'no fill'} · ${t.stroke ? `${t.strokeWidth || 0}px outline` : 'no outline'}`,
+  }));
+  items.push({ id: UNBIND, label: 'No style — unbind them',
+    detail: 'The shapes keep the look they have now and become editable again.' });
+  const pick = await chooseFromList(`Delete "${tpl.name}" — which shape style takes over?`,
+    `${describeUsage(use)} use it. A style in use is never just thrown away: every shape bound to it moves to the style you pick here.`,
+    items);
+  if (!pick) return;
+  if (pick === UNBIND) {
+    removeShapeStyle(id);
+    setStatus(`Deleted "${tpl.name}" — ${describeUsage(use)} unbound (they keep their look).`, 'info', 6000);
+  } else {
+    const into = listShapeStyles().find(t => t.id === pick);
+    if (deleteShapeStyleInto(id, pick)) setStatus(`Deleted "${tpl.name}" — ${describeUsage(use)} now use "${into?.name || 'the other style'}".`, 'success', 7000);
+  }
+  done();
 }
 
 function _row(tpl) {
@@ -426,14 +493,7 @@ function _renderShapeBody(container) {
     if (!row) return;
     const id  = row.dataset.shapestyleId;
     const act = e.target.closest('[data-shapestyle-act]')?.dataset.shapestyleAct;
-    if (act === 'delete') {
-      if (confirm('Delete this shape style? Shapes using it keep their current look and become editable again.')) {
-        removeShapeStyle(id);
-        if (_activeShapeId === id) _activeShapeId = null;
-        renderStyleTab(_container);
-      }
-      return;
-    }
+    if (act === 'delete') { _deleteShapeStyle(id); return; }
     if (act === 'rename') {
       const tpl = listShapeStyles().find(t => t.id === id);
       promptString('Shape style name:', tpl?.name || '').then(name => {

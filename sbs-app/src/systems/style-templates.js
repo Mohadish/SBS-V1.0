@@ -167,6 +167,14 @@ function _applySnap(id, snap) {
   state.emit('styleTemplate:updated', { id, patch: snap });
 }
 
+/**
+ * V0.3.4.116 — list-only put / drop with NO undo entry of their own, for a
+ * caller that owns ONE entry for a bigger operation: deleting a style that
+ * is in use moves its users onto another style first (systems/style-rebind.js).
+ */
+export function putStyleTemplateRaw(tpl) { if (tpl && !getStyleTemplate(tpl.id)) _addToList(tpl); }
+export function dropStyleTemplateRaw(id) { _flushStyleBatch(); if (getStyleTemplate(id)) _removeFromList(id); }
+
 function _addToList(tpl) {
   const items = listStyleTemplates().slice();
   items.push(tpl);
