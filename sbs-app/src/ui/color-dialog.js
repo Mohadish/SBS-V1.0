@@ -13,6 +13,7 @@
  */
 
 import { eyedropperSvg } from './icons.js';   // V0.3.4.115 — the pipette (was the 💧 emoji)
+import { beginScreenPickWait, spinnerHtml } from './pick-wait.js';   // V0.3.4.117 — the button spins + busy pointer while the screens are photographed
 
 let _dlg = null;   // { el, input, close }
 
@@ -180,12 +181,22 @@ export function openColorDialog(input) {
   drop.addEventListener('click', async (e) => {
     e.stopPropagation();
     if (!window.sbsNative?.pickScreenColor) { const { setStatus } = await import('./status.js'); setStatus('Picking from the screen needs a full restart of SBS (the new version\'s bridge is not loaded yet).', 'warn', 8000); return; }
+    if (drop.disabled) return;   // one pick at a time
+    // V0.3.4.117 — the wait is visible: the button spins, the pointer shows the
+    // busy ring, clicks inside SBS are held until the picker is up.
+    const endWait = beginScreenPickWait();
+    const icon = drop.innerHTML;
+    drop.disabled = true; drop.innerHTML = spinnerHtml(22);
     let hx = null;
     try { hx = await window.sbsNative.pickScreenColor(); } catch (err) { console.warn('[pick] screen colour pick failed:', err?.message || err); }
+    finally { endWait(); drop.innerHTML = icon; drop.disabled = false; }
     if (hx && _dlg?.el === el) setHex(hx, false);
   });
   renderFields();
   drawSv(); drawHue();
+  // V0.3.4.117 — the picker windows warm up while the user looks at the dialog:
+  // a click on the eyedropper then waits for the capture only (~0.5 s)
+  try { window.sbsNative?.prepareScreenPick?.(); } catch {}
 
   // place it under the swatch (its label when wrapped), inside an open modal if there is one
   const anchor = input.closest('label') || input;

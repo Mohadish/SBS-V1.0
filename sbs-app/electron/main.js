@@ -1169,85 +1169,15 @@ ipcMain.handle('fs:listTree', async (_, dirPath) => {
   return out;
 });
 
-// ─── 💉 Pick a colour from ANYWHERE on screen (V0.3.4.108) ───────────────────
-// Chromium's eyedropper (the one in its colour popup, and the EyeDropper API)
-// sees only this app's own window under Electron — a browser or a picture
-// viewer beside it is invisible to it. So: snapshot the display the pointer is
-// on (desktopCapturer), open a frameless window over that display showing the
-// snapshot, let the user click a pixel of it (electron/screen-picker.*), and
-// answer with the hex. One at a time; Esc answers nothing.
-// V0.3.4.110 — EVERY display at once (one picker window per display, the first
-// click anywhere answers). V0.3.4.112 — this app's own windows STAY in the
-// snapshot (the user picks from SBS's interface too; .110 made them transparent
-// for the capture, which read as "the window drops").
-const _pickShots = new Map();   // display id → the snapshot's data URL
-let   _pickWins  = [];
-ipcMain.handle('color:pickScreen:image', (_, displayId) => _pickShots.get(String(displayId)) || null);
-ipcMain.handle('color:pickScreen', async () => {
-  if (_pickWins.length) return null;
-  const restore = () => {};   // (nothing to restore since .112 — kept so the paths below read the same)
-  try {
-    const displays = screen.getAllDisplays();
-    _pickShots.clear();
-    // one capture per distinct native size (thumbnailSize is shared by every source in a call)
-    const bySize = new Map();
-    for (const d of displays) {
-      const sc = d.scaleFactor || 1;
-      const k = `${Math.round(d.size.width * sc)}x${Math.round(d.size.height * sc)}`;
-      if (!bySize.has(k)) bySize.set(k, { width: Math.round(d.size.width * sc), height: Math.round(d.size.height * sc), ids: [] });
-      bySize.get(k).ids.push(String(d.id));
-    }
-    for (const { width, height, ids } of bySize.values()) {
-      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width, height } });
-      for (const s of sources) {
-        const id = String(s.display_id);
-        if (ids.includes(id) && !s.thumbnail.isEmpty()) _pickShots.set(id, s.thumbnail.toDataURL());
-      }
-      // a source that names no display (some drivers): the first unmatched display takes it
-      for (const s of sources) if (!ids.includes(String(s.display_id)) && !s.thumbnail.isEmpty()) { const free = ids.find(i => !_pickShots.has(i)); if (free) _pickShots.set(free, s.thumbnail.toDataURL()); }
-    }
-    restore();
-    if (!_pickShots.size) return null;
-    const hex = await new Promise((resolve) => {
-      let settled = false;
-      const done = (v) => { if (settled) return; settled = true; ipcMain.removeListener('color:pickScreen:done', onDone); resolve(v); };
-      const onDone = (e, v) => { if (_pickWins.some(w => !w.isDestroyed() && e.sender === w.webContents)) done(typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null); };
-      ipcMain.on('color:pickScreen:done', onDone);
-      for (const d of displays) {
-        if (!_pickShots.has(String(d.id))) continue;
-        const b = d.bounds;
-        const w = new BrowserWindow({
-          x: b.x, y: b.y, width: b.width, height: b.height,
-          frame: false, alwaysOnTop: true, skipTaskbar: true, resizable: false, movable: false, minimizable: false, maximizable: false,
-          hasShadow: false, show: false, backgroundColor: '#000000', title: 'Pick a colour',
-          webPreferences: { preload: path.join(__dirname, 'screen-picker-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
-        });
-        _pickWins.push(w);
-        w.setMenuBarVisibility(false);
-        w.setAlwaysOnTop(true, 'screen-saver');
-        w.on('closed', () => done(null));
-        w.once('ready-to-show', () => { try { w.setBounds(b); w.show(); } catch {} });
-        w.loadFile(path.join(__dirname, 'screen-picker.html'), { query: { d: String(d.id) } }).catch(() => done(null));
-      }
-      // the one under the pointer gets the keyboard (Esc)
-      const under = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-      const i = displays.findIndex(d => d.id === under.id);
-      setTimeout(() => { try { (_pickWins[i >= 0 ? i : 0])?.focus(); } catch {} }, 250);
-    });
-    for (const w of _pickWins) { try { if (!w.isDestroyed()) w.destroy(); } catch {} }
-    _pickWins = [];
-    _pickShots.clear();
-    // the app window comes back to the front, where it was
-    try { if (mainWindow && !mainWindow.isDestroyed()) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.moveTop?.(); mainWindow.focus(); } } catch {}
-    return hex;
-  } catch (e) {
-    console.warn('[pick] screen colour pick failed:', e?.message);
-    restore();
-    for (const w of _pickWins) { try { if (!w.isDestroyed()) w.destroy(); } catch {} }
-    _pickWins = []; _pickShots.clear();
-    return null;
-  }
-});
+// ─── Pick a colour from ANYWHERE on screen (V0.3.4.108 → .117) ───────────────
+// Snapshot every display, a picker window per display, the first click
+// answers. The whole thing lives in electron/screen-pick.js (so the probe
+// harness runs the real code); .117 made it ~3× faster and shows a window
+// only once its page has the snapshot drawn.
+const screenPick = require('./screen-pick.js');
+screenPick.installScreenPick();
+ipcMain.handle('color:pickScreen',         () => screenPick.pickScreenColor(mainWindow));
+ipcMain.handle('color:pickScreen:prepare', () => { screenPick.prepareScreenPick(mainWindow); return true; });   // the colour dialog opened: warm the picker windows
 
 // ─── 📦 Collect project (V0.3.4.101) ─────────────────────────────────────────
 // The renderer drives it file by file (it owns the decisions: copy / link /

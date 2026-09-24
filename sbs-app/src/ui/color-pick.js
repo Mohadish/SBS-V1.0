@@ -14,6 +14,7 @@
  */
 
 import { openColorDialog, closeColorDialog, isColorDialogOpen } from './color-dialog.js';
+import { beginScreenPickWait } from './pick-wait.js';   // V0.3.4.117 — busy pointer + click veil while the screens are photographed
 
 const HINT = 'Right-click (or Alt+click): pick a colour from anywhere on screen — both screens';
 
@@ -43,11 +44,12 @@ async function _pickInto(input) {
     return;
   }
   _busy = true;
+  const endWait = beginScreenPickWait();
   try {
     const hex = await window.sbsNative.pickScreenColor();
     if (hex) _commit(input, hex);
   } catch (err) { console.warn('[pick] screen colour pick failed:', err?.message || err); }
-  finally { _busy = false; }
+  finally { endWait(); _busy = false; }
 }
 
 export function initColorPick() {
