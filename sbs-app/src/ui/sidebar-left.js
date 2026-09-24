@@ -281,7 +281,9 @@ export function initSidebarLeft() {
   state.on('change:cableDefaultDiameter', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   // 🖐 V0.3.4.127 — the hands tab follows the pick mode and the selection
-  state.on('change:handPicking', () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
+  state.on('change:handPicking',  () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
+  state.on('change:handFineTune', () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
+  state.on('change:treeData',     () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });   // pose / params committed
   state.on('change:selectedId',  () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
   state.on('change:styleTemplates',        () => {
     _maybeRenderStyleTab();                                 // skips values-only edits — see _maybeRenderStyleTab

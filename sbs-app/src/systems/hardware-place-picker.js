@@ -89,6 +89,19 @@ export function startPlaceNodeBy3Points(nodeId, opts = {}) {
   setStatus('Snap 3 points around a circle to place it at the centre. Backspace = undo point · Esc = cancel.', 'info', 7000);
 }
 
+/**
+ * 🖐 V0.3.4.128 — MAP 3 POINTS: move an existing node so that three of its
+ * own points (world, `srcPoints`) land on three points the user snaps on the
+ * scene, in the same order. A rigid fit from the two triangles (first point =
+ * origin, first edge = X, the triangle's normal = Z); no scaling. `labels`
+ * name the points for the status line; `onDone` runs after the move.
+ */
+export function startMapNodeBy3Points(nodeId, srcPoints, labels = [], onDone = null) {
+  if (!nodeId || !Array.isArray(srcPoints) || srcPoints.length !== 3) return;
+  _begin({ mode: '3map', intent: { kind: 'mapNode', nodeId, srcPoints: srcPoints.map(p => p.clone()), labels, onDone }, exclude: nodeId });
+  setStatus(`Point 1 of 3 — ${labels[0] || 'the first point'}. Snap it on the real part. Backspace = undo point · Esc = cancel.`, 'info', 9000);
+}
+
 function _begin({ mode, intent, exclude = null }) {
   cancel();
   const T = window.THREE;
@@ -151,6 +164,14 @@ export function onPointerDown(clientX, clientY) {
   if (_state.points.length === 0) _state.refMesh = t.mesh;   // first point's mesh → parent model (per "use the first one")
   _state.points.push(t.point.clone());
   _rebuildPoints();
+  if (_state.mode === '3map') {
+    const { labels } = _state.intent;
+    if (_state.points.length < 3) { setStatus(`Point ${_state.points.length + 1} of 3 — ${labels[_state.points.length] || 'the next point'}.`, 'info', 9000); return true; }
+    const M = _rigidFrom3(_state.intent.srcPoints, _state.points);
+    if (!M) { _state.points.pop(); _rebuildPoints(); setStatus('Those 3 points are collinear — pick 3 that span a triangle.', 'warn', 3500); return true; }
+    _commitMap(M);
+    return true;
+  }
   if (_state.points.length === 3) {
     const fit = circumcenterAndNormal(_state.points[0], _state.points[1], _state.points[2]);
     if (!fit) {                                     // collinear → drop, retry
@@ -168,7 +189,7 @@ export function onPointerDown(clientX, clientY) {
 export function onKeyDown(key) {
   if (!_state) return false;
   if (key === 'Escape') { cancel(); return true; }
-  if (_state.mode === '3pt' && key === 'Backspace') {
+  if ((_state.mode === '3pt' || _state.mode === '3map') && key === 'Backspace') {
     if (_state.points.length) { _state.points.pop(); _rebuildPoints(); }
     return true;
   }
@@ -176,6 +197,44 @@ export function onKeyDown(key) {
 }
 
 // ─── Resolve target pose ─────────────────────────────────────────────────────
+
+/** A frame from three points: origin = p1, X along p1→p2, Z = the triangle's normal. Null when collinear. */
+function _frameOf3(p) {
+  const T = window.THREE;
+  const x = p[1].clone().sub(p[0]);
+  const y0 = p[2].clone().sub(p[0]);
+  const z = new T.Vector3().crossVectors(x, y0);
+  if (x.lengthSq() < 1e-9 || z.lengthSq() < 1e-9) return null;
+  x.normalize(); z.normalize();
+  const y = new T.Vector3().crossVectors(z, x);
+  return new T.Matrix4().makeBasis(x, y, z).setPosition(p[0]);
+}
+/** The rigid transform taking the source triangle onto the target one (no scale). */
+function _rigidFrom3(src, dst) {
+  const A = _frameOf3(src), B = _frameOf3(dst);
+  if (!A || !B) return null;
+  return B.multiply(A.invert());
+}
+/** 3map: apply the rigid transform to the node's current world pose. */
+function _commitMap(M) {
+  const T = window.THREE;
+  const intent = _state.intent;
+  try {
+    const obj = steps.object3dById?.get(intent.nodeId) || state.get('nodeById')?.get(intent.nodeId)?.object3d;
+    if (!obj) return;
+    obj.updateMatrixWorld(true);
+    const W = M.clone().multiply(obj.matrixWorld);
+    const pos = new T.Vector3(), q = new T.Quaternion(), s = new T.Vector3();
+    W.decompose(pos, q, s);
+    const ok = placeNodeAtWorldPose(intent.nodeId, pos, q);
+    if (ok) { state.setSelection?.(intent.nodeId); intent.onDone?.(); }
+  } catch (err) {
+    console.error('[place-picker] 3-point map failed:', err);
+    setStatus('Could not align — see the console.', 'danger', 4000);
+  } finally {
+    cancel();
+  }
+}
 
 function _resolveSurface(hit) {
   const T = window.THREE;

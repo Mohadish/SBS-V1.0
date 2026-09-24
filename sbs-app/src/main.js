@@ -2010,7 +2010,7 @@ function _syncGizmoToSelection() {
   const handSel = state.get('selectedHandControl');
   if (handSel) {
     const t = _buildHandControlGizmoTarget(handSel.nodeId, handSel.key);
-    if (t) { gizmo.showForCableTarget(t, handSel.key === 'palm' ? 'all' : 'translate'); return; }
+    if (t) { gizmo.showForCableTarget(t, 'translate'); return; }
     gizmo.hide();
     return;
   }
@@ -2018,11 +2018,6 @@ function _syncGizmoToSelection() {
   const nodeById = state.get('nodeById');
   if (!selId || !nodeById) { gizmo.hide(); return; }
   const node = nodeById.get(selId);
-  // 🖐 a PINNED hand selected as a whole: its palm is the thing to move (the fingertips stay put)
-  if (node?.type === 'hand' && handActions.isPinned(node)) {
-    const t = _buildHandControlGizmoTarget(node.id, 'palm');
-    if (t) { gizmo.showForCableTarget(t, 'all'); return; }
-  }
   // Hide gizmo for types that don't carry their own transforms: mesh,
   // scene, note, and replaceModel (RM is a container — its children
   // inherit via Three.js parenting; the RM itself never gets a gizmo
@@ -2046,17 +2041,14 @@ function _buildHandControlGizmoTarget(nodeId, key) {
   const T = window.THREE;
   const node = state.get('nodeById')?.get(nodeId);
   if (!node || node.type !== 'hand' || !node.object3d) return null;
-  let start = null, before = null, startQ = null;
+  let start = null, before = null;
   return {
     isMulti: false,
     getWorldPos()  { return hands.controlWorld(node, key); },
-    getWorldQuat() { return key === 'palm' ? handActions.palmWorldQuat(nodeId) : new T.Quaternion(); },
+    getWorldQuat() { return new T.Quaternion(); },
     beginMove()    { before = handActions.snapshotParams(nodeId); start = this.getWorldPos(); },
     applyCumulativeDelta(worldD) { if (start) handActions.moveHandControlLive(nodeId, key, start.clone().add(worldD)); },
     commitMove()   { handActions.commitHandControl(nodeId, key, before); before = null; start = null; },
-    beginRotate()  { before = handActions.snapshotParams(nodeId); startQ = handActions.palmWorldQuat(nodeId); },
-    applyRotateAroundAxis(axis, angle) { if (key === 'palm') handActions.rotatePalmLive(nodeId, axis, angle, startQ); },
-    commitRotate() { handActions.commitHandControl(nodeId, key, before); before = null; startQ = null; },
   };
 }
 
@@ -3682,6 +3674,12 @@ canvas.addEventListener('dblclick', e => {
 
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
+
+  // 🖐 V0.3.4.128 — double-click a hand: its fingertip / forearm handles come up (fine-tune).
+  if (hit.object.userData?.handNodeId && nbm.get(hit.object.userData.handNodeId)?.type === 'hand') {
+    handActions.setHandFineTune(hit.object.userData.handNodeId);
+    return;
+  }
 
   // V0.3.0.74 — LOCKED folder: double-click TEMPORARILY UNLOCKS it so its objects
   // become individually selectable, and selects the top-level object inside (the
@@ -5606,6 +5604,7 @@ window.addEventListener('keydown', async e => {
     // 🖐 V0.3.4.127: a waiting fingertip / a selected hand control — Esc lets go.
     if (state.get('handPicking')) { handActions.stopHandPick(); return; }
     if (state.get('selectedHandControl')) { state.setState({ selectedHandControl: null }); return; }
+    if (state.get('handFineTune')) { state.setState({ handFineTune: null }); return; }
     if (state.get('cablePlacingId')) {
       actions.stopCablePlacement();
       return;

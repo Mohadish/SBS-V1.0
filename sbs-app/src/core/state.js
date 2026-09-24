@@ -371,6 +371,7 @@ function createInitialState() {
     // and the hand control the gizmo drives: { nodeId, key: finger | 'palm' | 'forearm' } | null.
     handPicking:         null,
     selectedHandControl: null,
+    handFineTune:        null,   // the hand whose fingertip / forearm handles are up (double-click)
 
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open

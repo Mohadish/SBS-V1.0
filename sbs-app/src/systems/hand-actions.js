@@ -1,15 +1,16 @@
 /**
- * SBS — hand actions (V0.3.4.127): every mutation of a hand, undoable.
+ * SBS — hand actions (V0.3.4.128): every mutation of a hand, undoable.
  * ─────────────────────────────────────────────────────────────────────
- * Add / remove a hand (a tree node, type 'hand'), pin a fingertip to what
- * the user clicked (mesh + local point, the cable-socket recipe), unpin,
- * fit the palm, release / open, move a control (fingertip target, palm,
- * forearm point) live from the gizmo and commit it as ONE undo entry.
- * The rig and the solve live in systems/hands.js.
+ * Add / remove a hand (a tree node, type 'hand'), choose its pose and how
+ * closed it is, show / hide the ghost prop, align it to the part by mapping
+ * the prop's three points (the snap picker's 3-point mapping), release /
+ * open per step, and — fine-tune — pin a fingertip to what the user clicks
+ * or drags (mesh + local point, the cable-socket recipe) so that finger bends
+ * on to it. The rig and the solve live in systems/hands.js.
  *
- * State keys: `handPicking` = { nodeId, finger } while the user is asked to
- * click where a fingertip touches; `selectedHandControl` = { nodeId, key }
- * for the gizmo (key = finger | 'palm' | 'forearm').
+ * State keys: `handPicking` = { nodeId, finger } while a fingertip waits for
+ * its click; `selectedHandControl` = { nodeId, key } for the gizmo (a finger
+ * or 'forearm'); `handFineTune` = the hand whose handles are up.
  */
 
 import { state }       from '../core/state.js';
@@ -21,15 +22,13 @@ import { buildNodeMap, findParent } from '../core/nodes.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import * as hands      from './hands.js';
+import * as placePicker from './hardware-place-picker.js';
 
 const _clone = (v) => JSON.parse(JSON.stringify(v ?? null));
 const _node  = (id) => { const n = state.get('nodeById')?.get(id); return n && n.type === 'hand' ? n : null; };
 
-export function isPinned(node) {
-  const p = node?.handParams;
-  return !!p && !p.released && hands.HAND_FINGERS.some(f => p.targets?.[f]);
-}
 export function snapshotParams(id) { const n = _node(id); return n ? _clone(n.handParams || hands.defaultHandParams()) : null; }
+const _xfOf = (n) => ({ localOffset: [...(n.localOffset || [0, 0, 0])], localQuaternion: [...(n.localQuaternion || [0, 0, 0, 1])], orientationSteps: [...(n.orientationSteps || [0, 0, 0])] });
 
 // ── tree attach / detach ─────────────────────────────────────────────────────
 
@@ -62,7 +61,6 @@ function _attach(node, parentId) {
   state.setState({ nodeById: buildNodeMap(root) });
   state.emit('change:treeData', root);
   hands.markHandDirty(node.id);
-  // solidify now (see actions._readdPrimitiveNode): the active step must hold the new node at once
   steps.scheduleTransformSync?.();
   steps.flushSync?.();
   sceneCore.requestRender?.(200);
@@ -99,6 +97,7 @@ function _detach(id) {
   if (state.get('selectedId') === id) { patch.selectedId = null; patch.multiSelectedIds = new Set(); }
   if (state.get('selectedHandControl')?.nodeId === id) patch.selectedHandControl = null;
   if (state.get('handPicking')?.nodeId === id) patch.handPicking = null;
+  if (state.get('handFineTune') === id) patch.handFineTune = null;
   state.setState(patch);
   state.emit('change:treeData', root);
   sceneCore.requestRender?.(200);
@@ -106,13 +105,14 @@ function _detach(id) {
 
 // ── add / remove ─────────────────────────────────────────────────────────────
 
-export function addHand(side = 'right') {
+export function addHand(side = 'right', pose = 'handle') {
   const parent = _parentForNew();
   const left = side === 'left';
-  const node = createNode('hand', { name: left ? 'Left hand' : 'Right hand', handSide: left ? 'left' : 'right', handParams: hands.defaultHandParams() });
+  const params = hands.defaultHandParams();
+  if (hands.HAND_POSES[pose]) params.pose = pose;
+  const node = createNode('hand', { name: left ? 'Left hand' : 'Right hand', handSide: left ? 'left' : 'right', handParams: params });
   node.pivotEnabled = false;
-  // start it in front of the camera's target so it is on screen
-  try {
+  try {   // start it at the camera's orbit centre so it is on screen
     const T = window.THREE;
     const c = sceneCore.controls?.pivot || sceneCore.controls?.target;
     if (c && T) {
@@ -124,7 +124,7 @@ export function addHand(side = 'right') {
   _attach(node, parent.id);
   state.markDirty();
   undoManager.push(`Add ${node.name}`, () => _detach(node.id), () => _attach(node, parent.id));
-  state.setState({ selectedId: node.id, multiSelectedIds: new Set([node.id]), selectedHandControl: null });
+  state.setState({ selectedId: node.id, multiSelectedIds: new Set([node.id]), selectedHandControl: null, handFineTune: null });
   return node.id;
 }
 
@@ -146,6 +146,10 @@ function _applyParams(id, params, { flush = true } = {}) {
   if (!n) return;
   n.handParams = _clone(params);
   hands.markHandDirty(id);
+  // a pose / size change rebuilds the rig in place (the group keeps its parent + transform)
+  const parent = n.object3d?.parent;
+  const g = hands.ensureHandObject3D(n);
+  if (g && parent && g.parent !== parent) { parent.add(g); steps.object3dById.set(id, g); }
   hands.solveHand(n);
   if (flush) { steps.scheduleTransformSync?.(); state.emit('change:treeData', state.get('treeData')); }
   sceneCore.requestRender?.(120);
@@ -157,13 +161,47 @@ export function setHandParams(id, patch, label = 'Edit hand', { before = null } 
   if (!n) return false;
   const prev = before || _clone(n.handParams || hands.defaultHandParams());
   const next = { ..._clone(n.handParams || hands.defaultHandParams()), ...patch };
-  _applyParams(id, next);
+  // a live slider move (no label) must not emit change:treeData — the tab would
+  // re-render under the pointer and kill the drag; the commit (with a label) does
+  _applyParams(id, next, { flush: !!label });
   state.markDirty();
   if (label) undoManager.push(label, () => _applyParams(id, prev), () => _applyParams(id, next));
   return true;
 }
+export function setHandPose(id, pose) {
+  if (!hands.HAND_POSES[pose]) return false;
+  return setHandParams(id, { pose, ghost: true }, `Hand pose: ${hands.HAND_POSES[pose].label}`);
+}
+export function setHandReleased(id, released) {
+  return setHandParams(id, { released: !!released }, released ? 'Release the hand' : 'Grip again');
+}
+export function setGhostVisible(id, on) {
+  return setHandParams(id, { ghost: !!on }, on ? 'Show the ghost prop' : 'Hide the ghost prop');
+}
 
-// ── pinning fingertips ───────────────────────────────────────────────────────
+// ── align to the part: map the prop's three points ───────────────────────────
+
+/** Start the 3-point mapping: the user clicks, on the real part, the three points the prop names. */
+export function startAlignHand(id) {
+  const n = _node(id);
+  if (!n) return false;
+  if (n.handParams?.released) { setStatus('A released hand has no grip to align — turn "Release at this step" off first.', 'warn', 4000); return false; }
+  const src = hands.ghostPointsWorld(n);
+  if (!src) { setStatus('This pose holds nothing — place it with the gizmo.', 'info', 3500); return false; }
+  const labels = hands.ghostPointLabels(n);
+  // the ghost must be visible to see what is being mapped
+  if (n.handParams?.ghost === false) { n.handParams.ghost = true; hands.markHandDirty(id); hands.solveHand(n); }
+  state.setState({ selectedId: id, multiSelectedIds: new Set([id]), selectedHandControl: null, handFineTune: null });
+  placePicker.startMapNodeBy3Points(id, src, labels, () => {
+    // landed: the ghost has done its job
+    const cur = _clone(n.handParams || hands.defaultHandParams());
+    if (cur.ghost !== false) { cur.ghost = false; _applyParams(id, cur); }
+    setStatus('Hand aligned to the part. Fine-tune with the gizmo; double-click the hand for the finger handles.', 'success', 6000);
+  });
+  return true;
+}
+
+// ── fine-tune: pinned fingertips ─────────────────────────────────────────────
 
 function _nodeIdForObject(obj) {
   const nb = state.get('nodeById');
@@ -176,10 +214,16 @@ function _nodeIdForObject(obj) {
   return null;
 }
 
+export function setHandFineTune(id) {
+  const n = id ? _node(id) : null;
+  state.setState({ handFineTune: n ? id : null, ...(n ? { selectedId: id, multiSelectedIds: new Set([id]) } : {}) });
+  if (n) setStatus('Fine-tune: drag a fingertip handle to pin that finger there (it bends to reach it), the yellow one to swing the forearm. Esc leaves.', 'info', 6000);
+}
+
 export function startHandPick(id, finger) {
   const n = _node(id);
   if (!n || !hands.HAND_FINGERS.includes(finger)) return;
-  state.setState({ handPicking: { nodeId: id, finger }, selectedId: id, multiSelectedIds: new Set([id]), selectedHandControl: null });
+  state.setState({ handPicking: { nodeId: id, finger }, selectedId: id, multiSelectedIds: new Set([id]), selectedHandControl: null, handFineTune: id });
   setStickyStatus(`🖐 ${hands.FINGER_LABEL[finger]}: click the object where the fingertip touches · Esc stops`, 'info', 'handpick');
 }
 export function stopHandPick() {
@@ -202,11 +246,10 @@ export function setHandFingerFromHit(id, finger, hit) {
     t = { pos: [hit.point.x, hit.point.y, hit.point.z] };
   }
   const cur = _clone(n.handParams || hands.defaultHandParams());
-  const targets = { ...cur.targets, [finger]: t };
-  setHandParams(id, { targets, released: false }, `Pin ${hands.FINGER_LABEL[finger]}`);
+  setHandParams(id, { targets: { ...cur.targets, [finger]: t } }, `Pin ${hands.FINGER_LABEL[finger]}`);
   stopHandPick();
   const r = hands.solveHand(n);
-  setStatus(`${hands.FINGER_LABEL[finger]} pinned${meshId && meshId !== id ? ` to "${state.get('nodeById')?.get(meshId)?.name || 'the part'}"` : ' (free point)'} — ${r.pinned} finger(s) on. Pick the next finger, or Place hand.${r.unreached.length ? ` Out of reach: ${r.unreached.map(f => hands.FINGER_LABEL[f]).join(', ')}.` : ''}`, 'success', 6000);
+  setStatus(`${hands.FINGER_LABEL[finger]} pinned${r.unreached.includes(finger) ? ' — out of reach from here; move the hand closer' : ''}.`, r.unreached.includes(finger) ? 'warn' : 'success', 5000);
   return true;
 }
 
@@ -221,52 +264,25 @@ export function clearAllFingers(id) {
   const n = _node(id);
   if (!n) return false;
   const targets = {}; for (const f of hands.HAND_FINGERS) targets[f] = null;
-  return setHandParams(id, { targets, palm: null }, 'Unpin every finger');
-}
-
-/** Place hand = fit the palm to the pinned fingertips afresh (drops a palm the user moved). */
-export function fitHand(id) {
-  const n = _node(id);
-  if (!n) return false;
-  if (!isPinned(n)) { setStatus('Pin at least one finger first — pick a finger, then click where it touches.', 'warn', 4000); return false; }
-  setHandParams(id, { palm: null, forearm: null, released: false }, 'Place hand');
-  const r = hands.solveHand(n);
-  setStatus(`Hand placed on ${r.pinned} finger(s).${r.unreached.length ? ` Out of reach: ${r.unreached.map(f => hands.FINGER_LABEL[f]).join(', ')} — move the palm (pink) or the forearm (yellow) handle.` : ''}`, 'success', 6000);
-  return true;
-}
-
-export function setHandReleased(id, released) {
-  const n = _node(id);
-  if (!n) return false;
-  return setHandParams(id, { released: !!released }, released ? 'Release the hand' : 'Grip again');
+  return setHandParams(id, { targets, forearm: null }, 'Unpin every finger');
 }
 
 // ── controls: live moves from the gizmo, one undo on commit ──────────────────
 
 export function selectHandControl(id, key) {
   const n = _node(id);
-  if (!n || !hands.HAND_CONTROLS.includes(key)) return;
-  state.setState({ selectedHandControl: { nodeId: id, key }, selectedId: id, multiSelectedIds: new Set([id]), selectedCablePoint: null, selectedCablePoints: [], selectedCableSocket: null });
+  if (!n || !hands.HAND_CONTROLS.includes(key) || key === 'palm') return;
+  state.setState({ selectedHandControl: { nodeId: id, key }, selectedId: id, multiSelectedIds: new Set([id]), handFineTune: id, selectedCablePoint: null, selectedCablePoints: [], selectedCableSocket: null });
 }
 
-/** Move a control to a world position (live, no undo): a fingertip target, the palm, the forearm point. */
+/** Move a control to a world position (live, no undo): a fingertip target (pins it) or the forearm point. */
 export function moveHandControlLive(id, key, worldPos) {
   const n = _node(id);
   if (!n) return;
-  const T = window.THREE;
   const p = _clone(n.handParams || hands.defaultHandParams());
-  if (key === 'palm') {
-    const q = new T.Quaternion(); n.object3d?.getWorldQuaternion(q);
-    const cur = p.palm?.quat ? p.palm.quat : [q.x, q.y, q.z, q.w];
-    p.palm = { pos: [worldPos.x, worldPos.y, worldPos.z], quat: cur };
-    if (!isPinned(n)) {   // a released hand: the node's own transform is the truth
-      const group = n.object3d;
-      if (group?.parent) { const lp = group.parent.worldToLocal(worldPos.clone()); const bp = n.baseLocalPosition || [0, 0, 0]; n.localOffset = [lp.x - bp[0], lp.y - bp[1], lp.z - bp[2]]; }
-      p.palm = null;
-    }
-  } else if (key === 'forearm') {
+  if (key === 'forearm') {
     p.forearm = [worldPos.x, worldPos.y, worldPos.z];
-  } else {
+  } else if (hands.HAND_FINGERS.includes(key)) {
     const t = p.targets?.[key];
     if (t?.nodeId) {   // keep it riding the same part: re-express under that part
       const host = state.get('nodeById')?.get(t.nodeId)?.object3d;
@@ -275,42 +291,8 @@ export function moveHandControlLive(id, key, worldPos) {
     } else {
       p.targets[key] = { pos: [worldPos.x, worldPos.y, worldPos.z] };
     }
-    p.released = false;
-  }
+  } else return;
   _applyParams(id, p, { flush: false });
-}
-
-/** The palm's world quaternion now — the gizmo's rotate is cumulative from the drag start, so the target keeps this. */
-export function palmWorldQuat(id) {
-  const T = window.THREE; const q = new T.Quaternion();
-  _node(id)?.object3d?.getWorldQuaternion(q);
-  return q;
-}
-
-/** Rotate the palm in place about a world axis: `angle` is the TOTAL angle since the drag began, applied on `startQuat`. */
-export function rotatePalmLive(id, axisWorld, angle, startQuat) {
-  const n = _node(id);
-  if (!n) return;
-  const T = window.THREE;
-  const p = _clone(n.handParams || hands.defaultHandParams());
-  const q = startQuat ? startQuat.clone() : palmWorldQuat(id);
-  const pos = new T.Vector3(); n.object3d?.getWorldPosition(pos);
-  const r = new T.Quaternion().setFromAxisAngle(axisWorld.clone().normalize(), angle);
-  const nq = r.multiply(q);
-  if (isPinned(n)) {
-    p.palm = { pos: [pos.x, pos.y, pos.z], quat: [nq.x, nq.y, nq.z, nq.w] };
-    _applyParams(id, p, { flush: false });
-  } else {
-    const group = n.object3d;
-    if (group?.parent) {
-      const pq = new T.Quaternion(); group.parent.getWorldQuaternion(pq);
-      const lq = pq.invert().multiply(nq);
-      const bq = n.baseLocalQuaternion || [0, 0, 0, 1];
-      const dq = new T.Quaternion(bq[0], bq[1], bq[2], bq[3]).invert().multiply(lq);
-      n.localQuaternion = [dq.x, dq.y, dq.z, dq.w];
-      hands.markHandDirty(id); hands.solveHand(n); sceneCore.requestRender?.(120);
-    }
-  }
 }
 
 /** The drag is over: one undo entry from the snapshot taken at its start. */
@@ -318,26 +300,21 @@ export function commitHandControl(id, key, before) {
   const n = _node(id);
   if (!n) return;
   const after = _clone(n.handParams || hands.defaultHandParams());
-  const label = key === 'palm' ? 'Move the palm' : key === 'forearm' ? 'Move the forearm' : `Move the ${hands.FINGER_LABEL[key].toLowerCase()} tip`;
-  if (isPinned(n) || key !== 'palm') {
-    const prev = before || after;
-    _applyParams(id, after);
-    state.markDirty();
-    undoManager.push(label, () => _applyParams(id, prev), () => _applyParams(id, after));
-  } else {
-    // a released hand moved as a unit: the node transform changed — sync it like any transform edit
-    steps.scheduleTransformSync?.();
-    state.emit('change:treeData', state.get('treeData'));
-    state.markDirty();
-  }
+  const prev = before || after;
+  const label = key === 'forearm' ? 'Move the forearm' : `Pin the ${hands.FINGER_LABEL[key]?.toLowerCase() || 'finger'} tip`;
+  _applyParams(id, after);
+  state.markDirty();
+  undoManager.push(label, () => _applyParams(id, prev), () => _applyParams(id, after));
 }
 
-/** Wire the housekeeping: a control selection dies with its hand's selection. */
+/** Wire the housekeeping: a control selection / fine-tune dies with its hand's selection. */
 export function initHandActions() {
   state.on('change:selectedId', (id) => {
     const c = state.get('selectedHandControl');
     if (c && c.nodeId !== id) state.setState({ selectedHandControl: null });
     const pk = state.get('handPicking');
     if (pk && pk.nodeId !== id && id) stopHandPick();
+    const ft = state.get('handFineTune');
+    if (ft && ft !== id) state.setState({ handFineTune: null });
   });
 }
