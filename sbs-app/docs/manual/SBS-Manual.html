@@ -419,7 +419,8 @@ svg .arrow{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#ah)}
 <h2 id="select-transforms">Transform commands (right-click)</h2>
 <table>
 <tr><th>Command</th><th>Use</th></tr>
-<tr><td>📋 Copy Transforms / 📌 Paste Transforms</td><td>Copy a part's position and rotation in this step and paste onto another part (or the same part in another step).</td></tr>
+<tr><td>📋 Copy Transforms / 📌 Paste Transforms</td><td>Copy a folder's pose (and every part inside it) in this step and paste onto another folder (or the same one in another step). Paste writes the current step only.</td></tr>
+<tr><td>📌 Paste Transforms to steps…</td><td>The same paste into a range of steps (all / forward / backward / selected). The current step is the reference: where the folder sits in the tree here is "the same structure". In steps where the folder sits under a different parent, one choice for all of them: <b>Keep the tree</b> (the folder is placed as if it were under the reference parent, and that pose is written under its real parent there), <b>Move it back</b> under the reference parent in those steps, or <b>Skip</b> its own pose there. Parts inside the folder always get their poses. The reference parent is recognised by its id, or failing that by the objects that sat beside the folder (a majority of them). One undo.</td></tr>
 <tr><td>↺ Reset Move / ↺ Reset Rotation / ↺ Reset All Transforms</td><td>Send the part back to its imported pose in this step.</td></tr>
 <tr><td>🌐 Global transform…</td><td>Apply one numeric move / rotation to the selection across all steps at once.</td></tr>
 <tr><td>🎯 Align to surface…</td><td>Click a face on another part; the selection's base face is laid tangent onto it.</td></tr>
