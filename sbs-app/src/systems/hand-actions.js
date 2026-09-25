@@ -334,15 +334,17 @@ function _b64(ab) {
   return btoa(s);
 }
 
-/** Save the rig (right hand, 190 mm, at rest) as a .glb to skin a real hand to. */
+/** Save the rig (right hand, 190 mm, at rest) as .fbx (or .glb) to skin a real hand to. */
 export async function exportHandRig() {
-  const path = await window.sbsNative?.saveFile?.({ title: 'Export the hand rig (.glb)', defaultPath: 'sbs-hand-rig.glb', filters: [{ name: 'glTF binary', extensions: ['glb'] }] });
+  const path = await window.sbsNative?.saveFile?.({ title: 'Export the hand rig', defaultPath: 'sbs-hand-rig.fbx', filters: [{ name: 'FBX (ASCII 7.4)', extensions: ['fbx'] }, { name: 'glTF binary', extensions: ['glb'] }] });
   if (!path) return false;
   try {
-    const glb = hands.buildHandRigGlb(190);
-    const r = await window.sbsNative.writeFile(path, _b64(glb), 'base64');
+    const fbx = !/\.glb$/i.test(path);
+    let r, size;
+    if (fbx) { const text = hands.buildHandRigFbx(190); size = text.length; r = await window.sbsNative.writeFile(path, text, 'utf-8'); }
+    else     { const glb = hands.buildHandRigGlb(190); size = glb.byteLength; r = await window.sbsNative.writeFile(path, _b64(glb), 'base64'); }
     if (!r?.ok) throw new Error(r?.error || 'write failed');
-    setStatus(`Hand rig exported (${Math.round(glb.byteLength / 1024)} KB). Skin a hand to its bones, keep their names, bring the .glb back with "Load skin".`, 'success', 8000);
+    setStatus(`Hand rig exported (${Math.round(size / 1024)} KB). Skin a hand to its bones, keep their names, bring the file back with "Load skin".`, 'success', 8000);
     return true;
   } catch (e) {
     setStatus(`Rig export failed: ${e?.message || e}`, 'error', 6000);
@@ -350,9 +352,9 @@ export async function exportHandRig() {
   }
 }
 
-/** Pick a skinned .glb — becomes every hand's look on this machine. */
+/** Pick a skinned .fbx / .glb — becomes every hand's look on this machine. */
 export async function pickHandSkin() {
-  const path = await window.sbsNative?.openFile?.({ title: 'Load a skinned hand (.glb)', filters: [{ name: 'glTF binary', extensions: ['glb'] }] });
+  const path = await window.sbsNative?.openFile?.({ title: 'Load a skinned hand (.fbx / .glb)', filters: [{ name: 'Skinned hand', extensions: ['fbx', 'glb'] }, { name: 'FBX', extensions: ['fbx'] }, { name: 'glTF binary', extensions: ['glb'] }] });
   if (!path) return false;
   const info = await hands.setHandSkinFile(path);
   if (info.loaded) setStatus(info.missing.length ? `Skin loaded — bones not found: ${info.missing.join(', ')} (those joints will not move it).` : 'Skin loaded on every hand.', info.missing.length ? 'warn' : 'success', 7000);

@@ -35,7 +35,9 @@ import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { APP_VERSION }                  from '../core/schema.js';
 import * as userSettings                from '../core/user-settings.js';           // 🧤 V0.3.4.139 the skin file is a machine setting
 import { skinnedMeshGlb }               from '../io/glb-write.js';                // 🧤 the rig export
+import { skinnedMeshFbx }               from '../io/fbx-write.js';                // 🧤 … and as FBX (V0.3.4.140)
 import { GLTFLoader }                   from '../../vendor/GLTFLoader.bundle.mjs'; // 🧤 the skin coming back
+import { FBXLoader }                    from '../../vendor/FBXLoader.bundle.mjs';  // 🧤 … as FBX from Max
 
 const T = () => window.THREE;
 const DEG = Math.PI / 180;
@@ -779,6 +781,17 @@ function _quatIn(obj, stopAt) {
  * as a skinned proxy (every vertex 100 % on its bone). Returns the bytes.
  */
 export function buildHandRigGlb(scale = 190) {
+  const d = _rigExportData(scale);
+  return skinnedMeshGlb({ ...d, name: 'sbs_hand', extras: { sbsHandRig: 1, sbsHandScale: scale, sbsAppVersion: APP_VERSION } });
+}
+/** The same rig as FBX 7.4 ASCII text (V0.3.4.140 — the user's Max opens no .glb). */
+export function buildHandRigFbx(scale = 190) {
+  const d = _rigExportData(scale);
+  return skinnedMeshFbx({ ...d, name: 'sbs_hand', creator: `SBS Step Browser ${APP_VERSION}` });
+}
+
+/** Bones + skinned proxy geometry of the bare rig at rest (shared by the .glb / .fbx writers). */
+function _rigExportData(scale = 190) {
   const Th = T();
   const tmp = { id: 'hand-export', type: 'hand', name: 'hand', handSide: 'right', handParams: { ...defaultHandParams(), scale, pose: 'relaxed', ghost: false } };
   const keepTemplate = _skin.template; _skin.template = null;   // the BARE rig goes out, never a skin over it
@@ -817,19 +830,19 @@ export function buildHandRigGlb(scale = 190) {
     else { for (let i = 0; i < pos.count; i++) I.push(base + i); }
     base += pos.count;
   }
-  const ibm = new Float32Array(bones.length * 16);
+  const ibm = new Float32Array(bones.length * 16), bind = new Float32Array(bones.length * 16);
   const inv = new Th.Matrix4();
-  bones.forEach((b, i) => { inv.copy(b.obj.matrixWorld).invert(); ibm.set(inv.elements, i * 16); });
+  bones.forEach((b, i) => { bind.set(b.obj.matrixWorld.elements, i * 16); inv.copy(b.obj.matrixWorld).invert(); ibm.set(inv.elements, i * 16); });
 
   const c = new Th.Color(ANAT.skin);
-  const glb = skinnedMeshGlb({
+  const data = {
     bones: bones.map(b => ({ name: b.name, parent: b.parent, position: b.obj.position.toArray(), quaternion: b.obj.quaternion.toArray() })),
     positions: new Float32Array(P), normals: new Float32Array(N), indices: new Uint32Array(I),
-    joints: new Uint16Array(J), weights: new Float32Array(W), inverseBindMatrices: ibm,
-    color: [c.r, c.g, c.b], name: 'sbs_hand', extras: { sbsHandRig: 1, sbsHandScale: scale, sbsAppVersion: APP_VERSION },
-  });
+    joints: new Uint16Array(J), weights: new Float32Array(W), inverseBindMatrices: ibm, bindMatrices: bind,
+    color: [c.r, c.g, c.b],
+  };
   group.traverse(o => { o.geometry?.dispose?.(); });
-  return glb;
+  return data;
 }
 
 /**
@@ -844,8 +857,14 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
       if (!rd?.ok) throw new Error(rd?.error || 'the file could not be read');
       const u8 = rd.data instanceof Uint8Array ? rd.data : new Uint8Array(rd.data);
       const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
-      const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, '', res, rej));
-      _skin.template = _analyseSkin(gltf);
+      const ext = _skin.path.split('.').pop().toLowerCase();
+      if (ext === 'fbx') {
+        const group = new FBXLoader().parse(ab, '');   // sync; binary or ASCII ≥ 7.0
+        _skin.template = _analyseSkin({ scene: group, parser: null });
+      } else {
+        const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, '', res, rej));
+        _skin.template = _analyseSkin(gltf);
+      }
     } catch (e) {
       _skin.error = String(e?.message || e);
       console.warn('[hands] skin:', e);

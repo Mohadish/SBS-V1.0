@@ -80,16 +80,16 @@ function _skinCard() {
   const base = s.path ? s.path.split(/[\\/]/).pop() : '';
   const line = s.loaded ? `✓ <b>${_esc(base)}</b> on every hand`
     : s.error ? `✕ ${_esc(base)}: ${_esc(s.error)}`
-    : 'Procedural hand. <b>Export rig…</b> gives a .glb of the bones; skin a real hand to them (keep the bone names), then <b>Load skin</b>.';
+    : 'Procedural hand. <b>Export rig…</b> gives an .fbx of the bones; skin a real hand to them (keep the bone names), then <b>Load skin</b>.';
   return `
       <div class="card" style="margin-top:8px;padding:8px 10px;">
         <div class="small" style="font-weight:600;">🧤 Skin</div>
         <div class="small muted" style="margin-top:4px;line-height:1.45;">${line}</div>
         ${s.loaded && s.missing.length ? `<div class="small" style="margin-top:4px;color:#fbbf24;">Bones not found: ${_esc(s.missing.join(', '))}</div>` : ''}
         <div style="display:flex;gap:6px;margin-top:6px;">
-          <button class="btn" id="hand-skin-load" style="flex:1;" title="A .glb with a mesh skinned to the exported bones">Load skin…</button>
+          <button class="btn" id="hand-skin-load" style="flex:1;" title="An .fbx or .glb with a mesh skinned to the exported bones">Load skin…</button>
           <button class="btn" id="hand-skin-clear" ${s.path ? '' : 'disabled'} title="Back to the procedural hand">✕</button>
-          <button class="btn" id="hand-rig-export" title="Save the rig (right hand, at rest) as a .glb to skin over">Export rig…</button>
+          <button class="btn" id="hand-rig-export" title="Save the rig (right hand, at rest) as .fbx (or .glb) to skin over">Export rig…</button>
         </div>
       </div>`;
 }
