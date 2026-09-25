@@ -509,20 +509,23 @@ export function solveHand(node, params = null) {
   }
 
   // the forearm bone aims at the forearm point (in the hand's frame; a legacy world point still reads) or straight back
-  {
-    const fa = rig.forearm, fh = rig.foreHandle;
-    const localTarget = Array.isArray(p.forearmLocal) ? _v(p.forearmLocal)
-      : Array.isArray(p.forearm) ? group.worldToLocal(_v(p.forearm))
-      : new Th.Vector3(0, -ANAT.forearm.len * L, 0);
-    const dir = localTarget.clone().normalize();
-    fa.quaternion.setFromUnitVectors(new Th.Vector3(0, 1, 0), dir.lengthSq() ? dir : new Th.Vector3(0, -1, 0));
-    const len = _clamp(localTarget.length(), 0.6 * L, 2.2 * L);
-    fa.scale.set(1, len / (ANAT.forearm.len * L), 1);
-    fh.position.copy(dir.multiplyScalar(len));
-  }
+  _aimForearm(rig, Array.isArray(p.forearmLocal) ? _v(p.forearmLocal)
+    : Array.isArray(p.forearm) ? group.worldToLocal(_v(p.forearm))
+    : new Th.Vector3(0, -ANAT.forearm.len * L, 0));
   group.updateMatrixWorld(true);
   const unreached = pinned.filter(f => { const t = new Th.Vector3(); rig.fingers[f].tip.getWorldPosition(t); return t.distanceTo(tips[f]) > 0.03 * L; });
   return { pinned: pinned.length, unreached };
+}
+
+/** Aim the forearm bone at a point in the hand's frame (length clamped); the yellow handle sits on that point. */
+function _aimForearm(rig, localTarget) {
+  const Th = T(), L = rig.L;
+  const fa = rig.forearm, fh = rig.foreHandle;
+  const dir = localTarget.clone().normalize();
+  fa.quaternion.setFromUnitVectors(new Th.Vector3(0, 1, 0), dir.lengthSq() ? dir : new Th.Vector3(0, -1, 0));
+  const len = _clamp(localTarget.length(), 0.6 * L, 2.2 * L);
+  fa.scale.set(1, len / (ANAT.forearm.len * L), 1);
+  fh.position.copy(dir.multiplyScalar(len));
 }
 
 // ── controls, ghost points ───────────────────────────────────────────────────
@@ -591,14 +594,23 @@ function _captureAngles(rig) {
 function _solveBlend(node, from, to, t) {
   const rig = node.object3d?.userData?.rig;
   if (!rig) return;
-  solveHand(node, from); const A = _captureAngles(rig);
-  solveHand(node, to);   const B = _captureAngles(rig);
+  solveHand(node, from); const A = _captureAngles(rig); const foreA = rig.foreHandle.position.clone();
+  solveHand(node, to);   const B = _captureAngles(rig); const foreB = rig.foreHandle.position.clone();
   for (const f of HAND_FINGERS) {
     const fg = rig.fingers[f], a = A[f], b = B[f];
     fg.ball = a.q1.clone().slerp(b.q1, t);
     fg.phi[1] = a.phi1 + (b.phi1 - a.phi1) * t;
     fg.phi[2] = a.phi2 + (b.phi2 - a.phi2) * t;
     _setFingerAngles(fg);
+  }
+  // V0.3.4.138 — the forearm swings too (user: "the elbow gizmo jumps"): its
+  // direction slerps, its length lerps, between the two solved forearm points.
+  {
+    const Th = T(), up = new Th.Vector3(0, 1, 0);
+    const qA = new Th.Quaternion().setFromUnitVectors(up, foreA.clone().normalize());
+    const qB = new Th.Quaternion().setFromUnitVectors(up, foreB.clone().normalize());
+    const len = foreA.length() + (foreB.length() - foreA.length()) * t;
+    _aimForearm(rig, up.clone().applyQuaternion(qA.slerp(qB, t)).multiplyScalar(len));
   }
   if (rig.ghost) rig.ghost.visible = !to.released && to.ghost !== false;
   node.object3d.updateMatrixWorld(true);
