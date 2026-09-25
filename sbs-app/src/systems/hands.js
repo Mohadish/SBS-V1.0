@@ -32,6 +32,10 @@ import { state }                        from '../core/state.js';
 import { sceneCore }                    from '../core/scene.js';
 import { resolveNodeWorldPosition }     from './cables.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
+import { APP_VERSION }                  from '../core/schema.js';
+import * as userSettings                from '../core/user-settings.js';           // 🧤 V0.3.4.139 the skin file is a machine setting
+import { skinnedMeshGlb }               from '../io/glb-write.js';                // 🧤 the rig export
+import { GLTFLoader }                   from '../../vendor/GLTFLoader.bundle.mjs'; // 🧤 the skin coming back
 
 const T = () => window.THREE;
 const DEG = Math.PI / 180;
@@ -274,7 +278,7 @@ export function ensureHandObject3D(node) {
   if (!HAND_POSES[p.pose]) p.pose = 'handle';
   const L = Number(p.scale) || 190;
   const left = node.handSide === 'left';
-  const key = `${left ? 'L' : 'R'}:${L}:${p.pose}`;
+  const key = `${left ? 'L' : 'R'}:${L}:${p.pose}:skin${_skin.template ? _skin.rev : 0}`;
   const existing = node.object3d;
   if (existing && existing.userData?.handBuildKey === key) return existing;
 
@@ -336,8 +340,13 @@ export function ensureHandObject3D(node) {
   group.add(foreHandle);
 
   for (const c of kept) group.add(c);
-  const rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], ghostFrame: null, mat };
+  const rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], ghostFrame: null, mat, skin: null };
   group.userData.rig = rig;
+  // 🧤 a skinned hand over the rig, when one is loaded: the bones follow the joints
+  if (_skin.template) {
+    try { rig.skin = _instantiateSkin(_skin.template, rig, group, left, L, mat, tag); }
+    catch (e) { console.warn('[hands] the skin could not be put on this hand:', e); rig.skin = null; }
+  }
   // the prop is laid out from the POSED fingers (the solve re-poses the rig right after)
   const layout = _layoutGhost(p.pose, rig);
   if (layout) {
@@ -512,6 +521,7 @@ export function solveHand(node, params = null) {
   _aimForearm(rig, Array.isArray(p.forearmLocal) ? _v(p.forearmLocal)
     : Array.isArray(p.forearm) ? group.worldToLocal(_v(p.forearm))
     : new Th.Vector3(0, -ANAT.forearm.len * L, 0));
+  _syncSkin(rig);
   group.updateMatrixWorld(true);
   const unreached = pinned.filter(f => { const t = new Th.Vector3(); rig.fingers[f].tip.getWorldPosition(t); return t.distanceTo(tips[f]) > 0.03 * L; });
   return { pinned: pinned.length, unreached };
@@ -613,6 +623,7 @@ function _solveBlend(node, from, to, t) {
     _aimForearm(rig, up.clone().applyQuaternion(qA.slerp(qB, t)).multiplyScalar(len));
   }
   if (rig.ghost) rig.ghost.visible = !to.released && to.ghost !== false;
+  _syncSkin(rig);
   node.object3d.updateMatrixWorld(true);
 }
 
@@ -708,4 +719,266 @@ export function initHands() {
   const step = (now) => { try { if (tickHands(now)) sceneCore.requestRender?.(120); } catch (e) { console.warn('[hands] tick failed:', e?.message); } };
   if (typeof sceneCore.addTickHook === 'function') sceneCore.addTickHook(step);
   else { const raf = (now) => { step(now); requestAnimationFrame(raf); }; requestAnimationFrame(raf); }
+  // 🧤 the skin the user loaded last time (a machine setting, not project data)
+  userSettings.initUserSettings()
+    .then(s => { const p = s?.hands?.skinPath; if (p) return setHandSkinFile(p, { persist: false }); })
+    .catch(e => console.warn('[hands] skin at start:', e?.message));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  🧤 SKIN (V0.3.4.139) — a real hand mesh over the rig
+// ─────────────────────────────────────────────────────────────────────────────
+//  The user's plan from day one: export the rig's bones, skin a modelled hand
+//  to them in 3ds Max, bring it back. Round trip:
+//    buildHandRigGlb()  → a .glb of the RIGHT hand at rest (fingers straight):
+//                         the bones (wrist › forearm, wrist › <finger>_1 › _2 › _3
+//                         › _tip) and the capsule hand as a skinned proxy mesh;
+//    setHandSkinFile()  → reads a .glb back (GLTFLoader), keeps it as the
+//                         TEMPLATE; every rig build clones it under the wrist
+//                         group, hides the capsules, and maps each of our joints
+//                         to the bone of the same name;
+//    _syncSkin()        → after every solve / blend the bones take the joints'
+//                         rotation. The mapping tolerates a re-oriented bone
+//                         (Max bones point along X, ours along Y; a Y-up root
+//                         rotation from the exporter): with the rig at REST,
+//                         C = jointRestWorld⁻¹ · boneRestWorld per bone, and
+//                         a joint's local delta Δ (from its rest) becomes the
+//                         bone's local B0 · C⁻¹ · Δ · C. Same hierarchy shape
+//                         is all it needs (bones matched by name, punctuation
+//                         and case ignored).
+//  Left hand = the same file mirrored in X (geometry + bone transforms + bind
+//  matrices conjugated), never a negative scale in the scene graph. Size: the
+//  template's own scale is READ off its bones (wrist → middle knuckle against
+//  the rig's anatomy), so Max's unit conversion on the way out and back does
+//  not matter; the clone is scaled to the hand's length.
+// ═════════════════════════════════════════════════════════════════════════════
+const _skin = { path: '', template: null, rev: 0, error: '' };
+const _norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const _boneName = (f, i) => `${f}_${i + 1}`;
+
+/** What the UI shows: { path, loaded, error, missing[] }. */
+export function handSkinInfo() {
+  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [] };
+}
+
+/** Every finger straight, the forearm straight back: the rig's REST (= the exported bind pose). */
+function _setRest(rig) {
+  for (const f of HAND_FINGERS) { const fg = rig.fingers[f]; fg.phi = [0, 0, 0]; fg.alpha = 0; fg.ball = null; _setFingerAngles(fg); }
+  _aimForearm(rig, new (T().Vector3)(0, -ANAT.forearm.len * rig.L, 0));
+}
+
+/** The orientation of `obj` in the frame of `stopAt` (an ancestor), from the local quaternions up the chain. */
+function _quatIn(obj, stopAt) {
+  const q = obj.quaternion.clone();
+  for (let o = obj.parent; o && o !== stopAt; o = o.parent) q.premultiply(o.quaternion);
+  return q;
+}
+
+/**
+ * The rig as a .glb: RIGHT hand, `scale` mm, at rest. Bones + the capsule hand
+ * as a skinned proxy (every vertex 100 % on its bone). Returns the bytes.
+ */
+export function buildHandRigGlb(scale = 190) {
+  const Th = T();
+  const tmp = { id: 'hand-export', type: 'hand', name: 'hand', handSide: 'right', handParams: { ...defaultHandParams(), scale, pose: 'relaxed', ghost: false } };
+  const keepTemplate = _skin.template; _skin.template = null;   // the BARE rig goes out, never a skin over it
+  let group;
+  try { group = ensureHandObject3D(tmp); } finally { _skin.template = keepTemplate; }
+  const rig = group.userData.rig;
+  _setRest(rig);
+  group.updateMatrixWorld(true);   // parentless + untransformed: world = the wrist frame
+
+  const bones = [];   // { name, obj, parent }
+  const add = (name, obj, parent) => { bones.push({ name, obj, parent }); return bones.length - 1; };
+  const wrist = add('wrist', group, -1);
+  const fore  = add('forearm', rig.forearm, wrist);
+  const meshBone = new Map([[rig.palm, wrist], [rig.forearm, fore]]);
+  for (const f of HAND_FINGERS) {
+    const fg = rig.fingers[f];
+    let parent = wrist;
+    for (let i = 0; i < 3; i++) { parent = add(_boneName(f, i), fg.joints[i], parent); meshBone.set(fg.bones[i], parent); }
+    add(`${f}_tip`, fg.tip, parent);
+  }
+
+  // geometry into the wrist (bind) space, one bone per vertex
+  const P = [], N = [], I = [], J = [], W = [];
+  let base = 0;
+  const v = new Th.Vector3(), nm = new Th.Matrix3();
+  for (const [mesh, bi] of meshBone) {
+    const g = mesh.geometry, M = mesh.matrixWorld;
+    nm.getNormalMatrix(M);
+    const pos = g.attributes.position, nor = g.attributes.normal;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(M); P.push(v.x, v.y, v.z);
+      v.fromBufferAttribute(nor, i).applyMatrix3(nm).normalize(); N.push(v.x, v.y, v.z);
+      J.push(bi, 0, 0, 0); W.push(1, 0, 0, 0);
+    }
+    if (g.index) { const a = g.index.array; for (let i = 0; i < a.length; i++) I.push(base + a[i]); }
+    else { for (let i = 0; i < pos.count; i++) I.push(base + i); }
+    base += pos.count;
+  }
+  const ibm = new Float32Array(bones.length * 16);
+  const inv = new Th.Matrix4();
+  bones.forEach((b, i) => { inv.copy(b.obj.matrixWorld).invert(); ibm.set(inv.elements, i * 16); });
+
+  const c = new Th.Color(ANAT.skin);
+  const glb = skinnedMeshGlb({
+    bones: bones.map(b => ({ name: b.name, parent: b.parent, position: b.obj.position.toArray(), quaternion: b.obj.quaternion.toArray() })),
+    positions: new Float32Array(P), normals: new Float32Array(N), indices: new Uint32Array(I),
+    joints: new Uint16Array(J), weights: new Float32Array(W), inverseBindMatrices: ibm,
+    color: [c.r, c.g, c.b], name: 'sbs_hand', extras: { sbsHandRig: 1, sbsHandScale: scale, sbsAppVersion: APP_VERSION },
+  });
+  group.traverse(o => { o.geometry?.dispose?.(); });
+  return glb;
+}
+
+/**
+ * Load (or clear, with '') the skin file. The template is analysed once; every
+ * live hand is rebuilt by hand-actions on 'hands:skinChanged'.
+ */
+export async function setHandSkinFile(path, { persist = true } = {}) {
+  _skin.path = path || ''; _skin.template = null; _skin.error = '';
+  if (_skin.path) {
+    try {
+      const rd = await window.sbsNative?.readFile?.(_skin.path, 'buffer');
+      if (!rd?.ok) throw new Error(rd?.error || 'the file could not be read');
+      const u8 = rd.data instanceof Uint8Array ? rd.data : new Uint8Array(rd.data);
+      const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+      const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, '', res, rej));
+      _skin.template = _analyseSkin(gltf);
+    } catch (e) {
+      _skin.error = String(e?.message || e);
+      console.warn('[hands] skin:', e);
+    }
+  }
+  _skin.rev++;
+  if (persist) { try { await userSettings.patch({ hands: { skinPath: _skin.path } }); } catch (e) { console.warn('[hands] skin setting:', e?.message); } }
+  state.emit('hands:skinChanged', handSkinInfo());
+  return handSkinInfo();
+}
+
+/** The loaded scene → { scene, L0, missing[] }; throws when there is nothing to put on. */
+function _analyseSkin(gltf) {
+  const Th = T();
+  const scene = gltf.scene || gltf.scenes?.[0];
+  if (!scene) throw new Error('no scene in the file');
+  let skinned = 0; scene.traverse(o => { if (o.isSkinnedMesh) skinned++; });
+  if (!skinned) throw new Error('no skinned mesh in the file — skin a mesh to the exported bones');
+  const byName = new Map();
+  scene.traverse(o => { const k = _norm(o.name); if (k && !byName.has(k)) byName.set(k, o); });
+  const expected = ['wrist', 'forearm', ...HAND_FINGERS.flatMap(f => [0, 1, 2].map(i => _boneName(f, i)))];
+  const missing = expected.filter(n => !byName.has(_norm(n)));
+  // the template's own scale: wrist → middle knuckle, against the rig's anatomy
+  let L0 = Number(gltf.parser?.json?.asset?.extras?.sbsHandScale) || 0;
+  const w = byName.get('wrist'), m1 = byName.get(_norm(_boneName('middle', 0)));
+  if (w && m1) {
+    scene.updateMatrixWorld(true);
+    const d = w.getWorldPosition(new Th.Vector3()).distanceTo(m1.getWorldPosition(new Th.Vector3()));
+    const ref = _v(ANAT.fingers.middle.mcp).length();
+    if (d > 1e-6 && ref > 0) L0 = d / ref;
+  }
+  if (!(L0 > 0)) L0 = 190;
+  if (missing.length) console.warn('[hands] skin bones not found (those joints will not move it):', missing.join(', '));
+  return { scene, L0, missing };
+}
+
+/** A deep clone of a scene with skinned meshes: fresh skeletons over the CLONED bones, cloned geometry. */
+function _cloneSkinned(src) {
+  const Th = T();
+  const clone = src.clone(true);
+  const a = [], b = [];
+  src.traverse(o => a.push(o)); clone.traverse(o => b.push(o));
+  const map = new Map(a.map((o, i) => [o, b[i]]));
+  clone.traverse(o => {
+    if (o.isMesh && o.geometry) o.geometry = o.geometry.clone();   // never mutate the template's (a left hand flips it)
+    if (!o.isSkinnedMesh) return;
+    const sk = o.skeleton;
+    const bones = sk.bones.map(bn => map.get(bn) || bn);
+    o.bind(new Th.Skeleton(bones, sk.boneInverses.map(m => m.clone())), o.bindMatrix.clone());
+  });
+  return clone;
+}
+
+/** Mirror a (skinned) hierarchy in X: every local transform conjugated, geometry flipped, winding reversed, bind matrices conjugated. */
+function _mirrorX(root) {
+  const Th = T();
+  const S = new Th.Matrix4().makeScale(-1, 1, 1);
+  root.traverse(o => {
+    o.position.x *= -1;
+    o.quaternion.set(o.quaternion.x, -o.quaternion.y, -o.quaternion.z, o.quaternion.w);
+    if (o.isMesh && o.geometry) {
+      const g = o.geometry;
+      const pos = g.attributes.position, nor = g.attributes.normal;
+      for (let i = 0; i < pos.count; i++) pos.setX(i, -pos.getX(i));
+      pos.needsUpdate = true;
+      if (nor) { for (let i = 0; i < nor.count; i++) nor.setX(i, -nor.getX(i)); nor.needsUpdate = true; }
+      if (!g.index) { const n = pos.count; const ix = new (n > 65535 ? Uint32Array : Uint16Array)(n); for (let i = 0; i < n; i++) ix[i] = i; g.setIndex(new Th.BufferAttribute(ix, 1)); }
+      const a = g.index.array;
+      for (let i = 0; i + 2 < a.length; i += 3) { const t = a[i + 1]; a[i + 1] = a[i + 2]; a[i + 2] = t; }
+      g.index.needsUpdate = true;
+      g.computeBoundingBox(); g.computeBoundingSphere();
+    }
+    if (o.isSkinnedMesh) {
+      for (const m of o.skeleton.boneInverses) m.premultiply(S).multiply(S);
+      o.bindMatrix.premultiply(S).multiply(S);
+      o.bindMatrixInverse.copy(o.bindMatrix).invert();
+    }
+  });
+}
+
+/** The template under this hand's group: cloned, mirrored for a left hand, scaled, bones mapped to the joints. */
+function _instantiateSkin(tpl, rig, group, left, L, mat, tag) {
+  const Th = T();
+  const root = _cloneSkinned(tpl.scene);
+  root.name = 'skin';
+  if (left) _mirrorX(root);
+  root.traverse(o => {
+    if (o.isMesh) { o.material = mat; o.frustumCulled = false; tag(o); o.userData.isHandSkin = true; }
+  });
+  const byName = new Map();
+  root.traverse(o => { const k = _norm(o.name); if (k && !byName.has(k)) byName.set(k, o); });
+  // the file's WRIST bone lands on the group's origin, upright: whatever the
+  // exporter put above it (a Y-up root, an offset) is taken out here
+  root.position.set(0, 0, 0); root.quaternion.identity(); root.scale.set(1, 1, 1);
+  root.updateMatrixWorld(true);
+  const wrist = byName.get('wrist');
+  if (wrist) {
+    const m = new Th.Matrix4().copy(wrist.matrixWorld).invert();
+    m.decompose(root.position, root.quaternion, root.scale);
+  }
+  const s = L / tpl.L0;
+  root.position.multiplyScalar(s); root.scale.multiplyScalar(s);
+  group.add(root);
+
+  _setRest(rig);   // the mapping is taken with both at rest
+  const map = [];
+  const pair = (joint, jointRest, name, extra = {}) => {
+    const bone = byName.get(_norm(name)); if (!bone) return;
+    const C = _quatIn(joint, group).invert().multiply(_quatIn(bone, group));
+    map.push({ joint, bone, jointRest: jointRest.clone(), B0: bone.quaternion.clone(), S0: bone.scale.clone(), C, Ci: C.clone().invert(), ...extra });
+  };
+  for (const f of HAND_FINGERS) {
+    const fg = rig.fingers[f];
+    pair(fg.joints[0], fg.basis, _boneName(f, 0));
+    pair(fg.joints[1], new Th.Quaternion(), _boneName(f, 1));
+    pair(fg.joints[2], new Th.Quaternion(), _boneName(f, 2));
+  }
+  pair(rig.forearm, rig.forearm.quaternion, 'forearm', { stretch: true });
+
+  // the capsules step aside (handles, tips, ghost stay)
+  rig.palm.visible = false; rig.forearm.visible = false;
+  for (const f of HAND_FINGERS) for (const b of rig.fingers[f].bones) b.visible = false;
+  return { root, map };
+}
+
+/** After a solve / blend: every mapped bone takes its joint's rotation (and the forearm its stretch). */
+function _syncSkin(rig) {
+  const sk = rig?.skin; if (!sk) return;
+  const Th = T();
+  const d = new Th.Quaternion();
+  for (const m of sk.map) {
+    d.copy(m.jointRest).invert().multiply(m.joint.quaternion);            // Δ in the joint's rest frame
+    m.bone.quaternion.copy(m.B0).multiply(m.Ci).multiply(d).multiply(m.C);  // the same Δ in the bone's frame
+    if (m.stretch) m.bone.scale.set(m.S0.x, m.S0.y * m.joint.scale.y, m.S0.z);
+  }
 }

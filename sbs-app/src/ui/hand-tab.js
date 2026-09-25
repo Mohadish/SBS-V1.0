@@ -40,6 +40,7 @@ export function renderHandTab(container) {
       <div class="card" style="margin-top:10px;display:flex;gap:6px;">
         <button class="btn" id="hand-add" style="flex:1;">+ Add hand</button>
       </div>
+      ${_skinCard()}
       <div class="card" style="margin-top:8px;padding:0;">
         <div class="title" style="padding:8px 10px;border-bottom:1px solid var(--line);">Hands <span class="small muted">(${list.length})</span></div>
         <div id="hand-list">
@@ -57,6 +58,9 @@ export function renderHandTab(container) {
     _activeId = act.addHand(side, 'handle');
     renderHandTab(container);
   });
+  container.querySelector('#hand-skin-load')?.addEventListener('click', () => act.pickHandSkin());
+  container.querySelector('#hand-skin-clear')?.addEventListener('click', () => act.clearHandSkin());
+  container.querySelector('#hand-rig-export')?.addEventListener('click', () => act.exportHandRig());
   container.querySelector('#hand-list')?.addEventListener('click', (e) => {
     const row = e.target.closest('[data-hand-id]'); if (!row) return;
     const id = row.dataset.handId;
@@ -68,6 +72,26 @@ export function renderHandTab(container) {
   });
 
   if (_activeId) _renderEditor(container.querySelector('#hand-editor'), _liveHands().find(h => h.id === _activeId));
+}
+
+/** 🧤 V0.3.4.139 — the skin: a real hand mesh over the rig (machine setting). */
+function _skinCard() {
+  const s = hands.handSkinInfo();
+  const base = s.path ? s.path.split(/[\\/]/).pop() : '';
+  const line = s.loaded ? `✓ <b>${_esc(base)}</b> on every hand`
+    : s.error ? `✕ ${_esc(base)}: ${_esc(s.error)}`
+    : 'Procedural hand. <b>Export rig…</b> gives a .glb of the bones; skin a real hand to them (keep the bone names), then <b>Load skin</b>.';
+  return `
+      <div class="card" style="margin-top:8px;padding:8px 10px;">
+        <div class="small" style="font-weight:600;">🧤 Skin</div>
+        <div class="small muted" style="margin-top:4px;line-height:1.45;">${line}</div>
+        ${s.loaded && s.missing.length ? `<div class="small" style="margin-top:4px;color:#fbbf24;">Bones not found: ${_esc(s.missing.join(', '))}</div>` : ''}
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <button class="btn" id="hand-skin-load" style="flex:1;" title="A .glb with a mesh skinned to the exported bones">Load skin…</button>
+          <button class="btn" id="hand-skin-clear" ${s.path ? '' : 'disabled'} title="Back to the procedural hand">✕</button>
+          <button class="btn" id="hand-rig-export" title="Save the rig (right hand, at rest) as a .glb to skin over">Export rig…</button>
+        </div>
+      </div>`;
 }
 
 function _row(h) {

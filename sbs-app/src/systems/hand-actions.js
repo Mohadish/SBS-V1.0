@@ -326,6 +326,44 @@ export function commitHandControl(id, key, before) {
   undoManager.push(label, () => _applyParams(id, prev), () => _applyParams(id, after));
 }
 
+// ── 🧤 skin: the rig out as .glb, a skinned hand back in ─────────────────────
+
+function _b64(ab) {
+  const u8 = new Uint8Array(ab); let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+/** Save the rig (right hand, 190 mm, at rest) as a .glb to skin a real hand to. */
+export async function exportHandRig() {
+  const path = await window.sbsNative?.saveFile?.({ title: 'Export the hand rig (.glb)', defaultPath: 'sbs-hand-rig.glb', filters: [{ name: 'glTF binary', extensions: ['glb'] }] });
+  if (!path) return false;
+  try {
+    const glb = hands.buildHandRigGlb(190);
+    const r = await window.sbsNative.writeFile(path, _b64(glb), 'base64');
+    if (!r?.ok) throw new Error(r?.error || 'write failed');
+    setStatus(`Hand rig exported (${Math.round(glb.byteLength / 1024)} KB). Skin a hand to its bones, keep their names, bring the .glb back with "Load skin".`, 'success', 8000);
+    return true;
+  } catch (e) {
+    setStatus(`Rig export failed: ${e?.message || e}`, 'error', 6000);
+    return false;
+  }
+}
+
+/** Pick a skinned .glb — becomes every hand's look on this machine. */
+export async function pickHandSkin() {
+  const path = await window.sbsNative?.openFile?.({ title: 'Load a skinned hand (.glb)', filters: [{ name: 'glTF binary', extensions: ['glb'] }] });
+  if (!path) return false;
+  const info = await hands.setHandSkinFile(path);
+  if (info.loaded) setStatus(info.missing.length ? `Skin loaded — bones not found: ${info.missing.join(', ')} (those joints will not move it).` : 'Skin loaded on every hand.', info.missing.length ? 'warn' : 'success', 7000);
+  else setStatus(`Skin not loaded: ${info.error}`, 'error', 7000);
+  return info.loaded;
+}
+export async function clearHandSkin() {
+  await hands.setHandSkinFile('');
+  setStatus('Back to the procedural hand.', 'info', 3000);
+}
+
 /** Wire the housekeeping: a control selection / fine-tune dies with its hand's selection. */
 export function initHandActions() {
   state.on('change:selectedId', (id) => {
@@ -335,5 +373,12 @@ export function initHandActions() {
     if (pk && pk.nodeId !== id && id) stopHandPick();
     const ft = state.get('handFineTune');
     if (ft && ft !== id) state.setState({ handFineTune: null });
+  });
+  // 🧤 a skin loaded / cleared: every hand is rebuilt in place (the rig build puts it on)
+  state.on('hands:skinChanged', () => {
+    const nb = state.get('nodeById'); if (!nb) return;
+    for (const [, n] of nb) if (n?.type === 'hand') _applyParams(n.id, n.handParams || hands.defaultHandParams(), { flush: false });
+    state.emit('change:treeData', state.get('treeData'));
+    sceneCore.requestRender?.(200);
   });
 }

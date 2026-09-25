@@ -37,6 +37,11 @@ const DEFAULTS = {
   narration: {
     lastUsedVoice: '',
   },
+  // 🧤 V0.3.4.139 — the skinned hand (.glb) over the hand rig. A machine
+  // setting like a brush: the look of every hand, not project data.
+  hands: {
+    skinPath: '',
+  },
   // V0.3.2.138 — "sticky" shape defaults. Editing fill/outline/thickness/
   // radius on a selected overlay shape records those values here, and the
   // next shape you create is born with them. Machine-scope on purpose:
