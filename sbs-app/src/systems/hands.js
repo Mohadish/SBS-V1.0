@@ -50,8 +50,9 @@ export function defaultHandParams() {
   return { scale: 190, pose: 'handle', closed: 1, ghost: true, targets: { thumb: null, index: null, middle: null, ring: null, pinky: null }, forearm: null, released: false, open: 0 };
 }
 
-// ── anatomy of a unit hand (length 1), RIGHT hand, palm frame: +Y toward the
-//    fingers, +X toward the thumb, +Z the back of the hand ─────────────────────
+// ── anatomy of a unit hand (length 1), palm frame: +Y toward the fingers, +X
+//    toward the thumb, +Z the back of the hand. Anatomically this is a LEFT hand
+//    (thumb × fingers = the back); the right hand is built X-mirrored ──────────
 const ANAT = {
   palm:    { w: 0.44, h: 0.50, t: 0.13, y: 0.30 },
   fingers: {
@@ -210,7 +211,7 @@ function _layoutGhost(poseKey, rig) {
       const guard = new Th.TorusGeometry(0.07 * L, 0.011 * L, 8, 24); guard.rotateY(Math.PI / 2);
       meshes.push({ geo: guard, pos: trig.clone().addScaledVector(Z, -0.02 * L) });
       // the top of the grip is the index-side end (the web of the thumb), the bottom the pinky-side end
-      const sideX = rig.left ? -1 : 1;
+      const sideX = rig.mirror ? -1 : 1;
       points = [C.clone().addScaledVector(X, sideX * len / 2), C.clone().addScaledVector(X, -sideX * len / 2), trig.clone()];
     }
   } else if (P.ghost === 'pinch') {
@@ -227,7 +228,7 @@ function _layoutGhost(poseKey, rig) {
     const z = -(ANAT.palm.t * 0.5 + 0.03) * L;
     const C = new Th.Vector3(0, ANAT.palm.y * L + 0.05 * L, z);
     meshes.push({ geo: new Th.BoxGeometry(0.62 * L, 0.72 * L, 0.02 * L), pos: C });
-    const sideX = rig.left ? -1 : 1;
+    const sideX = rig.mirror ? -1 : 1;
     points = [C.clone(), C.clone().add(new Th.Vector3(0, 0.34 * L, 0)), C.clone().add(new Th.Vector3(sideX * 0.28 * L, 0, 0))];
     frame = frameOf(C, new Th.Vector3(0, 0, -1));
   } else if (P.ghost === 'knob') {
@@ -280,6 +281,11 @@ export function ensureHandObject3D(node) {
   if (!HAND_POSES[p.pose]) p.pose = 'handle';
   const L = Number(p.scale) || 190;
   const left = node.handSide === 'left';
+  // ANAT is an anatomically LEFT hand: thumb +X, fingers +Y, palm −Z, so thumb × fingers
+  // = +Z = the BACK — which is where a RIGHT hand has its palm. Unnoticed on capsules,
+  // obvious the moment a real hand with fingernails went on (V0.3.4.142). The RIGHT
+  // hand is therefore the X-mirrored build.
+  const mirror = !left;
   const key = `${left ? 'L' : 'R'}:${L}:${p.pose}:skin${_skin.template ? _skin.rev : 0}`;
   const existing = node.object3d;
   if (existing && existing.userData?.handBuildKey === key) return existing;
@@ -319,8 +325,8 @@ export function ensureHandObject3D(node) {
   for (const f of HAND_FINGERS) {
     const a = ANAT.fingers[f];
     const j1 = new Th.Object3D(); j1.name = `${f}-1`;
-    j1.position.copy(_v(_mirror(a.mcp, left)).multiplyScalar(L));
-    const basis = _basis(_mirror(a.dir, left), _mirror(a.curl, left));
+    j1.position.copy(_v(_mirror(a.mcp, mirror)).multiplyScalar(L));
+    const basis = _basis(_mirror(a.dir, mirror), _mirror(a.curl, mirror));
     const bones = [], joints = [j1];
     let cur = j1;
     for (let i = 0; i < 3; i++) {
@@ -342,11 +348,11 @@ export function ensureHandObject3D(node) {
   group.add(foreHandle);
 
   for (const c of kept) group.add(c);
-  const rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], ghostFrame: null, mat, skin: null };
+  const rig = { L, mirror, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], ghostFrame: null, mat, skin: null };
   group.userData.rig = rig;
   // 🧤 a skinned hand over the rig, when one is loaded: the bones follow the joints
   if (_skin.template) {
-    try { rig.skin = _instantiateSkin(_skin.template, rig, group, left, L, mat, tag); }
+    try { rig.skin = _instantiateSkin(_skin.template, rig, group, !left, L, mat, tag); }
     catch (e) { console.warn('[hands] the skin could not be put on this hand:', e); rig.skin = null; }
   }
   // the prop is laid out from the POSED fingers (the solve re-poses the rig right after)
@@ -377,7 +383,7 @@ function _setPose(rig, angles, t) {
     const fg = rig.fingers[f];
     const a = angles[f] || REST[f], r = REST[f];
     for (let i = 0; i < 3; i++) fg.phi[i] = (r[i] + ((a[i] ?? r[i]) - r[i]) * t) * DEG;
-    fg.alpha = ((a[3] || 0) * t) * DEG * (rig.left ? -1 : 1);
+    fg.alpha = ((a[3] || 0) * t) * DEG * (rig.mirror ? -1 : 1);
     fg.ball = null;
     _setFingerAngles(fg);
   }
@@ -760,7 +766,7 @@ const _boneName = (f, i) => `${f}_${i + 1}`;
 
 /** What the UI shows: { path, loaded, error, missing[] }. */
 export function handSkinInfo() {
-  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [] };
+  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [], isRight: !!_skin.template?.isRight };
 }
 
 /** Every finger straight, the forearm straight back: the rig's REST (= the exported bind pose). */
@@ -876,7 +882,7 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
   return handSkinInfo();
 }
 
-/** The loaded scene → { scene, L0, missing[] }; throws when there is nothing to put on. */
+/** The loaded scene → { scene, L0, missing[], isRight }; throws when there is nothing to put on. */
 function _analyseSkin(gltf) {
   const Th = T();
   const scene = gltf.scene || gltf.scenes?.[0];
@@ -887,18 +893,36 @@ function _analyseSkin(gltf) {
   scene.traverse(o => { const k = _norm(o.name); if (k && !byName.has(k)) byName.set(k, o); });
   const expected = ['wrist', 'forearm', ...HAND_FINGERS.flatMap(f => [0, 1, 2].map(i => _boneName(f, i)))];
   const missing = expected.filter(n => !byName.has(_norm(n)));
+  scene.updateMatrixWorld(true);
+  const wp = (k) => { const o = byName.get(_norm(k)); return o ? o.getWorldPosition(new Th.Vector3()) : null; };
   // the template's own scale: wrist → middle knuckle, against the rig's anatomy
   let L0 = Number(gltf.parser?.json?.asset?.extras?.sbsHandScale) || 0;
-  const w = byName.get('wrist'), m1 = byName.get(_norm(_boneName('middle', 0)));
-  if (w && m1) {
-    scene.updateMatrixWorld(true);
-    const d = w.getWorldPosition(new Th.Vector3()).distanceTo(m1.getWorldPosition(new Th.Vector3()));
+  const W = wp('wrist'), M1 = wp(_boneName('middle', 0));
+  if (W && M1) {
+    const d = W.distanceTo(M1);
     const ref = _v(ANAT.fingers.middle.mcp).length();
     if (d > 1e-6 && ref > 0) L0 = d / ref;
   }
   if (!(L0 > 0)) L0 = 190;
+  // 🖐 which hand is this? From the bones alone: the palm plane through the wrist and
+  // the index / pinky knuckles, the palm SIDE = where the thumb leans (a thumb opposes
+  // toward the palm), and a right hand has thumb × fingers pointing at the palm.
+  let isRight = false;   // the SBS exports before V0.3.4.142 were anatomically left
+  const I1 = wp(_boneName('index', 0)), P1 = wp(_boneName('pinky', 0)), T1 = wp(_boneName('thumb', 0));
+  const Tt = wp('thumb_tip') || wp(_boneName('thumb', 2)) || wp(_boneName('thumb', 1));
+  if (W && M1 && I1 && P1 && T1 && Tt) {
+    const n0 = new Th.Vector3().crossVectors(I1.clone().sub(W), P1.clone().sub(W)).normalize();
+    const lean = Tt.clone().sub(W).dot(n0);
+    if (Math.abs(lean) > 1e-6 * L0) {
+      const palm = n0.multiplyScalar(Math.sign(lean));
+      const f = M1.clone().sub(W).normalize();
+      const t = T1.clone().sub(W); t.sub(palm.clone().multiplyScalar(t.dot(palm))).normalize();
+      isRight = new Th.Vector3().crossVectors(t, f).dot(palm) > 0;
+    } else console.warn('[hands] skin: the thumb sits in the palm plane — assuming a left-hand template');
+  }
   if (missing.length) console.warn('[hands] skin bones not found (those joints will not move it):', missing.join(', '));
-  return { scene, L0, missing };
+  console.log(`[hands] skin template: ${isRight ? 'right' : 'left'} hand, length ${L0.toFixed(1)}`);
+  return { scene, L0, missing, isRight };
 }
 
 /** A deep clone of a scene with skinned meshes: fresh skeletons over the CLONED bones, cloned geometry. */
@@ -945,12 +969,12 @@ function _mirrorX(root) {
   });
 }
 
-/** The template under this hand's group: cloned, mirrored for a left hand, scaled, bones mapped to the joints. */
-function _instantiateSkin(tpl, rig, group, left, L, mat, tag) {
+/** The template under this hand's group: cloned, mirrored when its handedness is not the hand's, scaled, bones mapped to the joints. */
+function _instantiateSkin(tpl, rig, group, wantRight, L, mat, tag) {
   const Th = T();
   const root = _cloneSkinned(tpl.scene);
   root.name = 'skin';
-  if (left) _mirrorX(root);
+  if (!!wantRight !== !!tpl.isRight) _mirrorX(root);
   root.traverse(o => {
     if (o.isMesh) { o.material = mat; o.frustumCulled = false; tag(o); o.userData.isHandSkin = true; }
   });

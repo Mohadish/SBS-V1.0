@@ -78,7 +78,7 @@ export function renderHandTab(container) {
 function _skinCard() {
   const s = hands.handSkinInfo();
   const base = s.path ? s.path.split(/[\\/]/).pop() : '';
-  const line = s.loaded ? `✓ <b>${_esc(base)}</b> on every hand`
+  const line = s.loaded ? `✓ <b>${_esc(base)}</b> (a ${s.isRight ? 'right' : 'left'} hand, mirrored for the other) on every hand`
     : s.error ? `✕ ${_esc(base)}: ${_esc(s.error)}`
     : 'Procedural hand. <b>Export rig…</b> gives an .fbx of the bones; skin a real hand to them (keep the bone names), then <b>Load skin</b>.';
   return `
