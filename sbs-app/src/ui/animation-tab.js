@@ -541,6 +541,23 @@ function _renderPhasesView(host, ctx) {
                   font-size:11px;font-weight:600;color:var(--text);transition:height .12s"></div>`;
   const rowsHtml = rowList.map((h, i) => ((i === 0 && hasFade) ? '' : gapHtml(i)) + h).join('') + gapHtml(parsed.length);
 
+  // V0.3.4.136 — the channels this animation does NOT schedule, as chips in a
+  // tray (user: "unless you know about hand, you can't add it"): drag one into a
+  // block, or into a gap, and it joins. A drop from here removes nothing.
+  const present = new Set(parsed.flatMap(p => p.types));
+  const missing = CHANNEL_ORDER.filter(t => !present.has(t) && !(t === 'overlay' && present.has('overlays')) && !(t === 'overlays' && present.has('overlay')) && t !== 'overlay');
+  const trayHtml = missing.length ? `
+    <div class="cap-tray" style="margin-top:8px;padding:6px 8px;border:1px dashed var(--line);border-radius:6px;display:flex;flex-wrap:wrap;align-items:center;gap:2px;color:var(--text)">
+      <span class="small muted" style="margin-right:6px;font-size:11px">not in this animation — drag in:</span>
+      ${missing.map(t => { const meta = CHANNEL_META[t]; return `
+        <span class="cap-chip cap-chip-new" draggable="true" data-phase-idx="-1" data-channel="${_esc(t)}" data-key="${_esc(_chipKey(-1, t))}"
+              style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;margin:2px;background:rgba(127,127,127,0.10);
+                     border:1px dashed rgba(127,127,127,0.55);border-radius:999px;font-size:13px;line-height:1.2;white-space:nowrap;cursor:grab;
+                     color:var(--text);opacity:0.85;user-select:none"
+              title="Not scheduled yet — drag it into a time block (or a gap for a new block)">
+          <span>${meta.icon}</span><span>${_esc(meta.label)}</span></span>`; }).join('')}
+    </div>` : '';
+
   // + Add time block / + Add pause buttons.
   //   + Add time block → empty phase (types:[]) waiting for chip drops.
   //                      It becomes pause(N) in the string until chips
@@ -578,7 +595,7 @@ function _renderPhasesView(host, ctx) {
   // the easing is set and disappears when it is cleared, so it can never
   // drift out of sync with what the step panel says the step does.
 
-  host.innerHTML = headerHtml + rowsHtml + addButtonsHtml;
+  host.innerHTML = headerHtml + rowsHtml + trayHtml + addButtonsHtml;
 
   // ── Wiring ────────────────────────────────────────────────────────────
 
@@ -680,6 +697,7 @@ function _renderPhasesView(host, ctx) {
   host.querySelectorAll('.cap-chip').forEach(chip => {
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
+      if (chip.classList.contains('cap-chip-new')) return;   // a tray chip is not part of a block selection
       const key = chip.dataset.key;
       if (e.ctrlKey || e.metaKey || e.shiftKey) { if (_selChips.has(key)) _selChips.delete(key); else _selChips.add(key); }
       else _selChips = (_selChips.size === 1 && _selChips.has(key)) ? new Set() : new Set([key]);
@@ -687,6 +705,13 @@ function _renderPhasesView(host, ctx) {
     });
     chip.addEventListener('dragstart', (e) => {
       const key = chip.dataset.key;
+      if (chip.classList.contains('cap-chip-new')) {   // from the tray: this chip alone, from nowhere
+        e.dataTransfer.setData('application/x-sbs-chip', JSON.stringify({ fromPhase: -1, channel: chip.dataset.channel, items: [{ fromPhase: -1, channel: chip.dataset.channel }] }));
+        e.dataTransfer.effectAllowed = 'copy';
+        chip.style.opacity = '0.4';
+        e.stopPropagation();
+        return;
+      }
       if (!_selChips.has(key)) { _selChips = new Set([key]); _paintChipSelection(host); }
       const items = [..._selChips].map(k => { const i = k.indexOf(':'); return { fromPhase: Number(k.slice(0, i)), channel: k.slice(i + 1) }; });
       const payload = { fromPhase: Number(chip.dataset.phaseIdx), channel: chip.dataset.channel, items };

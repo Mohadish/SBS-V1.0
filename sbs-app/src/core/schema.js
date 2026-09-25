@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.4.135';
+export const APP_VERSION  = 'V0.3.4.136';
 // The oldest CORE (electron/*.js, preload, helper pages) this interface can run on.
 // BUMP THIS whenever a change under electron/ lands — the interface then tells a
 // Ctrl+R'd session that a full restart is needed, and stays quiet otherwise.
@@ -1028,7 +1028,7 @@ export function createCameraView(overrides = {}) {
 //   - `pause` is NOT in the default — it's added by the user via
 //     "+ Pause" when they want a dwell between phases.
 export const DEFAULT_ANIMATION_PRESET_STRING =
-  'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert+spotlight(AL1)';
+  'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert+spotlight+hand(AL1)';   // 🖐 hand: V0.3.4.136
 
 export function createAnimationPreset(overrides = {}) {
   return {
