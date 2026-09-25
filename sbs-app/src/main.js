@@ -127,6 +127,25 @@ initColorPick();           // V0.3.4.108: right-click any colour swatch → pick
 checkCoreVersion();        // V0.3.4.118: interface vs core version — a pinned warning when Ctrl+R left an old core running
 hands.initHands();         // 🖐 V0.3.4.127: the hand rigs re-solve when their inputs move
 handActions.initHandActions();
+
+// V0.3.4.133 — a project is CLEAN right after it is opened, created, or the app
+// started. Load-time passes (activation, reconcile timers, migrations that change
+// nothing the user did) could leave it "unsaved"; if the user touched nothing
+// within the settle window, the flag is cleared. A real edit inside the window
+// (a click, a key, the wheel) keeps whatever the flag says.
+function _armCleanSettle(ms = 5000) {
+  let touched = false;
+  const mark = () => { touched = true; };
+  const evs = ['pointerdown', 'keydown', 'wheel'];
+  for (const ev of evs) document.addEventListener(ev, mark, true);
+  setTimeout(() => {
+    for (const ev of evs) document.removeEventListener(ev, mark, true);
+    if (!touched) state.markClean();
+  }, ms);
+}
+state.on('project:loaded', () => _armCleanSettle());
+state.on('project:fresh',  () => _armCleanSettle());
+_armCleanSettle();
 actions.initSpotlight();   // 🔦 V0.3.4.82: spotlighted objects follow the camera while authoring
 
 // Debug surface — exposes core handles on window.__sbs for live console

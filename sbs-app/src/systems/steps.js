@@ -2371,9 +2371,12 @@ class StepManager {
     // Done AFTER the thumbnail render so it doesn't flash on the live canvas.
     clearPreInstall();
 
-    // Update state (fires 'step:activate' event for notes/screen overlay)
+    // Update state (fires 'step:activate' event for notes/screen overlay).
+    // V0.3.4.133 — NOT a dirtying act any more: moving between steps is not
+    // an edit (the user: "I just opened it — of course it's saved"); the first
+    // activation after a load / New made every project "unsaved" at once.
+    // Real edits mark dirty on their own paths (the sync, the actions).
     state.setActiveStep(stepId);
-    state.markDirty();
 
     const tr = step.transition ?? {};
     const { durationMs = 1500 } = tr;

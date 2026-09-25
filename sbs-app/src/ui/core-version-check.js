@@ -11,19 +11,27 @@
  * differ, a pinned warning says so until the app is reopened.
  */
 
-import { APP_VERSION } from '../core/schema.js';
+import { APP_VERSION, CORE_VERSION } from '../core/schema.js';
 import { setStickyStatus } from './status.js';
 
-const _norm = (v) => String(v || '').trim().replace(/^v/i, '').replace(/-/g, '.');
+const _nums = (v) => String(v || '').trim().replace(/^v/i, '').split(/[.-]/).map(n => Number(n) || 0);
+const _lt = (a, b) => { const A = _nums(a), B = _nums(b); for (let i = 0; i < Math.max(A.length, B.length); i++) { const d = (A[i] || 0) - (B[i] || 0); if (d) return d < 0; } return false; };
 
-/** @returns {Promise<boolean>} true when the core matches (or cannot be asked). */
+/**
+ * V0.3.4.133 — the notice only when it is TRUE that Ctrl+R is not enough: the
+ * running core (package.json at launch) is older than CORE_VERSION, the last
+ * version that changed anything under electron/. A core that merely lags the
+ * interface number is fine (the user: "I just closed and opened it and it
+ * disappeared — only put it when I really have to").
+ * @returns {Promise<boolean>} true when the core is good enough (or cannot be asked).
+ */
 export async function checkCoreVersion() {
   try {
     const core = await window.sbsNative?.getVersion?.();
     if (!core) return true;
-    if (_norm(core) === _norm(APP_VERSION)) return true;
-    console.warn(`[boot] interface ${APP_VERSION} is running on core ${core} — restart the app`);
-    setStickyStatus(`Interface ${APP_VERSION} on core ${core}: Ctrl+R reloaded only the interface. Close and reopen SBS before using anything new.`, 'warn', 'stale-core');
+    if (!_lt(core, CORE_VERSION)) return true;
+    console.warn(`[boot] interface ${APP_VERSION} needs core ≥ ${CORE_VERSION}; the running core is ${core} — restart the app`);
+    setStickyStatus(`The running core (${core}) is older than this interface needs (${CORE_VERSION}) — Ctrl+R reloads only the interface. Close and reopen SBS.`, 'warn', 'stale-core');
     return false;
   } catch { return true; }
 }

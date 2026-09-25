@@ -837,6 +837,7 @@ function _onNewProject() {
     fsaFileHandle: null,
   });
   if (wasUntitled) undoManager.clear();   // null→null: change:projectPath never fires
+  state.emit('project:fresh');            // V0.3.4.133 — main.js arms the clean-settle (a new project is saved as it is)
   setStatus('New project.');
 }
 
