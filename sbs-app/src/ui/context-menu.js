@@ -87,7 +87,7 @@ function _openFlyout(parentBtn, subItems) {
     _flyoutEl = document.createElement('div');
     _flyoutEl.className = 'context-menu';   // reuse menu surface styling
     _flyoutEl.style.position = 'fixed';
-    _flyoutEl.style.zIndex   = '91';        // above the parent menu (z-90)
+    _flyoutEl.style.zIndex   = '10041';     // above the parent menu (z-10040, above the modals since V0.3.4.135)
     document.body.appendChild(_flyoutEl);
   }
   _flyoutEl.innerHTML = '';

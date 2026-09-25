@@ -475,13 +475,19 @@ function _renderPhasesView(host, ctx) {
          </span>`
       : '';
 
+    // V0.3.4.135 — a pause block (and an empty one) carries a big ✕ at its
+    // right end: click = the block is gone (the user: "the only way to remove
+    // a pause was to drag it out").
+    const removeX = (what) => `<button class="cap-remove-block" data-phase-idx="${idx}" type="button" title="Remove this ${what}"
+             style="margin-left:auto;width:26px;height:26px;border-radius:6px;border:1px solid rgba(239,68,68,.55);
+                    background:rgba(239,68,68,.12);color:#f87171;font-size:16px;font-weight:700;line-height:1;cursor:pointer;flex:0 0 auto">✕</button>`;
     const bodyHtml = fadeBadge + (orderedTypes.length
       ? chipsHtml
       : (isPauseBlock
-          ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:12px;font-weight:600">⏸ pause time block</span>`
+          ? `<span style="font-style:italic;padding:0 4px;color:#7c2d12;font-size:12px;font-weight:600">⏸ pause time block</span>${removeX('pause')}`
           : isFadeBlock
             ? `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">everything animates below — drag a chip back to snap it</span>`
-            : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">drop a channel here</span>`));
+            : `<span style="font-style:italic;padding:0 4px;color:var(--text);opacity:0.65;font-size:12px">drop a channel here</span>${removeX('empty time block')}`));
 
     // Pause blocks get an orange tint, fade blocks a violet one, so the
     // user sees them as structurally different from a channel time block.
@@ -636,6 +642,17 @@ function _renderPhasesView(host, ctx) {
           },
         },
       ], rect.left, rect.bottom + 2);
+    });
+  });
+
+  // ✕ on a pause / empty block — remove it (V0.3.4.135). The last block stays.
+  host.querySelectorAll('.cap-remove-block').forEach(btn => {
+    btn.addEventListener('mousedown', (e) => { e.stopPropagation(); });
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation(); e.preventDefault();
+      const cur = parseAnimationForEdit(preset.animation);
+      if (!cur || cur.length <= 1) { setStatus('That is the only time block — it stays.', 'info', 2500); return; }
+      _removePhase(preset, Number(btn.dataset.phaseIdx));
     });
   });
 
