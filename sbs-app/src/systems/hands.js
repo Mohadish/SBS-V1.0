@@ -473,15 +473,40 @@ export function solveHand(node, params = null) {
 
   const L = rig.L;
   const pose = HAND_POSES[p.pose] || HAND_POSES.handle;
-  if (p.released) _setPose(rig, OPEN, _clamp(Number(p.open) || 0, 0, 1));
-  else            _setPose(rig, pose.angles, _clamp(Number(p.closed ?? 1), 0, 1));
   if (rig.ghost) rig.ghost.visible = !p.released && p.ghost !== false;
 
+  // the grip: the pose at `closed`, then every pinned finger on to its target.
+  // Released (V0.3.4.132, user): the grip AS IT WAS is the starting point and
+  // `open` takes it toward the open hand — 0 = still the grip, a little = fingers
+  // eased off what was held, 1 = fully open. A pin on a PART is let go with the
+  // release (the hand is leaving it); a pin in the hand's frame still shapes it.
   const tips = {};
   const pinned = [];
-  if (!p.released) for (const f of HAND_FINGERS) { const t = targetWorld(node, f, p); if (t) { tips[f] = t; pinned.push(f); } }
+  for (const f of HAND_FINGERS) {
+    const tg = p.targets?.[f];
+    if (!tg) continue;
+    if (p.released && !Array.isArray(tg.local)) continue;
+    const t = targetWorld(node, f, p);
+    if (t) { tips[f] = t; pinned.push(f); }
+  }
+  _setPose(rig, pose.angles, _clamp(Number(p.closed ?? 1), 0, 1));
   group.updateMatrixWorld(true);
   for (const f of pinned) _solveFinger(rig.fingers[f], tips[f]);
+  if (p.released) {
+    const open = _clamp(Number(p.open) || 0, 0, 1);
+    if (open > 0) {
+      const A = _captureAngles(rig);
+      _setPose(rig, OPEN, 1);
+      const B = _captureAngles(rig);
+      for (const f of HAND_FINGERS) {
+        const fg = rig.fingers[f], a = A[f], b = B[f];
+        fg.ball = a.q1.clone().slerp(b.q1, open);
+        fg.phi[1] = a.phi1 + (b.phi1 - a.phi1) * open;
+        fg.phi[2] = a.phi2 + (b.phi2 - a.phi2) * open;
+        _setFingerAngles(fg);
+      }
+    }
+  }
 
   // the forearm bone aims at the forearm point (in the hand's frame; a legacy world point still reads) or straight back
   {

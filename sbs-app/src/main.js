@@ -4608,6 +4608,14 @@ canvas.addEventListener('contextmenu', e => {
       : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
     items.push({ label: '─', disabled: true });
   }
+  // 🖐 V0.3.4.132 — a hand: release / grip again at this step, align its grip, fine-tune.
+  if (multiIds.size === 1 && node && !node.archived && node.type === 'hand') {
+    const rel = !!node.handParams?.released;
+    items.push({ label: rel ? '🖐 Grip again at this step' : '🖐 Release at this step', action: () => handActions.setHandReleased(node.id, !rel) });
+    items.push({ label: '🎯 Align the grip (3 points)…', disabled: rel || !hands.propFrame(node), action: () => handActions.startAlignHand(node.id) });
+    items.push({ label: '🖐 Fine-tune fingers…', action: () => handActions.setHandFineTune(node.id) });
+    items.push({ label: '─', disabled: true });
+  }
   // 🔦 Spotlight at this step (V0.3.4.82) — a place in the picture, on THIS step only.
   if (multiIds.size === 1 && node && !node.archived && isTransformNode(node)) {
     if (node.spotlight) {

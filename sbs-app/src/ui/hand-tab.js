@@ -141,7 +141,7 @@ function _renderEditor(host, h) {
       </div>
       <div class="card" style="margin-top:8px;padding:8px 10px;display:flex;flex-direction:column;gap:8px;">
         <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="hand-released" ${p.released ? 'checked' : ''}> Release at this step <span class="small muted">— lets go, moves as a unit</span></label>
-        <label style="display:flex;align-items:center;gap:8px;" title="How far the fingers open when released"><span class="small" style="flex:0 0 60px;">Open</span><input type="range" id="hand-open" min="0" max="1" step="0.01" value="${Number(p.open) || 0}" style="flex:1;" ${p.released ? '' : 'disabled'}></label>
+        <label style="display:flex;align-items:center;gap:8px;" title="From the grip as it was (0) to the fully open hand (1) — a little = the fingers eased off what was held"><span class="small" style="flex:0 0 60px;">Open</span><input type="range" id="hand-open" min="0" max="1" step="0.01" value="${Number(p.open) || 0}" style="flex:1;" ${p.released ? '' : 'disabled'}></label>
         <label style="display:flex;align-items:center;gap:8px;" title="Wrist to middle fingertip"><span class="small" style="flex:0 0 60px;">Length</span><input type="number" id="hand-scale" min="50" max="1000" step="1" value="${Number(p.scale) || 190}" style="width:80px;"> <span class="small muted">mm</span></label>
       </div>
       <div class="card" style="margin-top:8px;padding:8px 10px;">

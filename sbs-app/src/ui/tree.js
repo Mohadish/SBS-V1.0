@@ -44,6 +44,8 @@ import { generateId }           from '../core/schema.js';
 import { setStatus }            from './status.js';
 import { chooseFromButtons }    from './prompt.js';
 import { scanTransformStructure, pasteTransforms } from '../systems/paste-transforms.js';   // V0.3.4.124 — Paste Transforms: one step or many, plain cascade
+import * as handActions from '../systems/hand-actions.js';   // 🖐 V0.3.4.132 — the hand's r-click items
+import * as hands       from '../systems/hands.js';
 import { showContextMenu, hideContextMenu, showConfirmDialog, canonicalizeMenuOrder } from './context-menu.js';
 import { showColorForNode, editHardwareTemplate } from './sidebar-left.js';
 import * as folderAlignPicker   from '../systems/folder-align-picker.js';
@@ -1388,6 +1390,14 @@ function _buildContextMenuItems(node) {
   // the asset frame, so relocating its pivot has no visually-verifiable meaning).
   // The gizmo's pivot-preserving rotation is generic (keys off pivotEnabled), so no
   // other change is needed to support these types.
+  // 🖐 V0.3.4.132 — a hand: release / grip again at this step, align its grip, fine-tune.
+  if (count === 1 && !node.archived && node.type === 'hand') {
+    const rel = !!node.handParams?.released;
+    items.push({ separator: true });
+    items.push({ label: rel ? '🖐 Grip again at this step' : '🖐 Release at this step', action: () => handActions.setHandReleased(node.id, !rel) });
+    items.push({ label: '🎯 Align the grip (3 points)…', disabled: rel || !hands.propFrame(node), action: () => handActions.startAlignHand(node.id) });
+    items.push({ label: '🖐 Fine-tune fingers…', action: () => handActions.setHandFineTune(node.id) });
+  }
   if (count === 1 && !node.archived && PIVOT_TYPES.has(node.type)) {
     const hasBluePivot = node.pivotEnabled === true && (
       !isNearZero(node.pivotLocalOffset) || !isIdentityQuaternion(node.pivotLocalQuaternion)
