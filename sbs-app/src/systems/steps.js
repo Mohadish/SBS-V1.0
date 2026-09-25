@@ -32,7 +32,7 @@ import * as overlaySystem           from './overlay.js';   // H2: overlay phase 
 import * as videoOverlay            from './video-overlay.js';   // 🎬 V0.3.2.84 — video stretches the overlay block
 import { ensureFlatShapeObject3D }   from './flat-shapes.js'; // M1: 2D shapes in 3D — build mesh on demand
 import { ensurePrimitiveObject3D }   from './primitives.js';  // V0.2.22.90: parametric primitives — build mesh on demand
-import { ensureHandObject3D, markHandDirty } from './hands.js';   // 🖐 V0.3.4.127: the procedural hand — rig on demand, per-step params
+import { ensureHandObject3D, markHandDirty, beginHandTransitions, snapHandTransitionsToFinal } from './hands.js';   // 🖐 V0.3.4.127: the procedural hand — rig on demand, per-step params; .131 blends across a step
 import { ensureHardwareInstanceObject3D, ensureHardwareNutObject3D } from './hardware-templates.js'; // V0.2.22.38: procedural hardware — build mesh on demand
 import { createStep, createEmptySnapshot, pickCameraView, pickCameraOrbit } from '../core/schema.js';
 import { parseAnimation, resolveAnimationString } from './animation.js';
@@ -1080,6 +1080,7 @@ class StepManager {
       const cableSimP = new Promise(resolve => {
         cablesRender.beginCableTransitions(toSnapshot.cables, objDur, easeFn, resolve);
       });
+      beginHandTransitions(objDur, easeFn);   // 🖐 the hands' grips blend over the same window
 
       // Overlay crossfade — default to the sustained variant (no flicker
       // on items shared between steps). Same rationale as cables above.
@@ -1772,6 +1773,7 @@ class StepManager {
             toSnapshot.cables, durationMs, easeFn, resolve,
           );
         }));
+        beginHandTransitions(durationMs, easeFn);   // 🖐
       }
 
       // `narration` — TRIGGER slot. Fires the step:applied narration
@@ -1944,6 +1946,7 @@ class StepManager {
       fallbackPromises.push(new Promise(resolve => {
         cablesRender.beginCableTransitions(toSnapshot.cables, fallbackObj, easeFn, resolve);
       }));
+      beginHandTransitions(fallbackObj, easeFn);   // 🖐
     }
     // Overlay fallback — default to the sustained variant (no flicker on
     // items shared between steps). Without this, overlay items added /
@@ -2534,6 +2537,7 @@ class StepManager {
     this._objectTransitions = [];
     // H1: snap any in-flight cable phase to final + resolve its await
     cablesRender.snapCableTransitionsToFinal();
+    snapHandTransitionsToFinal();   // 🖐 the hands land on their target grip at once
     // H2: same for the overlay fade.
     overlaySystem.snapOverlayFadeToFinal();
 
@@ -4154,7 +4158,13 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     node.name         = spec.name || node.name || 'Hand';
     node.localVisible = spec.localVisible !== false;
     node.handSide     = spec.handSide === 'left' ? 'left' : (node.handSide || 'right');
-    if (spec.handParams) node.handParams = JSON.parse(JSON.stringify(spec.handParams));
+    if (spec.handParams) {
+      // the step's params replace the node's; the previous ones are kept for the
+      // transition to blend from (hands.beginHandTransitions consumes them)
+      const next = JSON.parse(JSON.stringify(spec.handParams));
+      if (node.handParams && JSON.stringify(node.handParams) !== JSON.stringify(next)) node._handFrom = node.handParams;
+      node.handParams = next;
+    }
     node.children     = [];
     const obj = ensureHandObject3D(node);
     if (obj) {

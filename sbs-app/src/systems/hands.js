@@ -176,12 +176,18 @@ function _layoutGhost(poseKey, rig) {
   const loopR = (f, c) => _mean([fk[f].j1, fk[f].j2, fk[f].j3, fk[f].tip].map(p => new Th.Vector3(p.distanceTo(c), 0, 0))).x;
   const meshes = [];
   let points = [];
+  // the prop's frame — the hand's PIVOT jumps here on a pose pick (user): its
+  // centre, oriented with the prop's main axis as the pivot's +Y
+  const Y = new Th.Vector3(0, 1, 0);
+  let frame = null;
+  const frameOf = (pos, axis) => ({ pos: pos.clone(), quat: new Th.Quaternion().setFromUnitVectors(Y, axis.clone().normalize()) });
 
   if (P.ghost === 'handle' || P.ghost === 'pistol') {
     const fs = P.ghost === 'handle' ? ['index', 'middle', 'ring', 'pinky'] : ['middle', 'ring', 'pinky'];
     const cs = fs.map(loop);
     const C = _mean(cs);
     const r = Math.max(0.06 * L, Math.min(0.13 * L, _mean(fs.map((f, i) => new Th.Vector3(loopR(f, cs[i]) - fingerR, 0, 0))).x));
+    frame = frameOf(C, X);
     if (P.ghost === 'handle') {
       const len = 0.9 * L;
       const geo = new Th.CylinderGeometry(r, r, len, 24); geo.rotateZ(Math.PI / 2);
@@ -210,12 +216,14 @@ function _layoutGhost(poseKey, rig) {
     meshes.push({ geo: new Th.BoxGeometry(0.14 * L, 0.10 * L, thick), pos: C, quat: q });
     let s = new Th.Vector3().crossVectors(a, new Th.Vector3(0, 1, 0)); if (s.lengthSq() < 1e-6) s = X.clone(); s.normalize();
     points = [C.clone().addScaledVector(a, thick / 2), C.clone().addScaledVector(a, -thick / 2), C.clone().addScaledVector(s, 0.07 * L)];
+    frame = frameOf(C, a);
   } else if (P.ghost === 'push') {
     const z = -(ANAT.palm.t * 0.5 + 0.03) * L;
     const C = new Th.Vector3(0, ANAT.palm.y * L + 0.05 * L, z);
     meshes.push({ geo: new Th.BoxGeometry(0.62 * L, 0.72 * L, 0.02 * L), pos: C });
     const sideX = rig.left ? -1 : 1;
     points = [C.clone(), C.clone().add(new Th.Vector3(0, 0.34 * L, 0)), C.clone().add(new Th.Vector3(sideX * 0.28 * L, 0, 0))];
+    frame = frameOf(C, new Th.Vector3(0, 0, -1));
   } else if (P.ghost === 'knob') {
     const tips = HAND_FINGERS.map(f => fk[f].tip);
     const c = _mean(tips);
@@ -223,10 +231,18 @@ function _layoutGhost(poseKey, rig) {
     const zFace = _mean(tips).z;
     const h = 0.22 * L;
     const geo = new Th.CylinderGeometry(R, R, h, 32); geo.rotateX(Math.PI / 2);
-    meshes.push({ geo, pos: new Th.Vector3(c.x, c.y, zFace - h / 2) });
+    const centre = new Th.Vector3(c.x, c.y, zFace - h / 2);
+    meshes.push({ geo, pos: centre });
     points = [0, 2 * Math.PI / 3, 4 * Math.PI / 3].map(t => new Th.Vector3(c.x + R * Math.cos(t), c.y + R * Math.sin(t), zFace));
+    frame = frameOf(centre, new Th.Vector3(0, 0, -1));
   }
-  return { meshes, points };
+  return { meshes, points, frame };
+}
+
+/** The prop's frame in the hand's own space (where the pivot goes), or null. */
+export function propFrame(node) {
+  const f = node?.object3d?.userData?.rig?.ghostFrame;
+  return f ? { pos: [f.pos.x, f.pos.y, f.pos.z], quat: [f.quat.x, f.quat.y, f.quat.z, f.quat.w] } : null;
 }
 
 /** The ghost prop group from a layout. */
@@ -320,13 +336,14 @@ export function ensureHandObject3D(node) {
   group.add(foreHandle);
 
   for (const c of kept) group.add(c);
-  const rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], mat };
+  const rig = { L, left, pose: p.pose, fingers, palm, forearm, foreHandle, ghost: null, ghostPoints: [], ghostFrame: null, mat };
   group.userData.rig = rig;
   // the prop is laid out from the POSED fingers (the solve re-poses the rig right after)
   const layout = _layoutGhost(p.pose, rig);
   if (layout) {
     rig.ghost = _buildGhost(layout, L, ghostMat);
     rig.ghostPoints = layout.points.map(v => v.clone());
+    rig.ghostFrame = layout.frame;
     group.add(rig.ghost);
   }
   node.object3d = group;
@@ -364,8 +381,8 @@ function _setPose(rig, angles, t) {
  * used to be a world point and stayed behind when the hand's group moved), or
  * a legacy world point { pos }.
  */
-export function targetWorld(node, finger) {
-  const t = node?.handParams?.targets?.[finger];
+export function targetWorld(node, finger, params = node?.handParams) {
+  const t = params?.targets?.[finger];
   if (!t) return null;
   const Th = T();
   if (Array.isArray(t.local)) {
@@ -439,19 +456,19 @@ function _solveFinger(fg, targetW) {
 // ── the solve ────────────────────────────────────────────────────────────────
 
 /**
- * Solve one hand from its params: the wrist is the node's own transform; the
- * fingers take the pose (blended by `closed`, or the open hand when released),
- * and every pinned finger bends on to its target. Safe to call often.
+ * Solve one hand from params (its own by default): the fingers take the pose
+ * (blended by `closed`, or the open hand when released) and every pinned
+ * finger bends on to its target. The wrist is the node's own transform — it is
+ * NOT written here: the group's transform belongs to the app's transform
+ * machinery (activation, the gizmo, the step's object lerp mid-transition).
  * @returns {{ pinned:number, unreached:string[] }}
  */
-export function solveHand(node) {
+export function solveHand(node, params = null) {
   const Th = T();
   const group = node?.object3d;
   const rig = group?.userData?.rig;
   if (!Th || !rig) return { pinned: 0, unreached: [] };
-  const p = node.handParams || (node.handParams = defaultHandParams());
-  group.parent?.updateMatrixWorld?.(true);
-  applyNodeTransformToObject3D(node, group);
+  const p = params || node.handParams || (node.handParams = defaultHandParams());
   group.updateMatrixWorld(true);
 
   const L = rig.L;
@@ -462,7 +479,7 @@ export function solveHand(node) {
 
   const tips = {};
   const pinned = [];
-  if (!p.released) for (const f of HAND_FINGERS) { const t = targetWorld(node, f); if (t) { tips[f] = t; pinned.push(f); } }
+  if (!p.released) for (const f of HAND_FINGERS) { const t = targetWorld(node, f, p); if (t) { tips[f] = t; pinned.push(f); } }
   group.updateMatrixWorld(true);
   for (const f of pinned) _solveFinger(rig.fingers[f], tips[f]);
 
@@ -523,9 +540,67 @@ function _liveHands() {
   return out;
 }
 
+// ── step transitions: the hand's parameters blend, not jump ─────────────────
+// (V0.3.4.131, user: "any animation between steps should be smooth".) The step
+// rebuild puts the TARGET params on the node and stashes the previous ones as
+// node._handFrom; beginHandTransitions (called where the cable morph begins,
+// same duration + easing) turns that into a transition; each frame the fingers
+// are solved for BOTH states (pose, closed, released / open, pins + IK) and the
+// joint angles are blended. The wrist rides the step's own object lerp.
+const _transitions = new Map();   // nodeId → { from, to, t0, dur, ease }
+
+/** The effective knuckle quaternion of a finger state (ball joint or hinge + spread). */
+function _j1Quat(fg) {
+  const Th = T();
+  if (fg.ball) return fg.ball.clone();
+  const rx = new Th.Quaternion().setFromAxisAngle(new Th.Vector3(1, 0, 0), fg.phi[0]);
+  const rz = new Th.Quaternion().setFromAxisAngle(new Th.Vector3(0, 0, 1), fg.alpha);
+  return fg.basis.clone().multiply(rz).multiply(rx);
+}
+function _captureAngles(rig) {
+  const out = {};
+  for (const f of HAND_FINGERS) { const fg = rig.fingers[f]; out[f] = { q1: _j1Quat(fg), phi1: fg.phi[1], phi2: fg.phi[2] }; }
+  return out;
+}
+/** Solve for `from` and `to`, then set every joint at the blend `t`. */
+function _solveBlend(node, from, to, t) {
+  const rig = node.object3d?.userData?.rig;
+  if (!rig) return;
+  solveHand(node, from); const A = _captureAngles(rig);
+  solveHand(node, to);   const B = _captureAngles(rig);
+  for (const f of HAND_FINGERS) {
+    const fg = rig.fingers[f], a = A[f], b = B[f];
+    fg.ball = a.q1.clone().slerp(b.q1, t);
+    fg.phi[1] = a.phi1 + (b.phi1 - a.phi1) * t;
+    fg.phi[2] = a.phi2 + (b.phi2 - a.phi2) * t;
+    _setFingerAngles(fg);
+  }
+  if (rig.ghost) rig.ghost.visible = !to.released && to.ghost !== false;
+  node.object3d.updateMatrixWorld(true);
+}
+
+/** Called where a step transition's object channel starts: every hand whose params changed blends over it. */
+export function beginHandTransitions(durationMs, easeFn) {
+  const now = _now;
+  for (const n of _liveHands()) {
+    const from = n._handFrom;
+    delete n._handFrom;
+    if (!from) continue;
+    if (JSON.stringify(from) === JSON.stringify(n.handParams)) continue;
+    _transitions.set(n.id, { from, to: JSON.parse(JSON.stringify(n.handParams)), t0: now, dur: Math.max(1, durationMs || 1), ease: typeof easeFn === 'function' ? easeFn : (x) => x });
+  }
+}
+/** A step change was cut short: every hand lands on its target at once. */
+export function snapHandTransitionsToFinal() {
+  for (const [id] of _transitions) _sigCache.delete(id);
+  _transitions.clear();
+  for (const n of _liveHands()) delete n._handFrom;
+}
+
 // ── the frame hook: re-solve a hand when its inputs moved ────────────────────
 const _sigCache = new Map();
 let _hooked = false;
+let _now = (typeof performance !== 'undefined' ? performance.now() : 0);
 
 function _signature(node) {
   const p = node.handParams || {};
@@ -539,8 +614,9 @@ function _signature(node) {
 /** Force a re-solve on the next frame. */
 export function markHandDirty(nodeId) { _sigCache.delete(nodeId); }
 
-export function tickHands() {
+export function tickHands(now) {
   const Th = T(); if (!Th) return false;
+  if (Number.isFinite(now)) _now = now;
   const fine = state.get('handFineTune');
   const selCtl = state.get('selectedHandControl');
   let changed = false;
@@ -548,6 +624,13 @@ export function tickHands() {
     // (a pose / size change rebuilds the rig where the params change lands —
     //  hand-actions._applyParams and the step rebuild — never here: the tick
     //  cannot update steps.object3dById)
+    const tr = _transitions.get(n.id);
+    if (tr) {
+      const raw = Math.min(1, (_now - tr.t0) / tr.dur);
+      const t = Math.max(0, Math.min(1, tr.ease(raw)));
+      if (raw >= 1) { _transitions.delete(n.id); _sigCache.delete(n.id); }
+      else { _solveBlend(n, tr.from, tr.to, t); changed = true; continue; }
+    }
     const sig = _signature(n);
     if (_sigCache.get(n.id) !== sig) {
       solveHand(n);
@@ -576,7 +659,7 @@ export function tickHands() {
 export function initHands() {
   if (_hooked) return;
   _hooked = true;
-  const step = () => { try { if (tickHands()) sceneCore.requestRender?.(120); } catch (e) { console.warn('[hands] tick failed:', e?.message); } };
+  const step = (now) => { try { if (tickHands(now)) sceneCore.requestRender?.(120); } catch (e) { console.warn('[hands] tick failed:', e?.message); } };
   if (typeof sceneCore.addTickHook === 'function') sceneCore.addTickHook(step);
-  else { const raf = () => { step(); requestAnimationFrame(raf); }; requestAnimationFrame(raf); }
+  else { const raf = (now) => { step(now); requestAnimationFrame(raf); }; requestAnimationFrame(raf); }
 }

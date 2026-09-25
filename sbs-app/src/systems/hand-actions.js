@@ -111,7 +111,6 @@ export function addHand(side = 'right', pose = 'handle') {
   const params = hands.defaultHandParams();
   if (hands.HAND_POSES[pose]) params.pose = pose;
   const node = createNode('hand', { name: left ? 'Left hand' : 'Right hand', handSide: left ? 'left' : 'right', handParams: params });
-  node.pivotEnabled = false;
   try {   // start it at the camera's orbit centre so it is on screen
     const T = window.THREE;
     const c = sceneCore.controls?.pivot || sceneCore.controls?.target;
@@ -122,6 +121,7 @@ export function addHand(side = 'right', pose = 'handle') {
     }
   } catch {}
   _attach(node, parent.id);
+  _pivotIntoProp(node);
   state.markDirty();
   undoManager.push(`Add ${node.name}`, () => _detach(node.id), () => _attach(node, parent.id));
   state.setState({ selectedId: node.id, multiSelectedIds: new Set([node.id]), selectedHandControl: null, handFineTune: null });
@@ -141,15 +141,30 @@ export function removeHand(id) {
 
 // ── params ───────────────────────────────────────────────────────────────────
 
+/** The pivot into the prop's centre, aligned to it (user: "makes manipulation much easier"). */
+function _pivotIntoProp(n) {
+  const f = hands.propFrame(n);
+  if (!f) return;
+  n.pivotLocalOffset = f.pos;
+  n.pivotLocalQuaternion = f.quat;
+  n.pivotEnabled = true;
+}
+
 function _applyParams(id, params, { flush = true } = {}) {
   const n = _node(id);
   if (!n) return;
   n.handParams = _clone(params);
   hands.markHandDirty(id);
-  // a pose / size change rebuilds the rig in place (the group keeps its parent + transform)
-  const parent = n.object3d?.parent;
+  // a pose / size change rebuilds the rig in place (the group keeps its parent + transform);
+  // the pivot follows the new prop
+  const before = n.object3d, parent = before?.parent;
   const g = hands.ensureHandObject3D(n);
-  if (g && parent && g.parent !== parent) { parent.add(g); steps.object3dById.set(id, g); }
+  if (g && g !== before) {
+    if (parent && g.parent !== parent) parent.add(g);
+    steps.object3dById.set(id, g);
+    applyNodeTransformToObject3D(n, g);
+    _pivotIntoProp(n);
+  }
   hands.solveHand(n);
   if (flush) { steps.scheduleTransformSync?.(); state.emit('change:treeData', state.get('treeData')); }
   sceneCore.requestRender?.(120);

@@ -498,7 +498,7 @@ export function isTransformNode(node) {
  * Wrapped models become folders, so they're covered. The gizmo's pivot-preserving
  * rotation keys off pivotEnabled, so it already works for all of these. V0.3.0.108.
  */
-export const PIVOT_TYPES = new Set(['folder', 'primitive', 'flatShape', 'hardwareInstance']);
+export const PIVOT_TYPES = new Set(['folder', 'primitive', 'flatShape', 'hardwareInstance', 'hand']);   // 🖐 V0.3.4.131 — the hand's pivot sits in its prop
 
 
 // ═══════════════════════════════════════════════════════════════════════════
