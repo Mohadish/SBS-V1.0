@@ -65,6 +65,8 @@ const _CHANNELS_REQUIRED = [
   'spotlight', // V0.3.4.83 — the move of spotlighted objects; back-filled BESIDE
               // `obj` (see below), where it changes nothing until something is
               // spotlighted and the chip is dragged elsewhere.
+  'hand',     // 🖐 V0.3.4.137 — the hands' grip change; into the FIRST phase (the
+              // user's call). Inert on a step with no hand (render-cache drops it).
 ];
 export function _migrateAnimationPresets(items) {
   // Bootstrap: new project (or loaded project with empty presets array)
@@ -79,47 +81,60 @@ export function _migrateAnimationPresets(items) {
   }
   return items.map(p => {
     if (!p?.animation || typeof p.animation !== 'string') return p;
-    let str = p.animation.trim();
-    const hasOverlayCapsule = /\boverlay(s)?\b/.test(str);
-
-    // Find missing required channels.
-    const missing = _CHANNELS_REQUIRED.filter(ch => {
-      const re = new RegExp(`\\b${ch}\\b`);
-      return !re.test(str);
-    });
-    if (!hasOverlayCapsule) missing.push('overlays');   // default to sustained variant
-
-    if (missing.length === 0) return p;
-
-    // 🔦 `spotlight` joins the phase that holds `obj`: there it is exactly what the
-    // engine did before the channel existed (spotlighted moves ride obj), so an old
-    // project's choreography — and its render cache — are untouched. Into the
-    // first phase only when the string has no obj at all.
-    if (missing.includes('spotlight') && /\bobj\b/.test(str)) {
-      const before = str;
-      str = str.replace(/(^|,\s*)([a-zA-Z+]*\bobj\b[a-zA-Z+]*)\(/, (m, pre, types) => `${pre}${types}+spotlight(`);
-      if (str !== before) missing.splice(missing.indexOf('spotlight'), 1);
-      if (missing.length === 0) return { ...p, animation: str };
-    }
-
-    // Inject the missing channels into the FIRST phase. Find the first
-    // type-group in the string (everything up to the first `(durMs)`)
-    // and append the missing tokens to it. The duration is preserved.
-    // e.g. "camera(AL1), obj(500)" + missing [color, visibility] →
-    //      "camera+color+visibility(AL1), obj(500)"
-    const m = str.match(/^([a-zA-Z+]+)\(/);
-    if (m) {
-      const firstTypes = m[1];
-      const newTypes   = firstTypes + '+' + missing.join('+');
-      str = str.replace(/^[a-zA-Z+]+\(/, newTypes + '(');
-    } else {
-      // No parseable phase — fall back to wholesale replacement with the
-      // canonical default. Caller's data was broken; this restores it.
-      // (Rare: would only hit if someone hand-edited the file to garbage.)
-      str = 'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert+spotlight(AL1)';
-    }
-    return { ...p, animation: str };
+    const str = _migrateAnimationString(p.animation);
+    return str === p.animation ? p : { ...p, animation: str };
   });
+}
+
+/**
+ * One animation string with every required channel present (the invariant
+ * above). Returns the input untouched when nothing is missing: the render
+ * cache keys on the resolved string, and an unchanged string is a kept segment.
+ * 🖐 V0.3.4.137: also runs over each step's PRIVATE animation at load.
+ */
+export function _migrateAnimationString(animation) {
+  if (typeof animation !== 'string' || !animation.trim()) return animation;
+  let str = animation.trim();
+  const hasOverlayCapsule = /\boverlay(s)?\b/.test(str);
+
+  // Find missing required channels.
+  const missing = _CHANNELS_REQUIRED.filter(ch => {
+    const re = new RegExp(`\\b${ch}\\b`);
+    return !re.test(str);
+  });
+  if (!hasOverlayCapsule) missing.push('overlays');   // default to sustained variant
+
+  if (missing.length === 0) return animation;
+
+  // 🔦 `spotlight` joins the phase that holds `obj`: there it is exactly what the
+  // engine did before the channel existed (spotlighted moves ride obj), so an old
+  // project's choreography — and its render cache — are untouched. Into the
+  // first phase only when the string has no obj at all.
+  if (missing.includes('spotlight') && /\bobj\b/.test(str)) {
+    const before = str;
+    str = str.replace(/(^|,\s*)([a-zA-Z+]*\bobj\b[a-zA-Z+]*)\(/, (m, pre, types) => `${pre}${types}+spotlight(`);
+    if (str !== before) missing.splice(missing.indexOf('spotlight'), 1);
+    if (missing.length === 0) return str;
+  }
+
+  // Inject the missing channels into the FIRST phase: the first type-group
+  // (everything up to its `(durMs)`) that is not a bare leading `pause`. The
+  // duration is preserved.
+  // e.g. "camera(AL1), obj(500)" + missing [color, visibility] →
+  //      "camera+color+visibility(AL1), obj(500)"
+  let placed = false;
+  str = str.replace(/([a-zA-Z+]+)\(/g, (m, types) => {
+    if (placed || types === 'pause') return m;
+    placed = true;
+    return types + '+' + missing.join('+') + '(';
+  });
+  if (!placed) {
+    // No parseable phase — fall back to wholesale replacement with the
+    // canonical default. Caller's data was broken; this restores it.
+    // (Rare: would only hit if someone hand-edited the file to garbage.)
+    str = 'camera+visibility+obj+color+overlays+cable+narration+notes+shape+insert+spotlight+hand(AL1)';
+  }
+  return str;
 }
 
 /**
@@ -1190,7 +1205,13 @@ export function applyProjectToState(project) {
 
   // ── Content arrays ────────────────────────────────────────────────────────
   state.setState({
-    steps:                _internOnLoad(project.steps?.items || []),
+    steps:                _internOnLoad(project.steps?.items || []).map(s => {
+      // 🖐 V0.3.4.137 — a step's PRIVATE animation is a string of its own, outside
+      // the preset migration: it gains the same late channels here (first block).
+      const pa = s?.transition?.privateAnimation;
+      const na = (typeof pa === 'string' && pa.trim()) ? _migrateAnimationString(pa) : pa;
+      return na !== pa ? { ...s, transition: { ...s.transition, privateAnimation: na } } : s;
+    }),
     chapters:             project.chapters?.items           || [],
     cameraViews:          project.cameras?.items            || [],
     colorPresets:         project.colors?.items             || [],

@@ -630,7 +630,12 @@ let _now = (typeof performance !== 'undefined' ? performance.now() : 0);
 function _signature(node) {
   const p = node.handParams || {};
   const parts = [node.handSide, p.scale, p.pose, p.closed, p.ghost === false ? 0 : 1, p.released ? 1 : 0, p.open, JSON.stringify(p.forearm), JSON.stringify(p.forearmLocal), JSON.stringify(node.localOffset), JSON.stringify(node.localQuaternion), node.moveEnabled === false ? 0 : 1, node.rotateEnabled === false ? 0 : 1];
-  for (const f of HAND_FINGERS) { const t = p.released ? null : targetWorld(node, f); parts.push(t ? `${t.x.toFixed(2)},${t.y.toFixed(2)},${t.z.toFixed(2)}` : '-'); }
+  const from = node._handFrom;   // V0.3.4.137 — while a hand HOLDS its previous grip, that grip's pins are what it follows
+  for (const f of HAND_FINGERS) {
+    const t = p.released ? null : targetWorld(node, f);
+    parts.push(t ? `${t.x.toFixed(2)},${t.y.toFixed(2)},${t.z.toFixed(2)}` : '-');
+    if (from) { const u = from.released ? null : targetWorld(node, f, from); parts.push(u ? `${u.x.toFixed(2)},${u.y.toFixed(2)},${u.z.toFixed(2)}` : '-'); }
+  }
   const g = node.object3d;
   if (g?.parent) { const e = g.parent.matrixWorld.elements; parts.push(e[12].toFixed(1), e[13].toFixed(1), e[14].toFixed(1), e[0].toFixed(3), e[5].toFixed(3), e[6].toFixed(3)); }
   return parts.join('|');
@@ -656,10 +661,14 @@ export function tickHands(now) {
       if (raw >= 1) { _transitions.delete(n.id); _sigCache.delete(n.id); }
       else { _solveBlend(n, tr.from, tr.to, t); changed = true; continue; }
     }
-    const sig = _signature(n);
+    // V0.3.4.137 — a hand whose step params changed HOLDS its previous state
+    // until its slot begins (or the instant apply snaps it): the step rebuild
+    // put the target params on the node, and solving them at once made the hand
+    // jump to the end pose, then snap back when its slot finally animated it.
+    const sig = _signature(n) + (n._handFrom ? '|hold' : '');
     if (_sigCache.get(n.id) !== sig) {
-      solveHand(n);
-      _sigCache.set(n.id, _signature(n));
+      solveHand(n, n._handFrom || null);
+      _sigCache.set(n.id, sig);
       changed = true;
     }
     const show = fine === n.id || selCtl?.nodeId === n.id;

@@ -511,6 +511,11 @@ class StepManager {
       state.setState({ nodeById });
       state.emit('change:treeData', root);
     }
+    // 🖐 V0.3.4.137 — the rebuild above stashed a changed hand's previous grip as
+    // node._handFrom for the step's hand slot to blend from. Outside an animated
+    // activation (undo, refresh, an instant step, a tree edit) no slot is coming:
+    // the hands land now, or they would hold the old grip for good.
+    if (!this._animRunning) snapHandTransitionsToFinal();
 
     // Visibility
     if (snapshot.visibility && !holds('visibility')) {
@@ -2440,7 +2445,7 @@ class StepManager {
     } else {
       this._animRunning       = false;
       this._currentTargetSnap = null;
-      this.applySnapshotInstant(targetSnap);
+      this.applySnapshotInstant(targetSnap);   // (🖐 lands the hands too — no slot is coming)
     }
 
     state.emit('step:applied', step);

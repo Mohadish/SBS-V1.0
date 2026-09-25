@@ -172,12 +172,23 @@ function _stepKeyView(s, keep, animStr, camTpl) {
   // is dropped from the resolved string for a step with no spotlight, and a project
   // that never used the feature keeps every segment it rendered before. A phase that
   // is ONLY `spotlight(N)` is a dwell of N ms and stays.
-  if (typeof c._animResolved === 'string' && /\bspotlight\b/.test(c._animResolved)) {
-    const lit = Object.values(c.snapshot?.transforms || {}).some(t => t && t.spotlight);
-    if (!lit) c._animResolved = c._animResolved.replace(/([a-zA-Z]+(?:\+[a-zA-Z]+)*)\(/g, (m, types) => {
+  // 🖐 V0.3.4.137 — `hand` likewise (back-filled into every preset's FIRST block):
+  // a step whose (pruned) tree holds no hand is moved by the token not at all.
+  const _dropInert = (ch) => {
+    c._animResolved = c._animResolved.replace(/([a-zA-Z]+(?:\+[a-zA-Z]+)*)\(/g, (m, types) => {
       const parts = types.split('+');
-      return (parts.length > 1 && parts.includes('spotlight')) ? parts.filter(p => p !== 'spotlight').join('+') + '(' : m;
+      return (parts.length > 1 && parts.includes(ch)) ? parts.filter(p => p !== ch).join('+') + '(' : m;
     });
+  };
+  if (typeof c._animResolved === 'string') {
+    if (/\bspotlight\b/.test(c._animResolved)) {
+      const lit = Object.values(c.snapshot?.transforms || {}).some(t => t && t.spotlight);
+      if (!lit) _dropInert('spotlight');
+    }
+    if (/\bhand\b/.test(c._animResolved)) {
+      const hasHand = (function walk(n) { return !!n && (n.type === 'hand' || (n.children || []).some(walk)); })(c.snapshot?.tree);
+      if (!hasHand) _dropInert('hand');
+    }
   }
   return _canon(c);
 }
