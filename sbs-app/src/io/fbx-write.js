@@ -30,6 +30,36 @@ const _arr = (values, perLine = 60) => {
 };
 const _esc = (s) => String(s ?? '').replace(/[^\x20-\x7E]/g, '_').replace(/"/g, "'");
 
+/** General 4×4 inverse of a column-major 16-array (three's Matrix4.invert, cofactors). */
+function _inv4(m) {
+  const [n11, n21, n31, n41, n12, n22, n32, n42, n13, n23, n33, n43, n14, n24, n34, n44] = Array.from(m, Number);
+  const t11 = n23 * n34 * n42 - n24 * n33 * n42 + n24 * n32 * n43 - n22 * n34 * n43 - n23 * n32 * n44 + n22 * n33 * n44;
+  const t12 = n14 * n33 * n42 - n13 * n34 * n42 - n14 * n32 * n43 + n12 * n34 * n43 + n13 * n32 * n44 - n12 * n33 * n44;
+  const t13 = n13 * n24 * n42 - n14 * n23 * n42 + n14 * n22 * n43 - n12 * n24 * n43 - n13 * n22 * n44 + n12 * n23 * n44;
+  const t14 = n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 + n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34;
+  const det = n11 * t11 + n21 * t12 + n31 * t13 + n41 * t14;
+  if (!det) return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const d = 1 / det;
+  return [
+    t11 * d,
+    (n24 * n33 * n41 - n23 * n34 * n41 - n24 * n31 * n43 + n21 * n34 * n43 + n23 * n31 * n44 - n21 * n33 * n44) * d,
+    (n22 * n34 * n41 - n24 * n32 * n41 + n24 * n31 * n42 - n21 * n34 * n42 - n22 * n31 * n44 + n21 * n32 * n44) * d,
+    (n23 * n32 * n41 - n22 * n33 * n41 - n23 * n31 * n42 + n21 * n33 * n42 + n22 * n31 * n43 - n21 * n32 * n43) * d,
+    t12 * d,
+    (n13 * n34 * n41 - n14 * n33 * n41 + n14 * n31 * n43 - n11 * n34 * n43 - n13 * n31 * n44 + n11 * n33 * n44) * d,
+    (n14 * n32 * n41 - n12 * n34 * n41 - n14 * n31 * n42 + n11 * n34 * n42 + n12 * n31 * n44 - n11 * n32 * n44) * d,
+    (n12 * n33 * n41 - n13 * n32 * n41 + n13 * n31 * n42 - n11 * n33 * n42 - n12 * n31 * n43 + n11 * n32 * n43) * d,
+    t13 * d,
+    (n14 * n23 * n41 - n13 * n24 * n41 - n14 * n21 * n43 + n11 * n24 * n43 + n13 * n21 * n44 - n11 * n23 * n44) * d,
+    (n12 * n24 * n41 - n14 * n22 * n41 + n14 * n21 * n42 - n11 * n24 * n42 - n12 * n21 * n44 + n11 * n22 * n44) * d,
+    (n13 * n22 * n41 - n12 * n23 * n41 - n13 * n21 * n42 + n11 * n23 * n42 + n12 * n21 * n43 - n11 * n22 * n43) * d,
+    t14 * d,
+    (n13 * n24 * n31 - n14 * n23 * n31 + n14 * n21 * n33 - n11 * n24 * n33 - n13 * n21 * n34 + n11 * n23 * n34) * d,
+    (n14 * n22 * n31 - n12 * n24 * n31 - n14 * n21 * n32 + n11 * n24 * n32 + n12 * n21 * n34 - n11 * n22 * n34) * d,
+    (n12 * n23 * n31 - n13 * n22 * n31 + n13 * n21 * n32 - n11 * n23 * n32 - n12 * n21 * n33 + n11 * n22 * n33) * d,
+  ];
+}
+
 /** three's Euler 'ZYX' (= FBX eEulerXYZ) in degrees, from a unit quaternion [x,y,z,w]. */
 function _eulerDeg(q) {
   const [x, y, z, w] = q;
@@ -60,7 +90,7 @@ function _eulerDeg(q) {
  * @param {string} [o.creator]
  * @returns {string} the .fbx text (ASCII)
  */
-export function skinnedMeshFbx({ bones, positions, normals, indices, joints, weights, bindMatrices, color = [0.9, 0.71, 0.59], name = 'mesh', creator = 'SBS Step Browser' }) {
+export function skinnedMeshFbx({ bones, positions, normals, indices, joints, weights, bindMatrices, inverseBindMatrices = null, color = [0.9, 0.71, 0.59], name = 'mesh', creator = 'SBS Step Browser', unitScale = 0.1, writeBindPose = true }) {
   const nV = positions.length / 3;
   if (!bones?.length) throw new Error('fbx: no bones');
   if (normals.length !== positions.length) throw new Error('fbx: normals/positions mismatch');
@@ -130,8 +160,8 @@ export function skinnedMeshFbx({ bones, positions, normals, indices, joints, wei
   p('\t\tP: "CoordAxisSign", "int", "Integer", "",1');
   p('\t\tP: "OriginalUpAxis", "int", "Integer", "",1');
   p('\t\tP: "OriginalUpAxisSign", "int", "Integer", "",1');
-  p('\t\tP: "UnitScaleFactor", "double", "Number", "",0.1');          // 1 unit = 1 mm (FBX counts in cm)
-  p('\t\tP: "OriginalUnitScaleFactor", "double", "Number", "",0.1');
+  p(`\t\tP: "UnitScaleFactor", "double", "Number", "",${_num(unitScale)}`);          // FBX counts in cm: 0.1 = our mm
+  p(`\t\tP: "OriginalUnitScaleFactor", "double", "Number", "",${_num(unitScale)}`);
   p('\t\tP: "AmbientColor", "ColorRGB", "Color", "",0,0,0');
   p('\t\tP: "DefaultCamera", "KString", "", "", "Producer Perspective"');
   p('\t\tP: "TimeMode", "enum", "", "",6');
@@ -154,7 +184,7 @@ export function skinnedMeshFbx({ bones, positions, normals, indices, joints, wei
   p('}');
 
   // ── definitions (counts) ──────────────────────────────────────────────────
-  const counts = { GlobalSettings: 1, Model: 1 + bones.length, Geometry: 1, NodeAttribute: bones.length, Material: 1, Deformer: 1 + clusterBones.length, Pose: 1 };
+  const counts = { GlobalSettings: 1, Model: 1 + bones.length, Geometry: 1, NodeAttribute: bones.length, Material: 1, Deformer: 1 + clusterBones.length, Pose: writeBindPose ? 1 : 0 };
   p('Definitions:  {');
   p('\tVersion: 100');
   p(`\tCount: ${Object.values(counts).reduce((a, b) => a + b, 0)}`);
@@ -186,9 +216,11 @@ export function skinnedMeshFbx({ bones, positions, normals, indices, joints, wei
   p('\tObjectType: "Deformer" {');
   p(`\t\tCount: ${counts.Deformer}`);
   p('\t}');
-  p('\tObjectType: "Pose" {');
-  p('\t\tCount: 1');
-  p('\t}');
+  if (writeBindPose) {
+    p('\tObjectType: "Pose" {');
+    p('\t\tCount: 1');
+    p('\t}');
+  }
   p('}');
 
   // ── objects ───────────────────────────────────────────────────────────────
@@ -283,10 +315,18 @@ export function skinnedMeshFbx({ bones, positions, normals, indices, joints, wei
   p(`\tDeformer: ${ID.skin}, "Deformer::${meshName}_skin", "Skin" {`);
   p('\t\tVersion: 101');
   p('\t\tLink_DeformAcuracy: 50');
+  p('\t\tSkinningType: "Linear"');
   p('\t}');
   for (const i of clusterBones) {
     const pb = perBone[i];
     const link = bindMatrices.subarray ? bindMatrices.subarray(i * 16, i * 16 + 16) : bindMatrices.slice(i * 16, i * 16 + 16);
+    // The SDK calls Transform "the mesh's global matrix at bind" — but in the
+    // FILE it is stored in the BONE's space: inverse(bone bind) × mesh global
+    // (Max's own export shows it; Blender's exporter documents the trap). The
+    // mesh sits at the origin, so it is the inverse bind matrix itself.
+    const meshInBone = inverseBindMatrices
+      ? (inverseBindMatrices.subarray ? inverseBindMatrices.subarray(i * 16, i * 16 + 16) : inverseBindMatrices.slice(i * 16, i * 16 + 16))
+      : _inv4(link);
     p(`\tDeformer: ${ID.cluster(i)}, "SubDeformer::${_esc(bones[i].name)}", "Cluster" {`);
     p('\t\tVersion: 100');
     p('\t\tUserData: "", ""');
@@ -297,7 +337,7 @@ export function skinnedMeshFbx({ bones, positions, normals, indices, joints, wei
     p(`\t\t\ta: ${_arr(pb.w)}`);
     p('\t\t}');
     p('\t\tTransform: *16 {');
-    p('\t\t\ta: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1');   // the mesh at bind: identity
+    p(`\t\t\ta: ${_arr(meshInBone)}`);
     p('\t\t}');
     p('\t\tTransformLink: *16 {');
     p(`\t\t\ta: ${_arr(link)}`);
@@ -305,26 +345,28 @@ export function skinnedMeshFbx({ bones, positions, normals, indices, joints, wei
     p('\t}');
   }
   // the bind pose
-  p(`\tPose: ${ID.pose}, "Pose::BindPose", "BindPose" {`);
-  p('\t\tType: "BindPose"');
-  p('\t\tVersion: 100');
-  p(`\t\tNbPoseNodes: ${1 + bones.length}`);
-  p('\t\tPoseNode:  {');
-  p(`\t\t\tNode: ${ID.mesh}`);
-  p('\t\t\tMatrix: *16 {');
-  p('\t\t\t\ta: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1');
-  p('\t\t\t}');
-  p('\t\t}');
-  bones.forEach((b, i) => {
-    const m = bindMatrices.subarray ? bindMatrices.subarray(i * 16, i * 16 + 16) : bindMatrices.slice(i * 16, i * 16 + 16);
+  if (writeBindPose) {
+    p(`\tPose: ${ID.pose}, "Pose::BindPose", "BindPose" {`);
+    p('\t\tType: "BindPose"');
+    p('\t\tVersion: 100');
+    p(`\t\tNbPoseNodes: ${1 + bones.length}`);
     p('\t\tPoseNode:  {');
-    p(`\t\t\tNode: ${ID.bone(i)}`);
+    p(`\t\t\tNode: ${ID.mesh}`);
     p('\t\t\tMatrix: *16 {');
-    p(`\t\t\t\ta: ${_arr(m)}`);
+    p('\t\t\t\ta: 1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1');
     p('\t\t\t}');
     p('\t\t}');
-  });
-  p('\t}');
+    bones.forEach((b, i) => {
+      const m = bindMatrices.subarray ? bindMatrices.subarray(i * 16, i * 16 + 16) : bindMatrices.slice(i * 16, i * 16 + 16);
+      p('\t\tPoseNode:  {');
+      p(`\t\t\tNode: ${ID.bone(i)}`);
+      p('\t\t\tMatrix: *16 {');
+      p(`\t\t\t\ta: ${_arr(m)}`);
+      p('\t\t\t}');
+      p('\t\t}');
+    });
+    p('\t}');
+  }
   p('}');
 
   // ── connections ───────────────────────────────────────────────────────────
