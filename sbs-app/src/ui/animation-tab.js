@@ -62,8 +62,28 @@ const CHANNEL_META = {
   shape:     { icon: '⬜', label: 'shape'     },
   insert:    { icon: '🔩', label: 'insert'    },   // V0.2.22.51 — hardware explode→assemble
   spotlight: { icon: '🔦', label: 'spotlight' },   // V0.3.4.83 — the move of spotlighted objects, in its own slot
+  hand:      { icon: '🖐', label: 'hand'      },   // V0.3.4.134 — the hands' grip blend (pose / closed / release), its own slot
 };
 const CHANNEL_ORDER = Object.keys(CHANNEL_META);
+
+// V0.3.4.134 — chip MULTI-SELECT (user: "click one, Ctrl-click more, drag them
+// together"). Keys are `${phaseIdx}:${channel}`; the set is cleared after every
+// mutation (indices shift). Painted in place — no re-render on a click.
+let _selChips = new Set();
+const _chipKey = (idx, ch) => `${idx}:${ch}`;
+function _paintChipSelection(host) {
+  host.querySelectorAll('.cap-chip').forEach(c => {
+    const on = _selChips.has(c.dataset.key);
+    c.style.background  = on ? 'rgba(56,189,248,0.38)' : 'rgba(56,189,248,0.12)';
+    c.style.borderColor = on ? '#38bdf8' : 'rgba(56,189,248,0.4)';
+    c.style.boxShadow   = on ? '0 0 0 1px #38bdf8' : '';
+  });
+}
+/** The chips a drag carries: the selection when the dragged chip is in it, else just that chip. */
+function _dragItems(payload) {
+  if (Array.isArray(payload?.items) && payload.items.length) return payload.items;
+  return [{ fromPhase: payload.fromPhase, channel: payload.channel }];
+}
 
 /**
  * Render the animation tab into the given container element.
@@ -379,7 +399,7 @@ function _renderPhasesView(host, ctx) {
   // An "empty time block" (types=[]) is a transient state before the
   // user drops chips in. Both serialize as pause(N) — see
   // serializePhasesForEdit.
-  const rowsHtml = parsed.map((phase, idx) => {
+  const rowList = parsed.map((phase, idx) => {
     const phaseTypes = new Set(phase.types);
     const orderedTypes = CHANNEL_ORDER.filter(t => phaseTypes.has(t));
     for (const t of phase.types) {
@@ -426,18 +446,20 @@ function _renderPhasesView(host, ctx) {
 
     const chipsHtml = orderedTypes.map(t => {
       const meta = CHANNEL_META[t] || { icon: '•', label: t };
+      const key = _chipKey(idx, t), sel = _selChips.has(key);
       return `
         <span class="cap-chip"
               draggable="true"
-              data-phase-idx="${idx}" data-channel="${_esc(t)}"
+              data-phase-idx="${idx}" data-channel="${_esc(t)}" data-key="${_esc(key)}"
               style="display:inline-flex;align-items:center;gap:5px;
                      padding:3px 9px;margin:2px;
-                     background:rgba(56,189,248,0.12);
-                     border:1px solid rgba(56,189,248,0.4);
+                     background:${sel ? 'rgba(56,189,248,0.38)' : 'rgba(56,189,248,0.12)'};
+                     border:1px solid ${sel ? '#38bdf8' : 'rgba(56,189,248,0.4)'};
+                     ${sel ? 'box-shadow:0 0 0 1px #38bdf8;' : ''}
                      border-radius:999px;font-size:13px;line-height:1.2;
                      white-space:nowrap;cursor:grab;
                      color:var(--text);user-select:none"
-              title="Drag to move to another phase">
+              title="Drag to another time block — or into a gap for a new one. Click to select, Ctrl-click to add, then drag them together">
           <span>${meta.icon}</span><span>${_esc(meta.label)}</span>
         </span>`;
     }).join('');
@@ -477,10 +499,10 @@ function _renderPhasesView(host, ctx) {
                   grid-template-columns:20px 62px 1fr;
                   align-items:center;column-gap:6px;
                   border:1px solid ${rowBorder};border-radius:6px;
-                  padding:4px 6px;margin-bottom:4px;
+                  padding:7px 8px;margin:0;
                   background:${rowBg};
                   color:var(--text);
-                  min-height:28px"
+                  min-height:32px"
            title="${isFadeBlock
              ? 'Pinned to the top by the step’s easing — it can’t be moved or removed here. Change the easing to Smooth / Linear to get rid of it.'
              : 'Drag this row to reorder. Right-click to remove the time block.'}">
@@ -499,7 +521,19 @@ function _renderPhasesView(host, ctx) {
           ${bodyHtml}
         </div>
       </div>`;
-  }).join('');
+  });
+
+  // V0.3.4.134 — a GAP between (and after) the rows: the spacing the user asked
+  // for, and, while chips are being dragged, a drop zone that makes a NEW time
+  // block right there (above / below the block the chips came from). No gap
+  // above the instant block: nothing may run before the step's arrival.
+  const hasFade = parsed.some(p => p.types.includes('fade'));
+  const gapHtml = (k) => `
+      <div class="cap-gap" data-gap-idx="${k}"
+           style="height:10px;margin:0;border-radius:6px;box-sizing:border-box;
+                  display:flex;align-items:center;justify-content:center;overflow:hidden;
+                  font-size:11px;font-weight:600;color:var(--text);transition:height .12s"></div>`;
+  const rowsHtml = rowList.map((h, i) => ((i === 0 && hasFade) ? '' : gapHtml(i)) + h).join('') + gapHtml(parsed.length);
 
   // + Add time block / + Add pause buttons.
   //   + Add time block → empty phase (types:[]) waiting for chip drops.
@@ -625,19 +659,26 @@ function _renderPhasesView(host, ctx) {
   });
 
 
-  // Drag-source: chip
+  // Drag-source: chip (one, or the whole selection when the dragged chip is in it)
   host.querySelectorAll('.cap-chip').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const key = chip.dataset.key;
+      if (e.ctrlKey || e.metaKey || e.shiftKey) { if (_selChips.has(key)) _selChips.delete(key); else _selChips.add(key); }
+      else _selChips = (_selChips.size === 1 && _selChips.has(key)) ? new Set() : new Set([key]);
+      _paintChipSelection(host);
+    });
     chip.addEventListener('dragstart', (e) => {
-      const payload = {
-        fromPhase: Number(chip.dataset.phaseIdx),
-        channel:   chip.dataset.channel,
-      };
+      const key = chip.dataset.key;
+      if (!_selChips.has(key)) { _selChips = new Set([key]); _paintChipSelection(host); }
+      const items = [..._selChips].map(k => { const i = k.indexOf(':'); return { fromPhase: Number(k.slice(0, i)), channel: k.slice(i + 1) }; });
+      const payload = { fromPhase: Number(chip.dataset.phaseIdx), channel: chip.dataset.channel, items };
       e.dataTransfer.setData('application/x-sbs-chip', JSON.stringify(payload));
       e.dataTransfer.effectAllowed = 'move';
-      chip.style.opacity = '0.4';
+      host.querySelectorAll('.cap-chip').forEach(c => { if (_selChips.has(c.dataset.key)) c.style.opacity = '0.4'; });
       e.stopPropagation();   // don't also start a phase-row drag
     });
-    chip.addEventListener('dragend', () => { chip.style.opacity = ''; });
+    chip.addEventListener('dragend', () => { host.querySelectorAll('.cap-chip').forEach(c => { c.style.opacity = ''; }); });
 
     // overlay <-> overlays mode toggle (right-click on the overlay chip).
     // Both tokens drive the same channel slot in the engine; they differ
@@ -762,31 +803,53 @@ function _renderPhasesView(host, ctx) {
       e.preventDefault();
       let payload; try { payload = JSON.parse(raw); } catch { return; }
       const toPhase = Number(body.dataset.phaseIdx);
-      if (toPhase === payload.fromPhase) return;   // same phase — no-op
+      const moving = _dragItems(payload).filter(it => it.fromPhase !== toPhase);
+      if (!moving.length) return;   // all from this very block — no-op
       _mutatePhases(preset, phases => {
-        const src = phases[payload.fromPhase];
         const dst = phases[toPhase];
+        if (!dst) return;
+        for (const it of moving) { const src = phases[it.fromPhase]; if (src) src.types = src.types.filter(t => t !== it.channel); }
+        // First chip landing in an empty placeholder bumps its duration from
+        // the no-op `null(0)` placeholder up to AL1.
+        if (dst.types.length === 0 && dst.durationRaw === '0') dst.durationRaw = 'AL1';
+        for (const it of moving) if (!dst.types.includes(it.channel)) dst.types.push(it.channel);
+        // Auto-delete every source block the move emptied (highest index first
+        // so the earlier ones keep their positions). The instant block keeps
+        // its `fade` marker, so it is never "empty".
+        const empties = [...new Set(moving.map(it => it.fromPhase))].filter(i => phases[i] && phases[i].types.length === 0).sort((a, b) => b - a);
+        for (const i of empties) phases.splice(i, 1);
+      });
+    });
+  });
 
-        if (src) {
-          src.types = src.types.filter(t => t !== payload.channel);
-        }
-        if (dst && !dst.types.includes(payload.channel)) {
-          // First chip landing in an empty placeholder bumps its
-          // duration from the no-op `null(0)` placeholder up to AL1.
-          // The user can then change it via the dropdown / input.
-          if (dst.types.length === 0 && dst.durationRaw === '0') {
-            dst.durationRaw = 'AL1';
-          }
-          dst.types.push(payload.channel);
-        }
-        // Auto-delete the source block if dragging out its last chip
-        // emptied it (and it's not a pause block — pause blocks were
-        // never drop-source candidates because they have no chips).
-        // This preserves the rule: empty channel blocks only exist as
-        // a transient placeholder created via "+ Add time block".
-        if (src && src.types.length === 0) {
-          phases.splice(payload.fromPhase, 1);
-        }
+  // Drop target: a GAP — chips dropped here become a NEW time block at that spot.
+  host.querySelectorAll('.cap-gap').forEach(gap => {
+    gap.addEventListener('dragover', (e) => {
+      if (!e.dataTransfer.types.includes('application/x-sbs-chip')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      gap.style.height = '30px';
+      gap.style.border = '1px dashed rgba(56,189,248,0.8)';
+      gap.style.background = 'rgba(56,189,248,0.14)';
+      gap.textContent = '＋ new time block here';
+    });
+    gap.addEventListener('dragleave', () => { gap.style.height = '10px'; gap.style.border = ''; gap.style.background = ''; gap.textContent = ''; });
+    gap.addEventListener('drop', (e) => {
+      gap.style.height = '10px'; gap.style.border = ''; gap.style.background = ''; gap.textContent = '';
+      const raw = e.dataTransfer.getData('application/x-sbs-chip');
+      if (!raw) return;
+      e.preventDefault();
+      let payload; try { payload = JSON.parse(raw); } catch { return; }
+      const items = _dragItems(payload);
+      const gapIdx = Number(gap.dataset.gapIdx);
+      _mutatePhases(preset, phases => {
+        for (const it of items) { const src = phases[it.fromPhase]; if (src) src.types = src.types.filter(t => t !== it.channel); }
+        let k = Math.max(0, Math.min(phases.length, gapIdx));
+        if (phases.some(p => p.types.includes('fade'))) k = Math.max(1, k);   // nothing runs before the step's arrival
+        const chans = items.map(it => it.channel).filter((c, i, a) => a.indexOf(c) === i);
+        phases.splice(k, 0, { types: chans, durationRaw: 'AL1' });
+        const empties = [...new Set(items.map(it => it.fromPhase))].map(i => (i >= k ? i + 1 : i)).filter(i => phases[i] && phases[i].types.length === 0).sort((a, b) => b - a);
+        for (const i of empties) phases.splice(i, 1);
       });
     });
   });
@@ -867,6 +930,7 @@ function _removePhase(ctx, idx) {
 function _mutatePhases(ctx, mutateFn) {
   const phases = parseAnimationForEdit(ctx.animation);
   if (!phases) return;
+  _selChips = new Set();   // indices shift with any mutation — the selection is over
   mutateFn(phases);
   const newStr = serializePhasesForEdit(phases);
   if (newStr && newStr !== ctx.animation) {

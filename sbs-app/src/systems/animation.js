@@ -25,7 +25,7 @@
  */
 
 export const DEFAULT_ANIMATION_STR =
-  'camera(AL1), overlay(500), visibility(500), color(500), cable(500), obj+spotlight(AL2), shape(500), notes(500), narration(0)';
+  'camera(AL1), overlay(500), visibility(500), color(500), cable(500), obj+spotlight+hand(AL2), shape(500), notes(500), narration(0)';
 
 // `overlays` (lowercased from 'overlayS') = sustained-overlap variant of
 // `overlay`. Two-phase fade keeps shared items at 100% visible alpha
@@ -78,10 +78,14 @@ export const DEFAULT_ANIMATION_STR =
 // ones leaving it. With a `spotlight(N)` slot they travel in that slot, over N ms,
 // and are left out of `obj`; without one they ride `obj` like any other move.
 // Inert dwell when nothing is spotlighted either side of the step.
+// `hand` channel (V0.3.4.134) = the slot in which a hand's GRIP changes — pose,
+// how closed, released / open, fine-tuned fingers — blend into the next step's
+// (systems/hands.js). Without a `hand` slot the blend rides the `cable` window,
+// as it did before the channel existed. Inert when no hand changes.
 const VALID_TYPES = new Set([
   'camera', 'color', 'obj', 'visibility', 'cable',
   'overlay', 'overlays', 'shape',
-  'narration', 'notes', 'pause', 'insert', 'fade', 'spotlight',
+  'narration', 'notes', 'pause', 'insert', 'fade', 'spotlight', 'hand',
 ]);
 
 // The channels the instant block holds when the easing creates it. Everything

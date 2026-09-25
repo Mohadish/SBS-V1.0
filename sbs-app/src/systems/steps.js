@@ -1443,6 +1443,7 @@ class StepManager {
     let colorHandled     = false;
     let visHandled       = false;
     let cableHandled     = false;
+    let handHandled      = false;   // 🖐 V0.3.4.134 — the hands' grip blend has its own slot; else it rides the cable window
     let overlayHandled   = false;
     let shapeHandled     = false;
     let narrationHandled = false;
@@ -1773,7 +1774,11 @@ class StepManager {
             toSnapshot.cables, durationMs, easeFn, resolve,
           );
         }));
-        beginHandTransitions(durationMs, easeFn);   // 🖐
+      }
+      // 🖐 `hand` — the hands' grip blend, in its own slot (V0.3.4.134).
+      if (types.includes('hand') && !handHandled) {
+        handHandled = true;
+        beginHandTransitions(durationMs, easeFn);
       }
 
       // `narration` — TRIGGER slot. Fires the step:applied narration
@@ -1946,7 +1951,11 @@ class StepManager {
       fallbackPromises.push(new Promise(resolve => {
         cablesRender.beginCableTransitions(toSnapshot.cables, fallbackObj, easeFn, resolve);
       }));
-      beginHandTransitions(fallbackObj, easeFn);   // 🖐
+    }
+    // 🖐 Hand fallback — no `hand` slot in the string: the grips blend over the object window.
+    if (!handHandled) {
+      handHandled = true;
+      beginHandTransitions(fallbackObj, easeFn);
     }
     // Overlay fallback — default to the sustained variant (no flicker on
     // items shared between steps). Without this, overlay items added /

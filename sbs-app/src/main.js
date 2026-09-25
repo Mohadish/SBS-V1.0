@@ -133,19 +133,29 @@ handActions.initHandActions();
 // nothing the user did) could leave it "unsaved"; if the user touched nothing
 // within the settle window, the flag is cleared. A real edit inside the window
 // (a click, a key, the wheel) keeps whatever the flag says.
-function _armCleanSettle(ms = 5000) {
-  let touched = false;
-  const mark = () => { touched = true; };
-  const evs = ['pointerdown', 'keydown', 'wheel'];
-  for (const ev of evs) document.addEventListener(ev, mark, true);
-  setTimeout(() => {
-    for (const ev of evs) document.removeEventListener(ev, mark, true);
-    if (!touched) state.markClean();
-  }, ms);
+// The settle is REACTIVE, not a one-shot timer: while it is armed, every flip to
+// "dirty" that the user did not cause is undone on the spot. It ends at the
+// first touch, or after a ceiling (the boot can take well over 5 s — licence
+// gate, narration warm-up, models — and its dirtying passes land late).
+let _settle = null;
+const _SETTLE_EVS = ['pointerdown', 'keydown', 'wheel'];
+function _disarmCleanSettle() {
+  if (!_settle) return;
+  const s = _settle; _settle = null;
+  clearTimeout(s.timer);
+  for (const ev of _SETTLE_EVS) document.removeEventListener(ev, s.touch, true);
 }
-state.on('project:loaded', () => _armCleanSettle());
-state.on('project:fresh',  () => _armCleanSettle());
-_armCleanSettle();
+function _armCleanSettle(ms = 8000) {
+  _disarmCleanSettle();
+  const touch = () => _disarmCleanSettle();
+  for (const ev of _SETTLE_EVS) document.addEventListener(ev, touch, true);
+  _settle = { touch, timer: setTimeout(_disarmCleanSettle, ms) };
+  if (state.get('projectDirty')) state.markClean();
+}
+state.on('change:projectDirty', (d) => { if (d && _settle) setTimeout(() => { if (_settle) state.markClean(); }, 0); });
+state.on('project:loaded', () => _armCleanSettle(8000));
+state.on('project:fresh',  () => _armCleanSettle(8000));
+_armCleanSettle(30000);   // the boot
 actions.initSpotlight();   // 🔦 V0.3.4.82: spotlighted objects follow the camera while authoring
 
 // Debug surface — exposes core handles on window.__sbs for live console
