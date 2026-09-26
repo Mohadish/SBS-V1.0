@@ -540,7 +540,17 @@ function _aimForearm(rig, localTarget) {
   const Th = T(), L = rig.L;
   const fa = rig.forearm, fh = rig.foreHandle;
   const dir = localTarget.clone().normalize();
-  fa.quaternion.setFromUnitVectors(new Th.Vector3(0, 1, 0), dir.lengthSq() ? dir : new Th.Vector3(0, -1, 0));
+  if (!dir.lengthSq()) dir.set(0, -1, 0);
+  // V0.3.4.144 — a full basis, not the shortest arc: the shortest rotation from +Y
+  // to the target ROLLS the bone as the target swings (a skinned wrist twisted
+  // like a balloon). The bone's X stays with the hand's X (thumb side) projected
+  // off the aim; only when the aim lies along X itself does Z take over.
+  const y = dir;
+  let ref = new Th.Vector3(1, 0, 0);
+  if (Math.abs(ref.dot(y)) > 0.95) ref = new Th.Vector3(0, 0, 1);
+  const x = ref.sub(y.clone().multiplyScalar(ref.dot(y))).normalize();
+  const z = new Th.Vector3().crossVectors(x, y).normalize();
+  fa.quaternion.setFromRotationMatrix(new Th.Matrix4().makeBasis(x, y, z));
   const len = _clamp(localTarget.length(), 0.6 * L, 2.2 * L);
   fa.scale.set(1, len / (ANAT.forearm.len * L), 1);
   fh.position.copy(dir.multiplyScalar(len));
