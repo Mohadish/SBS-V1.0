@@ -115,6 +115,22 @@ export const HAND_POSES = {
   },
 };
 export const HAND_POSE_KEYS = Object.keys(HAND_POSES);
+/** The ghost props a grip can align with (each built-in pose owns the one of its name). */
+export const GHOST_KINDS = ['handle', 'pistol', 'pinch', 'push', 'knob'];
+/**
+ * The pose a hand is in, as an object: a built-in from HAND_POSES, or — V0.3.4.145,
+ * pose 'custom' — the grip saved IN the params (`grip`: name, angles per finger,
+ * the ghost kind it aligns with). Self-contained on purpose: a project never
+ * points at a machine's grip library.
+ */
+export function poseOf(p) {
+  if (p?.pose === 'custom' && p.grip) {
+    const kind = GHOST_KINDS.includes(p.grip.ghost) ? p.grip.ghost : null;
+    return { label: p.grip.name || 'Custom grip', icon: '★', hint: 'A saved grip', angles: p.grip.angles || REST, ghost: kind, points: kind ? HAND_POSES[kind].points : [], custom: true };
+  }
+  return HAND_POSES[p?.pose] || HAND_POSES.handle;
+}
+const _gripSig = (g) => g ? `${g.ghost || '-'}:${JSON.stringify(g.angles || {})}` : '';
 
 const _v = (a) => new (T().Vector3)(a[0], a[1], a[2]);
 const _mirror = (a, left) => left ? [-a[0], a[1], a[2]] : [...a];
@@ -172,9 +188,8 @@ const _mean = (pts) => { const Th = T(); const c = new Th.Vector3(); for (const 
  * Where the prop sits, read off the posed fingers (group frame). Returns
  * { meshes:[{geo, pos, quat?}], points:[Vector3 ×3] } or null for no prop.
  */
-function _layoutGhost(poseKey, rig) {
+function _layoutGhost(P, rig) {
   const Th = T();
-  const P = HAND_POSES[poseKey];
   if (!P?.ghost) return null;
   const L = rig.L, fk = _fkPositions(rig, P.angles);
   const X = new Th.Vector3(1, 0, 0), Z = new Th.Vector3(0, 0, 1);
@@ -246,10 +261,22 @@ function _layoutGhost(poseKey, rig) {
   return { meshes, points, frame };
 }
 
-/** The prop's frame in the hand's own space (where the pivot goes), or null. */
+/** The prop's frame in the hand's own space (where the pivot goes), or null — the grip's own offset included. */
 export function propFrame(node) {
-  const f = node?.object3d?.userData?.rig?.ghostFrame;
-  return f ? { pos: [f.pos.x, f.pos.y, f.pos.z], quat: [f.quat.x, f.quat.y, f.quat.z, f.quat.w] } : null;
+  const rig = node?.object3d?.userData?.rig;
+  const f = rig?.ghostFrame;
+  if (!f) return null;
+  const pos = f.pos.clone(), quat = f.quat.clone();
+  if (rig.ghost) { pos.applyQuaternion(rig.ghost.quaternion).add(rig.ghost.position); quat.premultiply(rig.ghost.quaternion); }
+  return { pos: [pos.x, pos.y, pos.z], quat: [quat.x, quat.y, quat.z, quat.w] };
+}
+
+/** The ghost prop's transform in the hand's frame: the grip's adjustment (V0.3.4.145) or none. */
+function _applyGhostOffset(rig, p) {
+  if (!rig?.ghost) return;
+  const o = p?.ghostOffset;
+  if (Array.isArray(o?.pos) && Array.isArray(o?.quat)) { rig.ghost.position.fromArray(o.pos); rig.ghost.quaternion.fromArray(o.quat).normalize(); }
+  else { rig.ghost.position.set(0, 0, 0); rig.ghost.quaternion.identity(); }
 }
 
 /** The ghost prop group from a layout. */
@@ -278,7 +305,7 @@ export function ensureHandObject3D(node) {
   const Th = T();
   if (!Th || !node || node.type !== 'hand') return null;
   const p = node.handParams || (node.handParams = defaultHandParams());
-  if (!HAND_POSES[p.pose]) p.pose = 'handle';
+  if (!HAND_POSES[p.pose] && !(p.pose === 'custom' && p.grip)) p.pose = 'handle';
   const L = Number(p.scale) || 190;
   const left = node.handSide === 'left';
   // ANAT is an anatomically LEFT hand: thumb +X, fingers +Y, palm −Z, so thumb × fingers
@@ -286,7 +313,7 @@ export function ensureHandObject3D(node) {
   // obvious the moment a real hand with fingernails went on (V0.3.4.142). The RIGHT
   // hand is therefore the X-mirrored build.
   const mirror = !left;
-  const key = `${left ? 'L' : 'R'}:${L}:${p.pose}:skin${_skin.template ? _skin.rev : 0}`;
+  const key = `${left ? 'L' : 'R'}:${L}:${p.pose === 'custom' ? 'custom:' + _gripSig(p.grip) : p.pose}:skin${_skin.template ? _skin.rev : 0}`;
   const existing = node.object3d;
   if (existing && existing.userData?.handBuildKey === key) return existing;
 
@@ -356,12 +383,13 @@ export function ensureHandObject3D(node) {
     catch (e) { console.warn('[hands] the skin could not be put on this hand:', e); rig.skin = null; }
   }
   // the prop is laid out from the POSED fingers (the solve re-poses the rig right after)
-  const layout = _layoutGhost(p.pose, rig);
+  const layout = _layoutGhost(poseOf(p), rig);
   if (layout) {
     rig.ghost = _buildGhost(layout, L, ghostMat);
     rig.ghostPoints = layout.points.map(v => v.clone());
     rig.ghostFrame = layout.frame;
     group.add(rig.ghost);
+    _applyGhostOffset(rig, p);
   }
   node.object3d = group;
   _sigCache.delete(node.id);
@@ -489,8 +517,9 @@ export function solveHand(node, params = null) {
   group.updateMatrixWorld(true);
 
   const L = rig.L;
-  const pose = HAND_POSES[p.pose] || HAND_POSES.handle;
+  const pose = poseOf(p);
   if (rig.ghost) rig.ghost.visible = !p.released && p.ghost !== false;
+  _applyGhostOffset(rig, p);
 
   // the grip: the pose at `closed`, then every pinned finger on to its target.
   // Released (V0.3.4.132, user): the grip AS IT WAS is the starting point and
@@ -575,9 +604,66 @@ export function ghostPointsWorld(node) {
   const group = node?.object3d; const rig = group?.userData?.rig;
   if (!rig || !rig.ghost || rig.ghostPoints.length !== 3) return null;
   group.updateMatrixWorld(true);
-  return rig.ghostPoints.map(pt => group.localToWorld(pt.clone()));
+  return rig.ghostPoints.map(pt => rig.ghost.localToWorld(pt.clone()));   // through the ghost's own offset
 }
-export function ghostPointLabels(node) { return [...(HAND_POSES[node?.handParams?.pose]?.points || [])]; }
+export function ghostPointLabels(node) { return [...(poseOf(node?.handParams).points || [])]; }
+
+// ── 🔧 adjust mode (V0.3.4.145): the prop holds still, the hand moves under it ──
+// The user re-seats a grip whose prop did not land right: with the lock on, the
+// ghost keeps its WORLD pose while the wrist (the node, its gizmo) and the
+// fingertips move; the tick re-expresses the ghost in the hand's frame every
+// frame, and the offset that results is committed into handParams.ghostOffset.
+function _holdGhost(node) {
+  const Th = T();
+  const group = node?.object3d, rig = group?.userData?.rig;
+  if (!rig?.ghost || !node._ghostLock) return false;
+  group.updateMatrixWorld(true);
+  const local = new Th.Matrix4().copy(group.matrixWorld).invert().multiply(node._ghostLock);
+  const p = new Th.Vector3(), q = new Th.Quaternion(), s = new Th.Vector3();
+  local.decompose(p, q, s);
+  if (rig.ghost.position.distanceToSquared(p) < 1e-10 && Math.abs(rig.ghost.quaternion.dot(q)) > 1 - 1e-9) return false;
+  rig.ghost.position.copy(p); rig.ghost.quaternion.copy(q);
+  rig.ghost.updateMatrixWorld(true);
+  return true;
+}
+export function beginGhostLock(node) {
+  const rig = node?.object3d?.userData?.rig;
+  if (!rig?.ghost) return false;
+  node.object3d.updateMatrixWorld(true);
+  node._ghostLock = rig.ghost.matrixWorld.clone();
+  return true;
+}
+export function endGhostLock(node) { if (node) delete node._ghostLock; }
+/** The ghost's transform in the hand's frame as it stands: what adjust mode commits. */
+export function currentGhostOffset(node) {
+  const g = node?.object3d?.userData?.rig?.ghost;
+  return g ? { pos: g.position.toArray(), quat: g.quaternion.toArray() } : null;
+}
+
+/**
+ * ★ The grip as the rig stands, in HAND_POSES form: per finger [knuckle, middle,
+ * tip, spread] in degrees — pins and IK baked into angles, so a saved grip needs
+ * no part. A ball-driven base (the thumb after IK) becomes the hinge + spread
+ * that best match it; its twist is dropped.
+ */
+export function captureGrip(node) {
+  const Th = T();
+  const rig = node?.object3d?.userData?.rig;
+  if (!rig) return null;
+  const sign = rig.mirror ? -1 : 1;
+  const angles = {};
+  for (const f of HAND_FINGERS) {
+    const fg = rig.fingers[f];
+    let k = fg.phi[0], a = fg.alpha;
+    if (fg.ball) {
+      const rel = fg.basis.clone().invert().multiply(fg.ball);
+      const e = new Th.Euler().setFromQuaternion(rel, 'ZXY');
+      k = e.x; a = e.z;
+    }
+    angles[f] = [k / DEG, fg.phi[1] / DEG, fg.phi[2] / DEG, a / DEG / sign].map(v => Math.round(v * 10) / 10);
+  }
+  return { angles };
+}
 
 /** Handle meshes of every live hand (for picking). */
 export function handleMeshes() {
@@ -714,6 +800,7 @@ export function tickHands(now) {
     }
     const show = fine === n.id || selCtl?.nodeId === n.id;
     const rig2 = n.object3d.userData.rig;
+    if (n._ghostLock && _holdGhost(n)) changed = true;   // 🔧 adjust mode: the prop stays put
     if (rig2.foreHandle.visible !== show) {
       for (const f of HAND_FINGERS) rig2.fingers[f].handle.visible = show;
       rig2.foreHandle.visible = show;
@@ -776,7 +863,7 @@ const _boneName = (f, i) => `${f}_${i + 1}`;
 
 /** What the UI shows: { path, loaded, error, missing[] }. */
 export function handSkinInfo() {
-  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [], isRight: !!_skin.template?.isRight };
+  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [], isRight: !!_skin.template?.isRight, textured: !!_skin.template?.textured };
 }
 
 /** Every finger straight, the forearm straight back: the rig's REST (= the exported bind pose). */
@@ -874,11 +961,14 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
       const u8 = rd.data instanceof Uint8Array ? rd.data : new Uint8Array(rd.data);
       const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
       const ext = _skin.path.split('.').pop().toLowerCase();
+      // textures next to the file resolve against its folder (embedded ones need no path)
+      const dir = _skin.path.replace(/[\\/][^\\/]*$/, '');
+      const base = dir ? 'file:///' + dir.replace(/\\/g, '/').replace(/^\/+/, '') + '/' : '';
       if (ext === 'fbx') {
-        const group = new FBXLoader().parse(ab, '');   // sync; binary or ASCII ≥ 7.0
+        const group = new FBXLoader().parse(ab, base);   // sync; binary or ASCII ≥ 7.0
         _skin.template = _analyseSkin({ scene: group, parser: null });
       } else {
-        const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, '', res, rej));
+        const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, base, res, rej));
         _skin.template = _analyseSkin(gltf);
       }
     } catch (e) {
@@ -937,9 +1027,11 @@ function _analyseSkin(gltf) {
       isRight = new Th.Vector3().crossVectors(t, f).dot(palm) > 0;
     } else console.warn('[hands] skin: the thumb sits in the palm plane — assuming a left-hand template');
   }
+  let textured = false;
+  scene.traverse(o => { if (o.isMesh && o.material?.map) textured = true; });
   if (missing.length) console.warn('[hands] skin bones not found (those joints will not move it):', missing.join(', '));
-  console.log(`[hands] skin template: ${isRight ? 'right' : 'left'} hand, length ${L0.toFixed(1)}`);
-  return { scene, L0, missing, isRight };
+  console.log(`[hands] skin template: ${isRight ? 'right' : 'left'} hand, length ${L0.toFixed(1)}${textured ? ', textured' : ''}`);
+  return { scene, L0, missing, isRight, textured };
 }
 
 /** A deep clone of a scene with skinned meshes: fresh skeletons over the CLONED bones, cloned geometry. */
@@ -992,8 +1084,17 @@ function _instantiateSkin(tpl, rig, group, wantRight, L, mat, tag) {
   const root = _cloneSkinned(tpl.scene);
   root.name = 'skin';
   if (!!wantRight !== !!tpl.isRight) _mirrorX(root);
+  // the hand's material (so X-ray, fades, outlines treat it like the capsules) — with the
+  // file's diffuse map on it when there is one (V0.3.4.145): the map rides the UVs as authored
+  let texMat = null;
   root.traverse(o => {
-    if (o.isMesh) { o.material = mat; o.frustumCulled = false; tag(o); o.userData.isHandSkin = true; }
+    if (!o.isMesh) return;
+    const map = o.material?.map || null;
+    if (map) {
+      if (!texMat) { texMat = mat.clone(); texMat.map = map; texMat.color.set('#ffffff'); texMat.needsUpdate = true; }
+      o.material = texMat;
+    } else o.material = mat;
+    o.frustumCulled = false; tag(o); o.userData.isHandSkin = true;
   });
   const byName = new Map();
   root.traverse(o => { const k = _norm(o.name); if (k && !byName.has(k)) byName.set(k, o); });

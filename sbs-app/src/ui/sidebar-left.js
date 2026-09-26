@@ -282,6 +282,7 @@ export function initSidebarLeft() {
   state.on('change:cableHighlightColor', () => { if (_activeTab === 'cables') _renderCableTabPanel(); });
   // 🖐 V0.3.4.127 — the hands tab follows the pick mode and the selection
   state.on('change:handPicking',  () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });
+  state.on('change:handAdjust',   () => { if (_activeTab === 'hands') renderHandTab(_panel('hands')); });   // 🔧 V0.3.4.145 the Adjust / Done button
   // V0.3.4.132 — a double-click on a hand (fine-tune) from ANY tab jumps to the Hands tab
   state.on('change:handFineTune', (id) => {
     if (id && _activeTab !== 'hands') { _switchTab('hands'); return; }

@@ -372,6 +372,7 @@ function createInitialState() {
     handPicking:         null,
     selectedHandControl: null,
     handFineTune:        null,   // the hand whose fingertip / forearm handles are up (double-click)
+    handAdjust:          null,   // 🔧 V0.3.4.145 the hand whose prop is held still while it is re-seated
 
     // ── UI state
     activeSidebarTab:   'files',      // which left sidebar tab is open

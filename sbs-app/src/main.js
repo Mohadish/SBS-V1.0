@@ -5640,6 +5640,7 @@ window.addEventListener('keydown', async e => {
     // touching the rest of the selection.
     // 🖐 V0.3.4.127: a waiting fingertip / a selected hand control — Esc lets go.
     if (state.get('handPicking')) { handActions.stopHandPick(); return; }
+    if (state.get('handAdjust')) { handActions.endHandAdjust(); return; }   // 🔧 V0.3.4.145: Esc sets the adjusted grip
     if (state.get('selectedHandControl')) { state.setState({ selectedHandControl: null }); return; }
     if (state.get('handFineTune')) { state.setState({ handFineTune: null }); return; }
     if (state.get('cablePlacingId')) {

@@ -17,7 +17,8 @@ import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import { steps }       from './steps.js';
 import { undoManager } from './undo.js';
-import { createNode }  from '../core/schema.js';
+import { createNode, generateId } from '../core/schema.js';
+import * as userSettings from '../core/user-settings.js';   // ★ V0.3.4.145 the grip library (a machine setting)
 import { buildNodeMap, findParent } from '../core/nodes.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
@@ -366,16 +367,100 @@ export async function clearHandSkin() {
   setStatus('Back to the procedural hand.', 'info', 3000);
 }
 
-/** Wire the housekeeping: a control selection / fine-tune dies with its hand's selection. */
+// ── 🔧 adjust the grip (V0.3.4.145): the prop holds still, the hand re-seats ──
+// A pose's prop does not always land right on the real part. In adjust mode the
+// ghost keeps its WORLD pose while the wrist (the node's gizmo) and the
+// fingertips move; Done commits the ghost's new place in the hand's frame
+// (handParams.ghostOffset, one undo) — Align (3 points) then seats the hand
+// that way, and ★ Save grip keeps it.
+export function setHandAdjust(id) {
+  const n = _node(id);
+  if (!n) return false;
+  if (n.handParams?.released) { setStatus('A released hand holds nothing to adjust against — turn "Release at this step" off first.', 'warn', 4000); return false; }
+  const cur = state.get('handAdjust');
+  if (cur && cur !== id) endHandAdjust();
+  if (n.handParams?.ghost === false) { n.handParams.ghost = true; hands.markHandDirty(id); hands.solveHand(n); }
+  if (!hands.beginGhostLock(n)) { setStatus('This pose holds nothing — there is no prop to hold still. Place the hand with the gizmo.', 'info', 4000); return false; }
+  state.setState({ handAdjust: id, handFineTune: id, selectedId: id, multiSelectedIds: new Set([id]), selectedHandControl: null });
+  setStickyStatus('🔧 Adjust the grip: move / rotate the hand with the gizmo, drag the fingertips — the prop stays where it is. Esc or ✓ Done sets it.', 'info', 'handadjust');
+  return true;
+}
+export function endHandAdjust() {
+  const id = state.get('handAdjust');
+  if (!id) return;
+  const n = _node(id);
+  clearStickyStatus('handadjust');
+  state.setState({ handAdjust: null });
+  if (!n) return;
+  const offset = hands.currentGhostOffset(n);
+  hands.endGhostLock(n);
+  const prev = _clone(n.handParams || hands.defaultHandParams());
+  if (offset && JSON.stringify(offset) !== JSON.stringify(prev.ghostOffset || null)) {
+    setHandParams(id, { ghostOffset: offset }, 'Adjust the grip');
+    _pivotIntoProp(n);
+    steps.scheduleTransformSync?.();
+    setStatus('Grip set. Align (3 points) seats the hand this way from now on; ★ Save grip keeps it for other hands.', 'success', 6000);
+  }
+}
+/** The prop back where the pose lays it (a way back from an adjustment). */
+export function resetGhostOffset(id) {
+  const n = _node(id);
+  if (!n) return false;
+  if (state.get('handAdjust') === id) endHandAdjust();
+  const ok = setHandParams(id, { ghostOffset: null }, 'Reset the grip offset');
+  if (ok) { _pivotIntoProp(n); steps.scheduleTransformSync?.(); }
+  return ok;
+}
+
+// ── ★ saved grips (V0.3.4.145): a machine library; a hand carries its own copy ──
+export function listGrips() { return (userSettings.get().hands?.grips || []).filter(g => g && g.angles); }
+/** The hand's grip as it stands → the library, and on to this hand as its own pose. */
+export async function saveGrip(id, name, ghostKind) {
+  const n = _node(id);
+  if (!n) return null;
+  const cap = hands.captureGrip(n);
+  if (!cap) return null;
+  const p = n.handParams || hands.defaultHandParams();
+  const grip = {
+    id: generateId(), name: String(name || 'Grip').trim() || 'Grip',
+    ghost: hands.GHOST_KINDS.includes(ghostKind) ? ghostKind : null,
+    angles: cap.angles, ghostOffset: p.ghostOffset ? _clone(p.ghostOffset) : null,
+  };
+  try { await userSettings.patch({ hands: { grips: [...listGrips(), grip] } }); } catch (e) { console.warn('[hands] grip library:', e?.message); }
+  applyGrip(id, grip);
+  return grip;
+}
+export function applyGrip(id, grip) {
+  const n = _node(id);
+  if (!n || !grip?.angles) return false;
+  if (state.get('handAdjust') === id) endHandAdjust();
+  const targets = {}; for (const f of hands.HAND_FINGERS) targets[f] = null;
+  const ok = setHandParams(id, {
+    pose: 'custom', grip: { id: grip.id, name: grip.name, ghost: grip.ghost || null, angles: _clone(grip.angles) },
+    ghostOffset: grip.ghostOffset ? _clone(grip.ghostOffset) : null, targets, ghost: true, closed: 1,
+  }, `Grip: ${grip.name}`);
+  if (ok) { _pivotIntoProp(n); steps.scheduleTransformSync?.(); }
+  return ok;
+}
+export async function deleteGrip(gripId) {
+  const grips = listGrips().filter(g => g.id !== gripId);
+  try { await userSettings.replace({ hands: { ...(userSettings.get().hands || {}), grips } }); } catch (e) { console.warn('[hands] grip library:', e?.message); }
+  state.emit('hands:gripsChanged');
+}
+
+/** Wire the housekeeping: a control selection / fine-tune / adjust dies with its hand's selection. */
 export function initHandActions() {
   state.on('change:selectedId', (id) => {
     const c = state.get('selectedHandControl');
     if (c && c.nodeId !== id) state.setState({ selectedHandControl: null });
     const pk = state.get('handPicking');
     if (pk && pk.nodeId !== id && id) stopHandPick();
+    const adj = state.get('handAdjust');
+    if (adj && adj !== id) endHandAdjust();
     const ft = state.get('handFineTune');
     if (ft && ft !== id) state.setState({ handFineTune: null });
   });
+  state.on('change:activeStepId', () => { if (state.get('handAdjust')) endHandAdjust(); });
   // 🧤 a skin loaded / cleared: every hand is rebuilt in place (the rig build puts it on)
   state.on('hands:skinChanged', () => {
     const nb = state.get('nodeById'); if (!nb) return;

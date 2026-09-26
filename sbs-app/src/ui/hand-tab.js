@@ -10,7 +10,7 @@
 import { state }   from '../core/state.js';
 import * as hands  from '../systems/hands.js';
 import * as act    from '../systems/hand-actions.js';
-import { chooseFromButtons } from './prompt.js';
+import { chooseFromButtons, promptString } from './prompt.js';
 
 let _activeId = null;
 
@@ -78,7 +78,7 @@ export function renderHandTab(container) {
 function _skinCard() {
   const s = hands.handSkinInfo();
   const base = s.path ? s.path.split(/[\\/]/).pop() : '';
-  const line = s.loaded ? `✓ <b>${_esc(base)}</b> (a ${s.isRight ? 'right' : 'left'} hand, mirrored for the other) on every hand`
+  const line = s.loaded ? `✓ <b>${_esc(base)}</b> (a ${s.isRight ? 'right' : 'left'} hand, mirrored for the other${s.textured ? ', textured' : ''}) on every hand`
     : s.error ? `✕ ${_esc(base)}: ${_esc(s.error)}`
     : 'Procedural hand. <b>Export rig…</b> gives an .fbx of the bones; skin a real hand to them (keep the bone names), then <b>Load skin</b>.';
   return `
@@ -96,7 +96,7 @@ function _skinCard() {
 
 function _row(h) {
   const p = h.handParams || {};
-  const pose = hands.HAND_POSES[p.pose] || hands.HAND_POSES.handle;
+  const pose = hands.poseOf(p);
   const st = p.released ? 'released' : pose.label;
   return `
     <div class="row" data-hand-id="${_esc(h.id)}" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);cursor:pointer;${_activeId === h.id ? 'background:rgba(34,211,238,0.08);' : ''}">
@@ -143,13 +143,18 @@ function _renderEditor(host, h) {
   const p = h.handParams || hands.defaultHandParams();
   const picking = state.get('handPicking');
   const fine = state.get('handFineTune') === h.id;
-  const pose = hands.HAND_POSES[p.pose] || hands.HAND_POSES.handle;
+  const pose = hands.poseOf(p);
   const pinned = hands.HAND_FINGERS.filter(f => p.targets?.[f]);
   const pk = picking?.nodeId === h.id ? picking : null;
-  const poseBtns = hands.HAND_POSE_KEYS.map(k => {
-    const P = hands.HAND_POSES[k];
-    return `<button class="btn" data-pose="${k}" title="${_esc(P.hint)}" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px;${p.pose === k ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}"><span style="font-size:20px;line-height:1;">${P.icon}</span><span class="small" style="font-size:10.5px;">${_esc(P.label)}</span></button>`;
-  }).join('');
+  const adjust = state.get('handAdjust') === h.id;
+  const grips = act.listGrips();
+  const isCustom = p.pose === 'custom' && !!p.grip;
+  const libGrip = isCustom ? grips.find(g => g.id === p.grip.id) : null;
+  const ON = 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);';
+  const tile = (attr, icon, label, hint, on) => `<button class="btn" ${attr} title="${_esc(hint)}" style="display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 4px;${on ? ON : ''}"><span style="font-size:20px;line-height:1;">${icon}</span><span class="small" style="font-size:10.5px;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap;">${_esc(label)}</span></button>`;
+  const poseBtns = hands.HAND_POSE_KEYS.map(k => { const P = hands.HAND_POSES[k]; return tile(`data-pose="${k}"`, P.icon, P.label, P.hint, p.pose === k); }).join('')
+    + grips.map(g => tile(`data-grip="${_esc(g.id)}"`, '★', g.name, `A saved grip${g.ghost ? ' (aligns with the ' + g.ghost + ')' : ''}`, isCustom && p.grip.id === g.id)).join('')
+    + (isCustom && !libGrip ? tile('disabled', '★', p.grip.name || 'Custom grip', 'This hand\'s own grip (not in this computer\'s library)', true) : '');
   host.innerHTML = `
     <div class="section">
       <div class="title">${_esc(h.name || 'Hand')} <span class="small muted">(${h.handSide})</span></div>
@@ -162,6 +167,13 @@ function _renderEditor(host, h) {
           <label class="small" style="display:flex;align-items:center;gap:6px;" title="The translucent prop with its three numbered points"><input type="checkbox" id="hand-ghost" ${p.ghost !== false ? 'checked' : ''} ${pose.ghost && !p.released ? '' : 'disabled'}> ghost</label>
         </div>
         ${pose.ghost ? `<div class="small muted" style="line-height:1.45;">${pose.points.map((label, i) => `<span style="color:${['#fbbf24', '#f472b6', '#4ade80'][i]};font-weight:700;">${i + 1}</span> ${_esc(label)}`).join('<br>')}</div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+          <button class="btn ${adjust ? 'primary' : ''}" id="hand-adjust" ${pose.ghost && !p.released ? '' : 'disabled'} title="Re-seat the grip: the prop stays where it is while you move the hand (gizmo) and its fingertips; Done sets it">${adjust ? '✓ Done' : '🔧 Adjust grip'}</button>
+          <button class="btn" id="hand-offset-reset" ${p.ghostOffset ? '' : 'disabled'} title="The prop back where the pose lays it">Reset offset</button>
+          <button class="btn" id="hand-grip-save" title="Keep this grip (fingers as they are + the prop's seating) for other hands, on this computer">★ Save grip…</button>
+          <button class="btn" id="hand-grip-delete" ${libGrip ? '' : 'disabled'} title="Remove this grip from the library (hands that use it keep their copy)">Delete grip</button>
+        </div>
+        ${adjust ? '<div class="small" style="color:#22d3ee;font-weight:600;">◉ The prop is held still. Move the hand with the gizmo, drag fingertips. Esc / Done sets it.</div>' : ''}
       </div>
       <div class="card" style="margin-top:8px;padding:8px 10px;display:flex;flex-direction:column;gap:8px;">
         <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="hand-released" ${p.released ? 'checked' : ''}> Release at this step <span class="small muted">— lets go, moves as a unit</span></label>
@@ -181,6 +193,24 @@ function _renderEditor(host, h) {
     </div>`;
 
   host.querySelectorAll('[data-pose]').forEach(b => b.addEventListener('click', () => act.setHandPose(h.id, b.dataset.pose)));
+  host.querySelectorAll('[data-grip]').forEach(b => b.addEventListener('click', () => { const g = grips.find(x => x.id === b.dataset.grip); if (g) act.applyGrip(h.id, g); }));
+  host.querySelector('#hand-adjust')?.addEventListener('click', () => { if (adjust) act.endHandAdjust(); else act.setHandAdjust(h.id); });
+  host.querySelector('#hand-offset-reset')?.addEventListener('click', () => act.resetGhostOffset(h.id));
+  host.querySelector('#hand-grip-save')?.addEventListener('click', async () => {
+    const name = await promptString('Name this grip', pose.custom ? pose.label : '');
+    if (!name) return;
+    const kind = await chooseFromButtons('Which prop aligns it?', 'The ghost prop the 3-point alignment will use for this grip.', [
+      { id: 'handle', label: '🪛 Handle / bar', primary: true }, { id: 'pistol', label: '🔫 Pistol grip' }, { id: 'pinch', label: '🤏 Pinch' },
+      { id: 'push', label: '✋ Flat push' }, { id: 'knob', label: '🎛 Knob' }, { id: 'none', label: 'No prop' }, { id: 'cancel', label: 'Cancel' },
+    ]);
+    if (!kind || kind === 'cancel') return;
+    await act.saveGrip(h.id, name, kind === 'none' ? null : kind);
+  });
+  host.querySelector('#hand-grip-delete')?.addEventListener('click', async () => {
+    if (!libGrip || !confirm(`Remove "${libGrip.name}" from the grip library?`)) return;
+    await act.deleteGrip(libGrip.id);
+    renderHandTab(host.parentElement?.parentElement);
+  });
   const closedEl = host.querySelector('#hand-closed');
   let before = null;
   closedEl?.addEventListener('pointerdown', () => { before = act.snapshotParams(h.id); });

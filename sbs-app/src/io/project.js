@@ -1120,7 +1120,7 @@ export const SESSION_MODAL_KEYS = [
   'selectedCableSocket',
   'cableReanchorPickingId', 'cableInsertPickingTarget',
   'cableSocketReanchorPickingId', 'cableSocketConnectPickingId',
-  'handPicking', 'selectedHandControl', 'handFineTune',   // 🖐 V0.3.4.127 / .128
+  'handPicking', 'selectedHandControl', 'handFineTune', 'handAdjust',   // 🖐 V0.3.4.127 / .128 / .145
 ];
 
 export function applyProjectToState(project) {
