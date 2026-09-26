@@ -919,9 +919,10 @@ export function initHands() {
   // 🧤 the skin the user loaded last time (a machine setting, not project data)
   userSettings.initUserSettings()
     .then(async s => {
-      const p = s?.hands?.skinPath;
-      if (!p) return;
-      await setHandSkinFile(p, { persist: false });
+      const p = s?.hands?.skinPath || '';
+      const use = p === 'none' ? '' : (p || bundledHandSkinPath());   // '' = the built-in skin ships with the app
+      if (!use) return;
+      await setHandSkinFile(use);
       const tx = s?.hands?.skinTexture;
       if (tx && _skin.template) await setHandSkinTexture(tx, { persist: false });
     })
@@ -959,12 +960,30 @@ const _skin = { path: '', template: null, rev: 0, error: '', texture: '', textur
 const _norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const _boneName = (f, i) => `${f}_${i + 1}`;
 
-/** What the UI shows: { path, loaded, error, missing[] }. */
+/**
+ * V0.3.4.153 — the skin that SHIPS with the app: assets/hands/sbs-hand.fbx (the
+ * user's skinned Genesis hand) with its three textures beside it (skin, white
+ * latex, blue latex). Packaged inside the asar like assets/hdri; readFile /
+ * listDir / file:// all see through it. The hands.skinPath setting: '' = this
+ * built-in, 'none' = the procedural hand, else a file the user picked.
+ */
+export function bundledHandSkinPath() {
+  try {
+    const u = new URL('../../assets/hands/sbs-hand.fbx', import.meta.url);
+    let p = decodeURIComponent(u.pathname);
+    if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);   // Windows: /E:/x → E:/x
+    return p;
+  } catch { return ''; }
+}
+const _samePath = (a, b) => String(a || '').replace(/\\/g, '/').toLowerCase() === String(b || '').replace(/\\/g, '/').toLowerCase();
+
+/** What the UI shows: { path, loaded, error, missing[], … }. */
 export function handSkinInfo() {
   return {
     path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [],
     isRight: !!_skin.template?.isRight, textured: !!_skin.template?.textured, textureMissing: !!_skin.template?.textureMissing,
     texture: _skin.texture, textures: [..._skin.textures],
+    bundled: !!_skin.path && _samePath(_skin.path, bundledHandSkinPath()),
   };
 }
 
@@ -1052,10 +1071,12 @@ function _rigExportData(scale = 190) {
 
 /**
  * Load (or clear, with '') the skin file. The template is analysed once; every
- * live hand is rebuilt by hand-actions on 'hands:skinChanged'.
+ * live hand is rebuilt by hand-actions on 'hands:skinChanged'. `setting`, when
+ * given, is what goes into the hands.skinPath setting ('' = the built-in,
+ * 'none' = procedural, a path = that file); undefined = don't persist.
  */
-export async function setHandSkinFile(path, { persist = true } = {}) {
-  _skin.path = path || ''; _skin.template = null; _skin.error = '';
+export async function setHandSkinFile(path, { setting } = {}) {
+  _skin.path = path || ''; _skin.template = null; _skin.error = ''; _skin.textures = []; _skin.texture = '';
   if (_skin.path) {
     try {
       const rd = await window.sbsNative?.readFile?.(_skin.path, 'buffer');
@@ -1085,7 +1106,7 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
     }
   }
   _skin.rev++;
-  if (persist) { try { await userSettings.patch({ hands: { skinPath: _skin.path } }); } catch (e) { console.warn('[hands] skin setting:', e?.message); } }
+  if (setting !== undefined) { try { await userSettings.patch({ hands: { skinPath: setting, skinTexture: '' } }); } catch (e) { console.warn('[hands] skin setting:', e?.message); } }
   state.emit('hands:skinChanged', handSkinInfo());
   return handSkinInfo();
 }

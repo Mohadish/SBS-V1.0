@@ -372,7 +372,7 @@ export async function exportHandRig() {
 export async function pickHandSkin() {
   const path = await window.sbsNative?.openFile?.({ title: 'Load a skinned hand (.fbx / .glb)', filters: [{ name: 'Skinned hand', extensions: ['fbx', 'glb'] }, { name: 'FBX', extensions: ['fbx'] }, { name: 'glTF binary', extensions: ['glb'] }] });
   if (!path) return false;
-  const info = await hands.setHandSkinFile(path);
+  const info = await hands.setHandSkinFile(path, { setting: path });
   if (info.loaded) setStatus(info.missing.length ? `Skin loaded — bones not found: ${info.missing.join(', ')} (those joints will not move it).` : 'Skin loaded on every hand.', info.missing.length ? 'warn' : 'success', 7000);
   else setStatus(`Skin not loaded: ${info.error}`, 'error', 7000);
   return info.loaded;
@@ -384,10 +384,18 @@ export async function setSkinTexture(name) {
   else setStatus(name ? `Skin texture: ${name}.` : 'Skin texture: the file\'s own.', 'info', 3000);
   return info;
 }
-export async function clearHandSkin() {
-  await hands.setHandSkinFile('');
-  setStatus('Back to the procedural hand.', 'info', 3000);
+/** The skin that ships with the app (V0.3.4.153). */
+export async function useBundledHandSkin() {
+  const info = await hands.setHandSkinFile(hands.bundledHandSkinPath(), { setting: '' });
+  setStatus(info.loaded ? 'The built-in hand is on.' : `The built-in hand could not be loaded: ${info.error}`, info.loaded ? 'info' : 'error', 4000);
+  return info;
 }
+/** No skin at all: the capsule rig. */
+export async function useProceduralHand() {
+  await hands.setHandSkinFile('', { setting: 'none' });
+  setStatus('The procedural hand is on.', 'info', 3000);
+}
+export async function clearHandSkin() { return useBundledHandSkin(); }
 
 // ── 🔧 adjust the grip (V0.3.4.145): the prop holds still, the hand re-seats ──
 // A pose's prop does not always land right on the real part. In adjust mode the

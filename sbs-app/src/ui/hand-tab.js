@@ -61,7 +61,8 @@ export function renderHandTab(container) {
   });
   container.querySelector('#hand-skin-load')?.addEventListener('click', () => act.pickHandSkin());
   container.querySelectorAll('[data-skin-tex]').forEach(b => b.addEventListener('click', () => act.setSkinTexture(b.dataset.skinTex)));
-  container.querySelector('#hand-skin-clear')?.addEventListener('click', () => act.clearHandSkin());
+  container.querySelector('#hand-skin-bundled')?.addEventListener('click', () => act.useBundledHandSkin());
+  container.querySelector('#hand-skin-none')?.addEventListener('click', () => act.useProceduralHand());
   container.querySelector('#hand-rig-export')?.addEventListener('click', () => act.exportHandRig());
   container.querySelector('#hand-list')?.addEventListener('click', (e) => {
     const row = e.target.closest('[data-hand-id]'); if (!row) return;
@@ -80,9 +81,10 @@ export function renderHandTab(container) {
 function _skinCard() {
   const s = hands.handSkinInfo();
   const base = s.path ? s.path.split(/[\\/]/).pop() : '';
-  const line = s.loaded ? `✓ <b>${_esc(base)}</b> (a ${s.isRight ? 'right' : 'left'} hand, mirrored for the other${s.textured ? ', textured' : ''}) on every hand`
+  const which = s.bundled ? 'the <b>built-in hand</b>' : `<b>${_esc(base)}</b>`;
+  const line = s.loaded ? `✓ ${which} (a ${s.isRight ? 'right' : 'left'} hand, mirrored for the other${s.textured ? ', textured' : ''}) on every hand`
     : s.error ? `✕ ${_esc(base)}: ${_esc(s.error)}`
-    : 'Procedural hand. <b>Export rig…</b> gives an .fbx of the bones; skin a real hand to them (keep the bone names), then <b>Load skin</b>.';
+    : 'Procedural hand (no skin). <b>Built-in</b> puts the shipped hand back; <b>Export rig…</b> gives an .fbx of the bones to skin your own to (keep the bone names), then <b>Load skin…</b>.';
   return `
       <div class="card" style="margin-top:8px;padding:8px 10px;">
         <div class="small" style="font-weight:600;">🧤 Skin</div>
@@ -95,9 +97,10 @@ function _skinCard() {
           <button class="btn" data-skin-tex="" style="font-size:11px;padding:3px 8px;${!s.texture ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="The texture the file itself names">file's own</button>
           ${s.textures.map(t => `<button class="btn" data-skin-tex="${_esc(t)}" style="font-size:11px;padding:3px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${s.texture === t ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="${_esc(t)}">${_esc(t.replace(/\.[^.]+$/, ''))}</button>`).join('')}
         </div>` : ''}
-        <div style="display:flex;gap:6px;margin-top:6px;">
+        <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
           <button class="btn" id="hand-skin-load" style="flex:1;" title="An .fbx or .glb with a mesh skinned to the exported bones">Load skin…</button>
-          <button class="btn" id="hand-skin-clear" ${s.path ? '' : 'disabled'} title="Back to the procedural hand">✕</button>
+          <button class="btn" id="hand-skin-bundled" ${s.bundled ? 'disabled' : ''} title="The hand that ships with the app">Built-in</button>
+          <button class="btn" id="hand-skin-none" ${s.path ? '' : 'disabled'} title="No skin: the capsule rig">Procedural</button>
           <button class="btn" id="hand-rig-export" title="Save the rig (right hand, at rest) as .fbx (or .glb) to skin over">Export rig…</button>
         </div>
       </div>`;
