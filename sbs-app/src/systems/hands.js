@@ -895,11 +895,18 @@ function _analyseSkin(gltf) {
   const missing = expected.filter(n => !byName.has(_norm(n)));
   scene.updateMatrixWorld(true);
   const wp = (k) => { const o = byName.get(_norm(k)); return o ? o.getWorldPosition(new Th.Vector3()) : null; };
-  // the template's own scale: wrist → middle knuckle, against the rig's anatomy
+  // the template's own scale: wrist → middle knuckle, against the rig's anatomy —
+  // measured IN THE WRIST'S FRAME. _instantiateSkin puts the wrist bone on the
+  // group's origin by inverting its whole matrix, scale included (Max exports
+  // the unit conversion as a 0.1 on the root node and keeps the mm numbers in
+  // the children); a world-space measure would count that scale twice and the
+  // hand came in 10× too big (V0.3.4.143).
   let L0 = Number(gltf.parser?.json?.asset?.extras?.sbsHandScale) || 0;
   const W = wp('wrist'), M1 = wp(_boneName('middle', 0));
   if (W && M1) {
-    const d = W.distanceTo(M1);
+    const wristObj = byName.get('wrist');
+    const inWrist = wristObj ? M1.clone().applyMatrix4(wristObj.matrixWorld.clone().invert()) : M1.clone().sub(W);
+    const d = inWrist.length();
     const ref = _v(ANAT.fingers.middle.mcp).length();
     if (d > 1e-6 && ref > 0) L0 = d / ref;
   }
