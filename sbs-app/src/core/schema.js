@@ -34,7 +34,7 @@ export const APP_VERSION  = 'V0.3.4.153';
 export const CORE_VERSION = 'V0.3.4.119';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-09-24';
+export const APP_RELEASED = '2026-09-26';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
