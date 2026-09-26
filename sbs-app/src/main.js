@@ -4561,25 +4561,19 @@ canvas.addEventListener('contextmenu', e => {
       import('./systems/hardware-actions.js').then(hw =>
         hw.setInstanceWashers(washerIds, cfg));
     };
+    // V0.3.4.151 — one row with a flyout (the user: "like Visibility has it"), the
+    // current choice in the label; the five options were five rows.
+    const _wOpts = [
+      { cfg: { count: 0, spring: false }, name: 'No washers' },
+      { cfg: { count: 1, spring: false }, name: 'One washer' },
+      { cfg: { count: 2, spring: false }, name: 'Two washers' },
+      { cfg: { count: 1, spring: true  }, name: 'Spring washer only' },
+      { cfg: { count: 2, spring: true  }, name: 'Spring + flat washer' },
+    ];
+    const _wCur = _wOpts.find(o => _check(o.cfg))?.name || 'No washers';
     items.push({
-      label: `⊕ No washers${_check({ count: 0, spring: false })}`,
-      action: () => _setW({ count: 0, spring: false }),
-    });
-    items.push({
-      label: `⊕ One washer${_check({ count: 1, spring: false })}`,
-      action: () => _setW({ count: 1, spring: false }),
-    });
-    items.push({
-      label: `⊕ Two washers${_check({ count: 2, spring: false })}`,
-      action: () => _setW({ count: 2, spring: false }),
-    });
-    items.push({
-      label: `⊕ Spring washer only${_check({ count: 1, spring: true })}`,
-      action: () => _setW({ count: 1, spring: true }),
-    });
-    items.push({
-      label: `⊕ Spring + flat washer${_check({ count: 2, spring: true })}`,
-      action: () => _setW({ count: 2, spring: true }),
+      label: `⊕ Washers: ${_wCur}`,
+      submenu: _wOpts.map(o => ({ label: `${_check(o.cfg) ? '✓ ' : ''}${o.name}`, action: () => _setW(o.cfg) })),
     });
     items.push({ label: '─', disabled: true });
   }

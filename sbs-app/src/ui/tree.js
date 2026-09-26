@@ -1168,27 +1168,18 @@ function _buildContextMenuItems(node) {
     };
     const sample = nodeById?.get(targetIds[0]);
     const curr   = sample?.washers || { count: 0, spring: false };
-    const _checkmark = (cfg) =>
-      (curr.count === cfg.count && !!curr.spring === !!cfg.spring) ? ' ✓' : '';
+    const _is = (cfg) => curr.count === cfg.count && !!curr.spring === !!cfg.spring;
+    // V0.3.4.151 — one row with a flyout, the current choice in the label (was five rows)
+    const _wOpts = [
+      { cfg: { count: 0, spring: false }, name: 'No washers' },
+      { cfg: { count: 1, spring: false }, name: 'One washer' },
+      { cfg: { count: 2, spring: false }, name: 'Two washers' },
+      { cfg: { count: 1, spring: true  }, name: 'Spring washer only' },
+      { cfg: { count: 2, spring: true  }, name: 'Spring + flat washer' },
+    ];
     items.push({
-      label: `⊕ No washers${_checkmark({ count: 0, spring: false })}`,
-      action: () => _setW({ count: 0, spring: false }),
-    });
-    items.push({
-      label: `⊕ One washer${_checkmark({ count: 1, spring: false })}`,
-      action: () => _setW({ count: 1, spring: false }),
-    });
-    items.push({
-      label: `⊕ Two washers${_checkmark({ count: 2, spring: false })}`,
-      action: () => _setW({ count: 2, spring: false }),
-    });
-    items.push({
-      label: `⊕ Spring washer only${_checkmark({ count: 1, spring: true })}`,
-      action: () => _setW({ count: 1, spring: true }),
-    });
-    items.push({
-      label: `⊕ Spring + flat washer${_checkmark({ count: 2, spring: true })}`,
-      action: () => _setW({ count: 2, spring: true }),
+      label: `⊕ Washers: ${_wOpts.find(o => _is(o.cfg))?.name || 'No washers'}`,
+      submenu: _wOpts.map(o => ({ label: `${_is(o.cfg) ? '✓ ' : ''}${o.name}`, action: () => _setW(o.cfg) })),
     });
     items.push({ separator: true });
   }

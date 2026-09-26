@@ -212,38 +212,75 @@ export function hideContextMenu() {
 // "special" section (group 8) in their original relative order (stable sort).
 // Apply ONLY to the entity menu — pass mode-specific menus (shape editor, cable
 // routing, note picking) through untouched.
+// V0.3.4.151 — the order the user laid out ("the right-click menu is a mess"):
+//   1 visibility + isolate · 2 folder / transformable / follow / rename ·
+//   3 aligns · 4 transforms (reset, copy / paste) · 5 pivots (snap, 3-point,
+//   copy / paste, paste → steps) · 6 note + spotlight · 7 object clipboard ·
+//   8 the type's own tools (hardware, hand, shape) · 9 tree utilities · 10 delete ·
+//   11 cameras (orbit centre first, fit view last) · 12 archive, at the very bottom.
 const _MENU_SECTIONS = [
   // [matcher(label), group] — first match wins; groups render in ascending order.
-  // Viewport-only globals — tested FIRST so '🎯 Fit view' doesn't match the
-  // entity '🎯 Fit' rule below; they sink to the very bottom (group 13).
-  [l => l.startsWith('📷') || l.startsWith('🎯 Fit view') || l.startsWith('✖ Deselect'), 13],
   [l => l.startsWith('⚠️'),                                          0],  // missing-asset header
-  [l => l.startsWith('💬 Add Note'),                                 1],  // add note
-  [l => l.startsWith('🗒 Notes on') || /^\s+[👁🚫]/.test(l),         1],  // notes list (header + rows)
-  [l => l.startsWith('👁 Visibility'),                               2],  // "this object" group
-  [l => l.startsWith('🔍 Isolate') || l.startsWith('🌐 Un-isolate'), 2],
-  [l => l.startsWith('🎯 Fit'),                                      2],
+  [l => l.startsWith('👁 Visibility'),                               1],  // visibility + isolate
+  [l => l.startsWith('🔍 Isolate') || l.startsWith('🌐 Un-isolate'), 1],
+  [l => l.startsWith('📁→ Move'),                                    2],  // where it lives / what it is
+  [l => l.startsWith('🪄 Make transformable'),                       2],
+  [l => l.includes('Follow object') || l.includes('Stop following'), 2],
   [l => l.startsWith('✏ Rename'),                                    2],
-  [l => l.startsWith('📁→ Move'),                                    2],
+  [l => l.startsWith('📦 Group for global'),                         2],
+  [l => l.startsWith('🎯 Align to surface') || l.startsWith('🎯 Align by 3 points (concentric)'), 3],  // aligns
   [l => l.includes('Copy Transforms') || l.includes('Paste Transforms')
-        || l.startsWith('↺ Reset'),                                  3],  // transforms
-  [l => l.startsWith('🎯 Align'),                                    4],  // align
+        || l.startsWith('↺ Reset') || l.startsWith('🌐 Global transform'), 4],  // transforms
   [l => l.startsWith('⊕ Copy Pivot') || l.startsWith('⊕ Paste Pivot')
-        || l.startsWith('🧲 Snap Pivot') || l.startsWith('⊕ Pivot'), 5],  // pivot
-  [l => l.includes('Follow object') || l.includes('Stop following'), 6],  // follow
-  [l => l.startsWith('🔦'),                                          6],  // 🔦 spotlight — beside follow: both are "where this object is, on this step"
-  [l => (l.startsWith('📋 Copy') && !l.includes('Transforms') && !l.includes('tree'))
+        || l.startsWith('🧲 Snap Pivot') || l.startsWith('⊕ Pivot'), 5],  // pivots
+  [l => l.startsWith('💬 Add Note'),                                 6],  // note + spotlight: "at this place, on this step"
+  [l => l.startsWith('🗒 Notes on') || /^\s+[👁🚫]/.test(l),         6],
+  [l => l.startsWith('🔦'),                                          6],
+  [l => (l.startsWith('📋 Copy') && !l.includes('Transforms') && !l.includes('tree') && !l.includes('grip'))
         || l.startsWith('📄 Paste') || l.startsWith('🔗 Paste Instance')
-        || l.startsWith('🪄 Make transformable')
-        || l.startsWith('＋ Add to replace'),                        7],  // object clipboard / upgrade
-  // group 8 = per-type SPECIAL (default) — hardware / shape-edit / show-color
+        || l.startsWith('＋ Add to replace') || l.startsWith('🎨 Show color') || l.startsWith('✏ Edit shape'), 7],  // object clipboard / look
+  // group 8 = the type's OWN tools (default): hardware 🔩 / ⊕ washers / 🎬, hand 🖐, …
   [l => l.startsWith('🧹 Clean') || l.startsWith('🔒 Lock') || l.startsWith('🔓 Unlock')
         || l.startsWith('📁＋ New Folder') || l.startsWith('⤵') || l.startsWith('⊟ Collapse'), 9], // tree-only utilities
   [l => l.startsWith('🗑') || l.startsWith('🚫🔄 Remove'),           10], // delete
-  [l => l.startsWith('🗃') || l.startsWith('📤 Unarchive'),          11], // archive (bottom)
-  [l => l.includes('Copy tree') || l.includes('Paste tree'),         12], // scene tree clipboard
+  [l => l.startsWith('📷') || l.startsWith('🎯 Fit') || l.startsWith('✖ Deselect')
+        || l.includes('orbit centre') || l.startsWith('🎯 Pull-out'), 11], // cameras + view
+  [l => l.startsWith('🗃') || l.startsWith('📤 Unarchive'),          12], // archive (bottom)
+  [l => l.includes('Copy tree') || l.includes('Paste tree'),         13], // scene tree clipboard
 ];
 const _MENU_DEFAULT_GROUP = 8;
+// Order INSIDE a section (lower first; unmatched = 50, then code order).
+const _MENU_SUBORDER = [
+  [l => l.startsWith('👁 Visibility'),                               10],
+  [l => l.startsWith('📁→ Move'),                                    10],
+  [l => l.startsWith('🪄 Make transformable'),                       20],
+  [l => l.includes('Follow object') || l.includes('Stop following'), 30],
+  [l => l.startsWith('✏ Rename'),                                    40],
+  [l => l.startsWith('↺ Reset Move'),                                10],
+  [l => l.startsWith('↺ Reset Rotation'),                            11],
+  [l => l.startsWith('↺ Reset All'),                                 12],
+  [l => l.includes('Copy Transforms'),                               20],
+  [l => l.includes('Paste Transforms'),                              21],
+  [l => l.startsWith('🌐 Global transform'),                         30],
+  [l => l.startsWith('🧲 Snap Pivot'),                               10],
+  [l => l.startsWith('⊕ Pivot Center'),                              11],
+  [l => l.startsWith('⊕ Copy Pivot'),                                20],
+  [l => l.startsWith('⊕ Paste Pivot →'),                             22],
+  [l => l.startsWith('⊕ Paste Pivot'),                               21],
+  [l => l.startsWith('💬 Add Note'),                                 10],
+  [l => l.startsWith('🗒 Notes on'),                                 11],
+  [l => /^\s+[👁🚫]/.test(l),                                        12],
+  [l => l.startsWith('🔦'),                                          20],
+  [l => l.includes('orbit centre') && !l.startsWith('🎯 Remove'),    10],
+  [l => l.startsWith('🎯 Pull-out'),                                 11],
+  [l => l.startsWith('🎯 Remove orbit centre'),                      12],
+  [l => l.startsWith('📷 Update step camera'),                       20],
+  [l => l.startsWith('📷🔗 Apply camera template'),                  21],
+  [l => l.startsWith('📷🔗 Update template'),                        22],
+  [l => l.startsWith('🎯 Fit to selection') || l.startsWith('🎯 Fit To'), 30],
+  [l => l.startsWith('🎯 Fit view'),                                 31],
+  [l => l.startsWith('✖ Deselect'),                                  40],
+];
 
 function _menuGroup(label) {
   const l = label || '';
@@ -251,6 +288,13 @@ function _menuGroup(label) {
     try { if (test(l)) return g; } catch (_) {}
   }
   return _MENU_DEFAULT_GROUP;
+}
+function _menuSub(label) {
+  const l = label || '';
+  for (const [test, s] of _MENU_SUBORDER) {
+    try { if (test(l)) return s; } catch (_) {}
+  }
+  return 50;
 }
 
 // A menu item that's purely a divider — either the tree style ({separator:true})
@@ -264,8 +308,8 @@ function _isDivider(it) {
 export function canonicalizeMenuOrder(items) {
   if (!Array.isArray(items) || items.length < 2) return items;
   const real = items.filter(it => !_isDivider(it));
-  const ranked = real.map((it, i) => ({ it, i, g: _menuGroup(it.label || '') }));
-  ranked.sort((a, b) => (a.g - b.g) || (a.i - b.i));   // stable within a section
+  const ranked = real.map((it, i) => ({ it, i, g: _menuGroup(it.label || ''), s: _menuSub(it.label || '') }));
+  ranked.sort((a, b) => (a.g - b.g) || (a.s - b.s) || (a.i - b.i));   // section, then the order inside it, then code order
   const out = [];
   let prevG = null;
   for (const r of ranked) {
