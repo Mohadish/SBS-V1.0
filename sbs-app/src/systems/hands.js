@@ -497,7 +497,20 @@ function _solveFinger(fg, targetW) {
   const Th = T();
   const tip = new Th.Vector3(), jp = new Th.Vector3(), ax = new Th.Vector3();
   const worldAxis = (j, local) => ax.copy(local).applyQuaternion(j.getWorldQuaternion(new Th.Quaternion())).normalize();
-  const X = new Th.Vector3(1, 0, 0), Z = new Th.Vector3(0, 0, 1);
+  const X = new Th.Vector3(1, 0, 0);
+  // V0.3.4.147 — the SPREAD is solved once, analytically: the knuckle turns about its
+  // spread axis until the finger's flex plane contains the target (in the knuckle's
+  // rest frame: a = atan2(−x, y)). Iterating it inside the CCD, from the projected
+  // tip-vs-target angle, sent it to ±limit whenever the target sat near the finger's
+  // own axis — the user's "snaps hard left or hard right, nothing to do with the target".
+  if (!fg.ballCone) {
+    const j0 = fg.joints[0];
+    j0.parent.updateMatrixWorld(true);
+    const pq = j0.parent.getWorldQuaternion(new Th.Quaternion());
+    const tl = targetW.clone().sub(j0.getWorldPosition(new Th.Vector3())).applyQuaternion(pq.invert()).applyQuaternion(fg.basis.clone().invert());
+    if (tl.lengthSq() > 1e-9) fg.alpha = _clamp(Math.atan2(-tl.x, tl.y), -fg.spread, fg.spread);
+    _setFingerAngles(fg);
+  }
   for (let it = 0; it < 14; it++) {
     for (let ji = 2; ji >= 0; ji--) {
       const j = fg.joints[ji];
@@ -521,12 +534,6 @@ function _solveFinger(fg, targetW) {
           _setFingerAngles(fg);
         }
         continue;
-      }
-      if (ji === 0) {
-        const d = _signedAngle(worldAxis(j, Z), u, v);
-        fg.alpha = _clamp(fg.alpha + d, -fg.spread, fg.spread);
-        _setFingerAngles(fg); fg.joints[0].updateMatrixWorld(true);
-        fg.tip.getWorldPosition(tip); u.copy(tip).sub(jp);
       }
       const d = _signedAngle(worldAxis(j, X), u, v);
       fg.phi[ji] = _clamp(fg.phi[ji] + d, -6 * DEG, fg.flexMax[ji]);
@@ -905,7 +912,7 @@ const _boneName = (f, i) => `${f}_${i + 1}`;
 
 /** What the UI shows: { path, loaded, error, missing[] }. */
 export function handSkinInfo() {
-  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [], isRight: !!_skin.template?.isRight, textured: !!_skin.template?.textured };
+  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [], isRight: !!_skin.template?.isRight, textured: !!_skin.template?.textured, textureMissing: !!_skin.template?.textureMissing };
 }
 
 /** Every finger straight, the forearm straight back: the rig's REST (= the exported bind pose). */
@@ -1013,6 +1020,10 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
         const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, base, res, rej));
         _skin.template = _analyseSkin(gltf);
       }
+      // V0.3.4.147 — a map whose image never arrives (an FBX pointing at a texture that is
+      // not next to it, not embedded) rendered the hand BLACK. Give the images a moment,
+      // then drop every map that has none: flat skin colour beats black.
+      await _settleTextures(_skin.template);
     } catch (e) {
       _skin.error = String(e?.message || e);
       console.warn('[hands] skin:', e);
@@ -1074,6 +1085,26 @@ function _analyseSkin(gltf) {
   if (missing.length) console.warn('[hands] skin bones not found (those joints will not move it):', missing.join(', '));
   console.log(`[hands] skin template: ${isRight ? 'right' : 'left'} hand, length ${L0.toFixed(1)}${textured ? ', textured' : ''}`);
   return { scene, L0, missing, isRight, textured };
+}
+
+/** Wait (≤ 2.5 s) for the template's texture images; strip the maps that never load. Sets tpl.textured / tpl.textureMissing. */
+async function _settleTextures(tpl) {
+  if (!tpl?.scene) return;
+  const mats = [];
+  tpl.scene.traverse(o => { if (o.isMesh && o.material?.map && !mats.includes(o.material)) mats.push(o.material); });
+  if (!mats.length) { tpl.textured = false; tpl.textureMissing = false; return; }
+  const ready = (m) => { const im = m.map?.image; return !!im && ((im.complete === undefined || im.complete) && (im.width > 0 || im.naturalWidth > 0)); };
+  const t0 = Date.now();
+  while (Date.now() - t0 < 2500 && !mats.every(ready)) await new Promise(r => setTimeout(r, 150));
+  const missing = [];
+  for (const m of mats) {
+    if (ready(m)) { m.map.colorSpace = T().SRGBColorSpace || m.map.colorSpace; m.map.needsUpdate = true; continue; }
+    missing.push(m.map.name || m.map.image?.src || m.map.sourceFile || '(unnamed)');
+    m.map = null; m.needsUpdate = true;
+  }
+  tpl.textured = mats.some(ready);
+  tpl.textureMissing = missing.length > 0;
+  if (missing.length) console.warn('[hands] skin texture(s) not found — export the FBX with "Embed Media" (binary) or keep the image next to the file:', missing.join(', '));
 }
 
 /** A deep clone of a scene with skinned meshes: fresh skeletons over the CLONED bones, cloned geometry. */

@@ -86,6 +86,7 @@ function _skinCard() {
         <div class="small" style="font-weight:600;">🧤 Skin</div>
         <div class="small muted" style="margin-top:4px;line-height:1.45;">${line}</div>
         ${s.loaded && s.missing.length ? `<div class="small" style="margin-top:4px;color:#fbbf24;">Bones not found: ${_esc(s.missing.join(', '))}</div>` : ''}
+        ${s.loaded && s.textureMissing ? '<div class="small" style="margin-top:4px;color:#fbbf24;">Its texture file was not found — flat colour instead. Export the FBX (binary) with <b>Embed Media</b>, or put the image next to the file.</div>' : ''}
         <div style="display:flex;gap:6px;margin-top:6px;">
           <button class="btn" id="hand-skin-load" style="flex:1;" title="An .fbx or .glb with a mesh skinned to the exported bones">Load skin…</button>
           <button class="btn" id="hand-skin-clear" ${s.path ? '' : 'disabled'} title="Back to the procedural hand">✕</button>
