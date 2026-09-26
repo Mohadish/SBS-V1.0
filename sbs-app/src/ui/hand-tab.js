@@ -170,7 +170,7 @@ function _renderEditor(host, h) {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
           <button class="btn ${adjust ? 'primary' : ''}" id="hand-adjust" ${pose.ghost && !p.released ? '' : 'disabled'} title="Re-seat the grip: the prop stays where it is while you move the hand (gizmo) and its fingertips; Done sets it">${adjust ? '✓ Done' : '🔧 Adjust grip'}</button>
           <button class="btn" id="hand-offset-reset" ${p.ghostOffset ? '' : 'disabled'} title="The prop back where the pose lays it">Reset offset</button>
-          <button class="btn" id="hand-grip-save" title="Keep this grip (fingers as they are + the prop's seating) for other hands, on this computer">★ Save grip…</button>
+          <button class="btn" id="hand-grip-save" title="Keep this grip — the fingers as they are and the prop exactly where it sits — for other hands, on this computer">★ Save grip…</button>
           <button class="btn" id="hand-grip-delete" ${libGrip ? '' : 'disabled'} title="Remove this grip from the library (hands that use it keep their copy)">Delete grip</button>
         </div>
         ${adjust ? '<div class="small" style="color:#22d3ee;font-weight:600;">◉ The prop is held still. Move the hand with the gizmo, drag fingertips. Esc / Done sets it.</div>' : ''}
@@ -199,12 +199,7 @@ function _renderEditor(host, h) {
   host.querySelector('#hand-grip-save')?.addEventListener('click', async () => {
     const name = await promptString('Name this grip', pose.custom ? pose.label : '');
     if (!name) return;
-    const kind = await chooseFromButtons('Which prop aligns it?', 'The ghost prop the 3-point alignment will use for this grip.', [
-      { id: 'handle', label: '🪛 Handle / bar', primary: true }, { id: 'pistol', label: '🔫 Pistol grip' }, { id: 'pinch', label: '🤏 Pinch' },
-      { id: 'push', label: '✋ Flat push' }, { id: 'knob', label: '🎛 Knob' }, { id: 'none', label: 'No prop' }, { id: 'cancel', label: 'Cancel' },
-    ]);
-    if (!kind || kind === 'cancel') return;
-    await act.saveGrip(h.id, name, kind === 'none' ? null : kind);
+    await act.saveGrip(h.id, name);   // the prop = the one in use, seated as it is now
   });
   host.querySelector('#hand-grip-delete')?.addEventListener('click', async () => {
     if (!libGrip || !confirm(`Remove "${libGrip.name}" from the grip library?`)) return;

@@ -414,17 +414,22 @@ export function resetGhostOffset(id) {
 
 // ── ★ saved grips (V0.3.4.145): a machine library; a hand carries its own copy ──
 export function listGrips() { return (userSettings.get().hands?.grips || []).filter(g => g && g.angles); }
-/** The hand's grip as it stands → the library, and on to this hand as its own pose. */
-export async function saveGrip(id, name, ghostKind) {
+/**
+ * The hand's grip as it stands → the library, and on to this hand as its own pose.
+ * The prop is the one the hand is using, seated as it is now (V0.3.4.146 — the
+ * user: "I set it relative to a grip, you can see which one"); the adjust offset
+ * is baked into the saved layout.
+ */
+export async function saveGrip(id, name) {
   const n = _node(id);
   if (!n) return null;
   const cap = hands.captureGrip(n);
   if (!cap) return null;
   const p = n.handParams || hands.defaultHandParams();
+  const kind = hands.poseOf(p).ghost || null;
   const grip = {
     id: generateId(), name: String(name || 'Grip').trim() || 'Grip',
-    ghost: hands.GHOST_KINDS.includes(ghostKind) ? ghostKind : null,
-    angles: cap.angles, ghostOffset: p.ghostOffset ? _clone(p.ghostOffset) : null,
+    ghost: kind, angles: cap.angles, layout: cap.layout, mirror: cap.mirror,
   };
   try { await userSettings.patch({ hands: { grips: [...listGrips(), grip] } }); } catch (e) { console.warn('[hands] grip library:', e?.message); }
   applyGrip(id, grip);
@@ -436,8 +441,9 @@ export function applyGrip(id, grip) {
   if (state.get('handAdjust') === id) endHandAdjust();
   const targets = {}; for (const f of hands.HAND_FINGERS) targets[f] = null;
   const ok = setHandParams(id, {
-    pose: 'custom', grip: { id: grip.id, name: grip.name, ghost: grip.ghost || null, angles: _clone(grip.angles) },
-    ghostOffset: grip.ghostOffset ? _clone(grip.ghostOffset) : null, targets, ghost: true, closed: 1,
+    pose: 'custom',
+    grip: { id: grip.id, name: grip.name, ghost: grip.ghost || null, angles: _clone(grip.angles), layout: grip.layout ? _clone(grip.layout) : null, mirror: !!grip.mirror },
+    ghostOffset: null, targets, ghost: true, closed: 1,   // the seating lives in the layout
   }, `Grip: ${grip.name}`);
   if (ok) { _pivotIntoProp(n); steps.scheduleTransformSync?.(); }
   return ok;

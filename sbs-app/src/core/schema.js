@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.4.145';
+export const APP_VERSION  = 'V0.3.4.146';
 // The oldest CORE (electron/*.js, preload, helper pages) this interface can run on.
 // BUMP THIS whenever a change under electron/ lands — the interface then tells a
 // Ctrl+R'd session that a full restart is needed, and stays quiet otherwise.

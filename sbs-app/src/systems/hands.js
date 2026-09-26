@@ -126,11 +126,15 @@ export const GHOST_KINDS = ['handle', 'pistol', 'pinch', 'push', 'knob'];
 export function poseOf(p) {
   if (p?.pose === 'custom' && p.grip) {
     const kind = GHOST_KINDS.includes(p.grip.ghost) ? p.grip.ghost : null;
-    return { label: p.grip.name || 'Custom grip', icon: '★', hint: 'A saved grip', angles: p.grip.angles || REST, ghost: kind, points: kind ? HAND_POSES[kind].points : [], custom: true };
+    return {
+      label: p.grip.name || 'Custom grip', icon: '★', hint: 'A saved grip', angles: p.grip.angles || REST,
+      ghost: kind, points: kind ? HAND_POSES[kind].points : [], custom: true,
+      layout: p.grip.layout || null, layoutMirror: !!p.grip.mirror,   // the prop as it was seated when saved
+    };
   }
   return HAND_POSES[p?.pose] || HAND_POSES.handle;
 }
-const _gripSig = (g) => g ? `${g.ghost || '-'}:${JSON.stringify(g.angles || {})}` : '';
+const _gripSig = (g) => g ? `${g.ghost || '-'}:${JSON.stringify(g.angles || {})}:${g.layout ? JSON.stringify(g.layout.points || []) : ''}` : '';
 
 const _v = (a) => new (T().Vector3)(a[0], a[1], a[2]);
 const _mirror = (a, left) => left ? [-a[0], a[1], a[2]] : [...a];
@@ -191,6 +195,8 @@ const _mean = (pts) => { const Th = T(); const c = new Th.Vector3(); for (const 
 function _layoutGhost(P, rig) {
   const Th = T();
   if (!P?.ghost) return null;
+  // ★ a saved grip carries its prop AS IT WAS (V0.3.4.146): the user's seating, not a re-layout
+  if (P.layout) return _layoutFromData(P.layout, rig.L, !!P.layoutMirror !== !!rig.mirror);
   const L = rig.L, fk = _fkPositions(rig, P.angles);
   const X = new Th.Vector3(1, 0, 0), Z = new Th.Vector3(0, 0, 1);
   const fingerR = 0.045 * L;
@@ -212,19 +218,15 @@ function _layoutGhost(P, rig) {
     frame = frameOf(C, X);
     if (P.ghost === 'handle') {
       const len = 0.9 * L;
-      const geo = new Th.CylinderGeometry(r, r, len, 24); geo.rotateZ(Math.PI / 2);
-      meshes.push({ geo, pos: C });
+      meshes.push({ shape: 'cylinder', args: [r, r, len, 24], rot: 'z', pos: C });
       points = [C.clone().addScaledVector(X, len / 2), C.clone().addScaledVector(X, -len / 2), C.clone().addScaledVector(Z, -r)];
     } else {
       // the grip: a bar under the three curled fingers, taller than wide; the trigger at the index tip
       const len = 0.55 * L;
-      const geo = new Th.BoxGeometry(len, 2.2 * r, 1.6 * r);
-      meshes.push({ geo, pos: C });
+      meshes.push({ shape: 'box', args: [len, 2.2 * r, 1.6 * r], pos: C });
       const trig = fk.index.tip.clone();
-      const tg = new Th.CylinderGeometry(0.02 * L, 0.02 * L, 0.12 * L, 10); tg.rotateZ(Math.PI / 2);
-      meshes.push({ geo: tg, pos: trig });
-      const guard = new Th.TorusGeometry(0.07 * L, 0.011 * L, 8, 24); guard.rotateY(Math.PI / 2);
-      meshes.push({ geo: guard, pos: trig.clone().addScaledVector(Z, -0.02 * L) });
+      meshes.push({ shape: 'cylinder', args: [0.02 * L, 0.02 * L, 0.12 * L, 10], rot: 'z', pos: trig });
+      meshes.push({ shape: 'torus', args: [0.07 * L, 0.011 * L, 8, 24], rot: 'y', pos: trig.clone().addScaledVector(Z, -0.02 * L) });
       // the top of the grip is the index-side end (the web of the thumb), the bottom the pinky-side end
       const sideX = rig.mirror ? -1 : 1;
       points = [C.clone().addScaledVector(X, sideX * len / 2), C.clone().addScaledVector(X, -sideX * len / 2), trig.clone()];
@@ -235,14 +237,14 @@ function _layoutGhost(P, rig) {
     const thick = Math.max(0.02 * L, d - 2 * 0.04 * L);
     const C = _mean([tT, tI]);
     const q = new Th.Quaternion().setFromUnitVectors(Z, a);
-    meshes.push({ geo: new Th.BoxGeometry(0.14 * L, 0.10 * L, thick), pos: C, quat: q });
+    meshes.push({ shape: 'box', args: [0.14 * L, 0.10 * L, thick], pos: C, quat: q });
     let s = new Th.Vector3().crossVectors(a, new Th.Vector3(0, 1, 0)); if (s.lengthSq() < 1e-6) s = X.clone(); s.normalize();
     points = [C.clone().addScaledVector(a, thick / 2), C.clone().addScaledVector(a, -thick / 2), C.clone().addScaledVector(s, 0.07 * L)];
     frame = frameOf(C, a);
   } else if (P.ghost === 'push') {
     const z = -(ANAT.palm.t * 0.5 + 0.03) * L;
     const C = new Th.Vector3(0, ANAT.palm.y * L + 0.05 * L, z);
-    meshes.push({ geo: new Th.BoxGeometry(0.62 * L, 0.72 * L, 0.02 * L), pos: C });
+    meshes.push({ shape: 'box', args: [0.62 * L, 0.72 * L, 0.02 * L], pos: C });
     const sideX = rig.mirror ? -1 : 1;
     points = [C.clone(), C.clone().add(new Th.Vector3(0, 0.34 * L, 0)), C.clone().add(new Th.Vector3(sideX * 0.28 * L, 0, 0))];
     frame = frameOf(C, new Th.Vector3(0, 0, -1));
@@ -252,9 +254,8 @@ function _layoutGhost(P, rig) {
     const R = Math.max(0.10 * L, _mean(tips.map(p => new Th.Vector3(Math.hypot(p.x - c.x, p.y - c.y), 0, 0))).x + 0.02 * L);
     const zFace = _mean(tips).z;
     const h = 0.22 * L;
-    const geo = new Th.CylinderGeometry(R, R, h, 32); geo.rotateX(Math.PI / 2);
     const centre = new Th.Vector3(c.x, c.y, zFace - h / 2);
-    meshes.push({ geo, pos: centre });
+    meshes.push({ shape: 'cylinder', args: [R, R, h, 32], rot: 'x', pos: centre });
     points = [0, 2 * Math.PI / 3, 4 * Math.PI / 3].map(t => new Th.Vector3(c.x + R * Math.cos(t), c.y + R * Math.sin(t), zFace));
     frame = frameOf(centre, new Th.Vector3(0, 0, -1));
   }
@@ -279,13 +280,51 @@ function _applyGhostOffset(rig, p) {
   else { rig.ghost.position.set(0, 0, 0); rig.ghost.quaternion.identity(); }
 }
 
+/** A prop mesh spec → its geometry (specs are data, so a saved grip can carry them). */
+function _geoFromSpec(m) {
+  const Th = T();
+  let g;
+  if (m.shape === 'cylinder') g = new Th.CylinderGeometry(...m.args);
+  else if (m.shape === 'torus') g = new Th.TorusGeometry(...m.args);
+  else g = new Th.BoxGeometry(...m.args);
+  if (m.rot === 'z') g.rotateZ(Math.PI / 2);
+  else if (m.rot === 'y') g.rotateY(Math.PI / 2);
+  else if (m.rot === 'x') g.rotateX(Math.PI / 2);
+  return g;
+}
+const _lenArgs = (shape) => (shape === 'torus' ? 2 : 3);   // how many leading args are lengths
+/** A layout as data: per unit hand length, in the hand's frame, the ghost's offset baked in. */
+function _layoutToData(layout, L, offset) {
+  const Th = T();
+  const oq = offset?.quat ? new Th.Quaternion().fromArray(offset.quat) : new Th.Quaternion();
+  const op = offset?.pos ? new Th.Vector3().fromArray(offset.pos) : new Th.Vector3();
+  const xf = (v) => v.clone().applyQuaternion(oq).add(op).multiplyScalar(1 / L).toArray().map(n => Math.round(n * 1e4) / 1e4);
+  const xq = (q) => oq.clone().multiply(q || new Th.Quaternion()).toArray().map(n => Math.round(n * 1e5) / 1e5);
+  return {
+    meshes: layout.meshes.map(m => ({ shape: m.shape, args: m.args.map((a, i) => i < _lenArgs(m.shape) ? Math.round(a / L * 1e4) / 1e4 : a), rot: m.rot || null, pos: xf(m.pos), quat: xq(m.quat) })),
+    points: layout.points.map(xf),
+    frame: layout.frame ? { pos: xf(layout.frame.pos), quat: xq(layout.frame.quat) } : null,
+  };
+}
+/** …and back, for a hand of length L; X-mirrored for the other hand. */
+function _layoutFromData(d, L, mirror) {
+  const Th = T();
+  const mv = (a) => { const v = new Th.Vector3().fromArray(a).multiplyScalar(L); if (mirror) v.x = -v.x; return v; };
+  const mq = (a) => { const q = new Th.Quaternion().fromArray(a || [0, 0, 0, 1]); if (mirror) q.set(q.x, -q.y, -q.z, q.w); return q; };
+  return {
+    meshes: (d.meshes || []).map(m => ({ shape: m.shape, args: m.args.map((a, i) => i < _lenArgs(m.shape) ? a * L : a), rot: m.rot, pos: mv(m.pos), quat: mq(m.quat) })),
+    points: (d.points || []).map(mv),
+    frame: d.frame ? { pos: mv(d.frame.pos), quat: mq(d.frame.quat) } : null,
+  };
+}
+
 /** The ghost prop group from a layout. */
 function _buildGhost(layout, L, mat) {
   const Th = T();
   if (!layout) return null;
   const grp = new Th.Group(); grp.name = 'ghost';
   for (const m of layout.meshes) {
-    const mesh = new Th.Mesh(m.geo, mat);
+    const mesh = new Th.Mesh(_geoFromSpec(m), mat);
     mesh.position.copy(m.pos);
     if (m.quat) mesh.quaternion.copy(m.quat);
     grp.add(mesh);
@@ -388,6 +427,7 @@ export function ensureHandObject3D(node) {
     rig.ghost = _buildGhost(layout, L, ghostMat);
     rig.ghostPoints = layout.points.map(v => v.clone());
     rig.ghostFrame = layout.frame;
+    rig.ghostLayout = layout;   // ★ what a saved grip captures
     group.add(rig.ghost);
     _applyGhostOffset(rig, p);
   }
@@ -662,7 +702,9 @@ export function captureGrip(node) {
     }
     angles[f] = [k / DEG, fg.phi[1] / DEG, fg.phi[2] / DEG, a / DEG / sign].map(v => Math.round(v * 10) / 10);
   }
-  return { angles };
+  // the prop exactly as it sits now (its layout + the adjust offset, baked), per unit length
+  const layout = rig.ghostLayout ? _layoutToData(rig.ghostLayout, rig.L, currentGhostOffset(node)) : null;
+  return { angles, layout, mirror: !!rig.mirror };
 }
 
 /** Handle meshes of every live hand (for picking). */
