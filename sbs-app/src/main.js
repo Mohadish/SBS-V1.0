@@ -4643,6 +4643,8 @@ canvas.addEventListener('contextmenu', e => {
     items.push({ label: rel ? '🖐 Grip again at this step' : '🖐 Release at this step', action: () => handActions.setHandReleased(node.id, !rel) });
     items.push({ label: '🎯 Align the grip (3 points)…', disabled: rel || !hands.propFrame(node), action: () => handActions.startAlignHand(node.id) });
     items.push({ label: '🖐 Fine-tune fingers…', action: () => handActions.setHandFineTune(node.id) });
+    items.push({ label: '📋 Copy grip', action: () => handActions.copyGrip(node.id) });   // V0.3.4.150 — from the wrist up; the hand stays
+    items.push({ label: '📋 Paste grip', disabled: !handActions.hasGripClip(), action: () => handActions.pasteGrip(node.id) });
     items.push({ label: '─', disabled: true });
   }
   // 🔦 Spotlight at this step (V0.3.4.82) — a place in the picture, on THIS step only.

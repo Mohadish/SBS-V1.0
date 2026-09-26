@@ -1397,6 +1397,8 @@ function _buildContextMenuItems(node) {
     items.push({ label: rel ? '🖐 Grip again at this step' : '🖐 Release at this step', action: () => handActions.setHandReleased(node.id, !rel) });
     items.push({ label: '🎯 Align the grip (3 points)…', disabled: rel || !hands.propFrame(node), action: () => handActions.startAlignHand(node.id) });
     items.push({ label: '🖐 Fine-tune fingers…', action: () => handActions.setHandFineTune(node.id) });
+    items.push({ label: '📋 Copy grip', action: () => handActions.copyGrip(node.id) });   // V0.3.4.150 — from the wrist up; the hand stays
+    items.push({ label: '📋 Paste grip', disabled: !handActions.hasGripClip(), action: () => handActions.pasteGrip(node.id) });
   }
   if (count === 1 && !node.archived && PIVOT_TYPES.has(node.type)) {
     const hasBluePivot = node.pivotEnabled === true && (

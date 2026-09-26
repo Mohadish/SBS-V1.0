@@ -11,6 +11,7 @@ import { state }   from '../core/state.js';
 import * as hands  from '../systems/hands.js';
 import * as act    from '../systems/hand-actions.js';
 import { chooseFromButtons, promptString } from './prompt.js';
+import { showContextMenu } from './context-menu.js';
 
 let _activeId = null;
 
@@ -198,10 +199,29 @@ function _renderEditor(host, h) {
   host.querySelector('#hand-adjust')?.addEventListener('click', () => { if (adjust) act.endHandAdjust(); else act.setHandAdjust(h.id); });
   host.querySelector('#hand-offset-reset')?.addEventListener('click', () => act.resetGhostOffset(h.id));
   host.querySelector('#hand-grip-save')?.addEventListener('click', async () => {
-    const name = await promptString('Name this grip', pose.custom ? pose.label : '');
+    if (libGrip) {   // V0.3.4.150 — the hand uses a library grip: update it, or save another
+      const what = await chooseFromButtons('Save grip', `This hand uses "${libGrip.name}".`, [
+        { id: 'update', label: `Update "${libGrip.name}"`, primary: true }, { id: 'new', label: 'Save as new…' }, { id: 'cancel', label: 'Cancel' },
+      ]);
+      if (!what || what === 'cancel') return;
+      if (what === 'update') { await act.updateGrip(h.id, libGrip.id); return; }
+    }
+    const name = await promptString('Name this grip', pose.custom && !libGrip ? pose.label : '');
     if (!name) return;
     await act.saveGrip(h.id, name);   // the prop = the one in use, seated as it is now
   });
+  // right-click a saved grip's tile: update from this hand / rename / delete
+  host.querySelectorAll('[data-grip]').forEach(b => b.addEventListener('contextmenu', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const g = grips.find(x => x.id === b.dataset.grip); if (!g) return;
+    const rerender = () => renderHandTab(host.parentElement?.parentElement);
+    showContextMenu([
+      { label: `★ Apply "${g.name}"`, action: () => act.applyGrip(h.id, g) },
+      { label: '↻ Update from this hand', action: async () => { await act.updateGrip(h.id, g.id); rerender(); } },
+      { label: '✎ Rename…', action: async () => { const nm = await promptString('Rename the grip', g.name); if (nm) { await act.renameGrip(g.id, nm); rerender(); } } },
+      { label: '✕ Delete from the library', action: async () => { if (confirm(`Remove "${g.name}" from the grip library?`)) { await act.deleteGrip(g.id); rerender(); } } },
+    ], e.clientX, e.clientY);
+  }));
   host.querySelector('#hand-grip-delete')?.addEventListener('click', async () => {
     if (!libGrip || !confirm(`Remove "${libGrip.name}" from the grip library?`)) return;
     await act.deleteGrip(libGrip.id);

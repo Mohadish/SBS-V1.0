@@ -463,6 +463,75 @@ export function applyGrip(id, grip) {
   if (ok) { _pivotIntoProp(n); steps.scheduleTransformSync?.(); }
   return ok;
 }
+/** A library grip re-captured from this hand (fingers + prop seating as they are now); the hand takes the new copy. */
+export async function updateGrip(id, gripId) {
+  const n = _node(id);
+  if (!n) return null;
+  const cap = hands.captureGrip(n);
+  if (!cap) return null;
+  const grips = listGrips();
+  const i = grips.findIndex(g => g.id === gripId);
+  if (i < 0) return null;
+  const p = n.handParams || hands.defaultHandParams();
+  const grip = { ...grips[i], ghost: hands.poseOf(p).ghost || grips[i].ghost || null, angles: cap.angles, layout: cap.layout, mirror: cap.mirror };
+  grips[i] = grip;
+  try { await userSettings.replace({ hands: { ...(userSettings.get().hands || {}), grips } }); } catch (e) { console.warn('[hands] grip library:', e?.message); }
+  applyGrip(id, grip);
+  return grip;
+}
+export async function renameGrip(gripId, name) {
+  const nm = String(name || '').trim();
+  if (!nm) return false;
+  const grips = listGrips().map(g => g.id === gripId ? { ...g, name: nm } : g);
+  try { await userSettings.replace({ hands: { ...(userSettings.get().hands || {}), grips } }); } catch (e) { console.warn('[hands] grip library:', e?.message); }
+  state.emit('hands:gripsChanged');
+  return true;
+}
+
+// ── 📋 copy / paste a grip (V0.3.4.150): everything from the wrist up; the wrist itself stays ──
+// Pose, closed, pins, prop + seating, release / open, the forearm point — all in
+// the hand's frame. A pin on a part becomes a pin in the hand's frame at copy
+// time (the finger's shape travels, not the part). Size is the hand's own.
+let _gripClip = null;
+export function hasGripClip() { return !!_gripClip; }
+export function copyGrip(id) {
+  const n = _node(id);
+  if (!n) return false;
+  const Th = window.THREE;
+  const p = _clone(n.handParams || hands.defaultHandParams());
+  const g = n.object3d; if (g) g.updateMatrixWorld(true);
+  const inHand = (w) => { const l = g ? g.worldToLocal(w.clone()) : w; return [l.x, l.y, l.z]; };
+  const targets = {};
+  for (const f of hands.HAND_FINGERS) {
+    const t = p.targets?.[f];
+    if (!t) { targets[f] = null; continue; }
+    if (Array.isArray(t.local)) { targets[f] = { local: [...t.local] }; continue; }
+    const w = hands.targetWorld(n, f);
+    targets[f] = w ? { local: inHand(w) } : null;
+  }
+  let forearmLocal = Array.isArray(p.forearmLocal) ? [...p.forearmLocal] : null;
+  if (!forearmLocal && Array.isArray(p.forearm) && Th) forearmLocal = inHand(new Th.Vector3(p.forearm[0], p.forearm[1], p.forearm[2]));
+  _gripClip = {
+    pose: p.pose, grip: p.grip ? _clone(p.grip) : null, closed: p.closed ?? 1, targets,
+    ghost: p.ghost !== false, ghostOffset: p.ghostOffset ? _clone(p.ghostOffset) : null,
+    released: !!p.released, open: Number(p.open) || 0, forearmLocal,
+  };
+  setStatus('Grip copied. Right-click a hand, at any step ▸ Paste grip — the hand itself stays where it is.', 'info', 4500);
+  return true;
+}
+export function pasteGrip(id) {
+  const n = _node(id);
+  if (!n || !_gripClip) return false;
+  if (state.get('handAdjust') === id) endHandAdjust();
+  const c = _clone(_gripClip);
+  const ok = setHandParams(id, {
+    pose: c.pose, grip: c.grip, closed: c.closed, targets: c.targets, ghost: c.ghost, ghostOffset: c.ghostOffset,
+    released: c.released, open: c.open, forearmLocal: c.forearmLocal, forearm: null,
+  }, 'Paste grip');
+  if (ok) { _pivotIntoProp(n); steps.scheduleTransformSync?.(); }
+  return ok;
+}
+
 export async function deleteGrip(gripId) {
   const grips = listGrips().filter(g => g.id !== gripId);
   try { await userSettings.replace({ hands: { ...(userSettings.get().hands || {}), grips } }); } catch (e) { console.warn('[hands] grip library:', e?.message); }
