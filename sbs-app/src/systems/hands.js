@@ -56,10 +56,11 @@ export function defaultHandParams() {
 const ANAT = {
   palm:    { w: 0.44, h: 0.50, t: 0.13, y: 0.30 },
   fingers: {
-    index:  { mcp: [ 0.165, 0.55,  0.00], dir: [ 0.06, 1, 0], curl: [0, 0, -1], len: [0.22, 0.13, 0.10], r: 0.042, flexMax: [95, 105, 80], spread: 20 },
-    middle: { mcp: [ 0.055, 0.57,  0.00], dir: [ 0.00, 1, 0], curl: [0, 0, -1], len: [0.24, 0.15, 0.11], r: 0.044, flexMax: [95, 105, 80], spread: 15 },
-    ring:   { mcp: [-0.055, 0.56,  0.00], dir: [-0.05, 1, 0], curl: [0, 0, -1], len: [0.22, 0.14, 0.10], r: 0.041, flexMax: [95, 105, 80], spread: 15 },
-    pinky:  { mcp: [-0.165, 0.53,  0.00], dir: [-0.12, 1, 0], curl: [0, 0, -1], len: [0.17, 0.10, 0.08], r: 0.036, flexMax: [95, 105, 80], spread: 25 },
+    // flexMax (V0.3.4.149): a tight fist — MCP 100°, PIP 110°, DIP 85°
+    index:  { mcp: [ 0.165, 0.55,  0.00], dir: [ 0.06, 1, 0], curl: [0, 0, -1], len: [0.22, 0.13, 0.10], r: 0.042, flexMax: [100, 110, 85], spread: 20 },
+    middle: { mcp: [ 0.055, 0.57,  0.00], dir: [ 0.00, 1, 0], curl: [0, 0, -1], len: [0.24, 0.15, 0.11], r: 0.044, flexMax: [100, 110, 85], spread: 15 },
+    ring:   { mcp: [-0.055, 0.56,  0.00], dir: [-0.05, 1, 0], curl: [0, 0, -1], len: [0.22, 0.14, 0.10], r: 0.041, flexMax: [100, 110, 85], spread: 15 },
+    pinky:  { mcp: [-0.165, 0.53,  0.00], dir: [-0.12, 1, 0], curl: [0, 0, -1], len: [0.17, 0.10, 0.08], r: 0.036, flexMax: [100, 110, 85], spread: 25 },
     // the thumb's base is a BALL joint in the IK (cone-limited), not a hinge — see _solveFinger
     thumb:  { mcp: [ 0.20,  0.14, -0.03], dir: [ 0.72, 0.58, -0.38], curl: [-0.55, 0.35, -0.75], len: [0.26, 0.17, 0.13], r: 0.050, flexMax: [60, 70, 80], spread: 45, ball: 80 },
   },
@@ -627,8 +628,10 @@ export function solveHand(node, params = null) {
     : new Th.Vector3(0, -ANAT.forearm.len * L, 0));
   _syncSkin(rig);
   group.updateMatrixWorld(true);
-  const unreached = pinned.filter(f => { const t = new Th.Vector3(); rig.fingers[f].tip.getWorldPosition(t); return t.distanceTo(tips[f]) > 0.03 * L; });
-  return { pinned: pinned.length, unreached };
+  const gaps = {};
+  for (const f of pinned) { const t = new Th.Vector3(); rig.fingers[f].tip.getWorldPosition(t); gaps[f] = t.distanceTo(tips[f]); }
+  const unreached = pinned.filter(f => gaps[f] > 0.03 * L);
+  return { pinned: pinned.length, unreached, gaps };
 }
 
 /** Aim the forearm bone at a point in the hand's frame (length clamped); the yellow handle sits on that point. */

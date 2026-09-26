@@ -166,9 +166,10 @@ function _applyParams(id, params, { flush = true } = {}) {
     applyNodeTransformToObject3D(n, g);
     _pivotIntoProp(n);
   }
-  hands.solveHand(n);
+  const r = hands.solveHand(n);
   if (flush) { steps.scheduleTransformSync?.(); state.emit('change:treeData', state.get('treeData')); }
   sceneCore.requestRender?.(120);
+  return r;
 }
 
 /** Patch a hand's params; one undo entry (label) unless label is null. `before` = a snapshot from earlier (a drag). */
@@ -312,13 +313,27 @@ export function moveHandControlLive(id, key, worldPos) {
       p.targets[key] = { local: inHand(worldPos) };   // not on a part: in the hand's frame, so it follows the hand
     }
   } else return;
-  _applyParams(id, p, { flush: false });
+  const r = _applyParams(id, p, { flush: false });
+  // V0.3.4.149 — a dragged pin stays within the finger's REACH: past it the tip cannot
+  // follow, the spread search sees a flat landscape and the left-right control dies
+  // (the user: "the point should remain static at the last effective point"). A move
+  // that leaves the finger clearly short of its pin is refused; the pin keeps the
+  // last place the finger did reach, and follows again once the mouse comes back.
+  if (hands.HAND_FINGERS.includes(key)) {
+    const k = `${id}:${key}`;
+    const L = Number(p.scale) || 190;
+    const gap = r?.gaps?.[key] ?? 0;
+    if (gap > 0.025 * L && _lastReachable.has(k)) _applyParams(id, _lastReachable.get(k), { flush: false });
+    else _lastReachable.set(k, _clone(p));
+  }
 }
+const _lastReachable = new Map();   // `${handId}:${finger}` → the params of the last reachable pin during a drag
 
 /** The drag is over: one undo entry from the snapshot taken at its start. */
 export function commitHandControl(id, key, before) {
   const n = _node(id);
   if (!n) return;
+  _lastReachable.delete(`${id}:${key}`);
   const after = _clone(n.handParams || hands.defaultHandParams());
   const prev = before || after;
   const label = key === 'forearm' ? 'Move the forearm' : `Pin the ${hands.FINGER_LABEL[key]?.toLowerCase() || 'finger'} tip`;
