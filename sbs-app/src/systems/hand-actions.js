@@ -377,6 +377,13 @@ export async function pickHandSkin() {
   else setStatus(`Skin not loaded: ${info.error}`, 'error', 7000);
   return info.loaded;
 }
+/** 🧤 V0.3.4.152 — the skin's texture: an image next to the skin file, or '' for the file's own. */
+export async function setSkinTexture(name) {
+  const info = await hands.setHandSkinTexture(name);
+  if (name && info.texture !== name) setStatus(`Texture "${name}" could not be loaded.`, 'error', 5000);
+  else setStatus(name ? `Skin texture: ${name}.` : 'Skin texture: the file\'s own.', 'info', 3000);
+  return info;
+}
 export async function clearHandSkin() {
   await hands.setHandSkinFile('');
   setStatus('Back to the procedural hand.', 'info', 3000);

@@ -918,7 +918,13 @@ export function initHands() {
   };
   // 🧤 the skin the user loaded last time (a machine setting, not project data)
   userSettings.initUserSettings()
-    .then(s => { const p = s?.hands?.skinPath; if (p) return setHandSkinFile(p, { persist: false }); })
+    .then(async s => {
+      const p = s?.hands?.skinPath;
+      if (!p) return;
+      await setHandSkinFile(p, { persist: false });
+      const tx = s?.hands?.skinTexture;
+      if (tx && _skin.template) await setHandSkinTexture(tx, { persist: false });
+    })
     .catch(e => console.warn('[hands] skin at start:', e?.message));
 }
 
@@ -949,13 +955,17 @@ export function initHands() {
 //  the rig's anatomy), so Max's unit conversion on the way out and back does
 //  not matter; the clone is scaled to the hand's length.
 // ═════════════════════════════════════════════════════════════════════════════
-const _skin = { path: '', template: null, rev: 0, error: '' };
+const _skin = { path: '', template: null, rev: 0, error: '', texture: '', textures: [] };   // texture = an image next to the file, swapped in for the file's own (V0.3.4.152)
 const _norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const _boneName = (f, i) => `${f}_${i + 1}`;
 
 /** What the UI shows: { path, loaded, error, missing[] }. */
 export function handSkinInfo() {
-  return { path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [], isRight: !!_skin.template?.isRight, textured: !!_skin.template?.textured, textureMissing: !!_skin.template?.textureMissing };
+  return {
+    path: _skin.path, loaded: !!_skin.template, error: _skin.error, missing: _skin.template?.missing || [],
+    isRight: !!_skin.template?.isRight, textured: !!_skin.template?.textured, textureMissing: !!_skin.template?.textureMissing,
+    texture: _skin.texture, textures: [..._skin.textures],
+  };
 }
 
 /** Every finger straight, the forearm straight back: the rig's REST (= the exported bind pose). */
@@ -1067,6 +1077,8 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
       // not next to it, not embedded) rendered the hand BLACK. Give the images a moment,
       // then drop every map that has none: flat skin colour beats black.
       await _settleTextures(_skin.template);
+      _skin.template.dir = dir;
+      _skin.textures = await _imagesNextTo(dir);
     } catch (e) {
       _skin.error = String(e?.message || e);
       console.warn('[hands] skin:', e);
@@ -1074,6 +1086,52 @@ export async function setHandSkinFile(path, { persist = true } = {}) {
   }
   _skin.rev++;
   if (persist) { try { await userSettings.patch({ hands: { skinPath: _skin.path } }); } catch (e) { console.warn('[hands] skin setting:', e?.message); } }
+  state.emit('hands:skinChanged', handSkinInfo());
+  return handSkinInfo();
+}
+
+/** Image files next to the skin file — the textures the user can swap in. */
+async function _imagesNextTo(dir) {
+  if (!dir || !window.sbsNative?.listDir) return [];
+  try {
+    const entries = await window.sbsNative.listDir(dir);
+    return (entries || []).filter(e => e && !e.isDir && /\.(jpe?g|png|webp)$/i.test(e.name)).map(e => e.name).sort((a, b) => a.localeCompare(b));
+  } catch { return []; }
+}
+
+/**
+ * 🧤 V0.3.4.152 — swap the skin's texture for an image next to the file ('' = the
+ * file's own). The user keeps variants (skin, white latex, blue latex) beside the
+ * FBX and flips between them; a machine setting like the skin itself.
+ */
+export async function setHandSkinTexture(name, { persist = true } = {}) {
+  const tpl = _skin.template;
+  const want = String(name || '');
+  if (tpl?.mats?.length) {
+    const Th = T();
+    if (!want) {
+      for (const m of tpl.mats) { m.map = tpl.origMap.get(m) || null; m.needsUpdate = true; }
+      tpl.textured = tpl.mats.some(m => !!m.map);
+    } else {
+      const url = 'file:///' + String(tpl.dir || '').replace(/\\/g, '/').replace(/^\/+/, '') + '/' + encodeURIComponent(want);
+      try {
+        const tex = await new Promise((res, rej) => new Th.TextureLoader().load(url, res, undefined, rej));
+        const ref = [...tpl.origMap.values()].find(Boolean);
+        tex.colorSpace = Th.SRGBColorSpace || tex.colorSpace;
+        tex.flipY = ref ? ref.flipY : true;   // the same convention as the file's own map
+        tex.wrapS = ref ? ref.wrapS : tex.wrapS; tex.wrapT = ref ? ref.wrapT : tex.wrapT;
+        tex.needsUpdate = true;
+        for (const m of tpl.mats) { m.map = tex; m.needsUpdate = true; }
+        tpl.textured = true; tpl.textureMissing = false;
+      } catch (e) {
+        console.warn('[hands] skin texture could not be loaded:', want, e);
+        return handSkinInfo();
+      }
+    }
+  }
+  _skin.texture = want;
+  _skin.rev++;
+  if (persist) { try { await userSettings.patch({ hands: { skinTexture: want } }); } catch (e) { console.warn('[hands] skin setting:', e?.message); } }
   state.emit('hands:skinChanged', handSkinInfo());
   return handSkinInfo();
 }
@@ -1133,9 +1191,12 @@ function _analyseSkin(gltf) {
 /** Wait (≤ 2.5 s) for the template's texture images; strip the maps that never load. Sets tpl.textured / tpl.textureMissing. */
 async function _settleTextures(tpl) {
   if (!tpl?.scene) return;
-  const mats = [];
-  tpl.scene.traverse(o => { if (o.isMesh && o.material?.map && !mats.includes(o.material)) mats.push(o.material); });
-  if (!mats.length) { tpl.textured = false; tpl.textureMissing = false; return; }
+  // every skinned mesh's material (a texture can be swapped in even when the file has none)
+  tpl.mats = [];
+  tpl.scene.traverse(o => { if (o.isSkinnedMesh && o.material && !tpl.mats.includes(o.material)) tpl.mats.push(o.material); });
+  const mats = tpl.mats.filter(m => m.map);
+  const finish = () => { tpl.origMap = new Map(tpl.mats.map(m => [m, m.map || null])); };
+  if (!mats.length) { tpl.textured = false; tpl.textureMissing = false; finish(); return; }
   const ready = (m) => { const im = m.map?.image; return !!im && ((im.complete === undefined || im.complete) && (im.width > 0 || im.naturalWidth > 0)); };
   const t0 = Date.now();
   while (Date.now() - t0 < 2500 && !mats.every(ready)) await new Promise(r => setTimeout(r, 150));
@@ -1148,6 +1209,7 @@ async function _settleTextures(tpl) {
   tpl.textured = mats.some(ready);
   tpl.textureMissing = missing.length > 0;
   if (missing.length) console.warn('[hands] skin texture(s) not found — export the FBX with "Embed Media" (binary) or keep the image next to the file:', missing.join(', '));
+  finish();
 }
 
 /** A deep clone of a scene with skinned meshes: fresh skeletons over the CLONED bones, cloned geometry. */

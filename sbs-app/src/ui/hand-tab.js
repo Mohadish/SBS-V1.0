@@ -60,6 +60,7 @@ export function renderHandTab(container) {
     renderHandTab(container);
   });
   container.querySelector('#hand-skin-load')?.addEventListener('click', () => act.pickHandSkin());
+  container.querySelectorAll('[data-skin-tex]').forEach(b => b.addEventListener('click', () => act.setSkinTexture(b.dataset.skinTex)));
   container.querySelector('#hand-skin-clear')?.addEventListener('click', () => act.clearHandSkin());
   container.querySelector('#hand-rig-export')?.addEventListener('click', () => act.exportHandRig());
   container.querySelector('#hand-list')?.addEventListener('click', (e) => {
@@ -88,6 +89,12 @@ function _skinCard() {
         <div class="small muted" style="margin-top:4px;line-height:1.45;">${line}</div>
         ${s.loaded && s.missing.length ? `<div class="small" style="margin-top:4px;color:#fbbf24;">Bones not found: ${_esc(s.missing.join(', '))}</div>` : ''}
         ${s.loaded && s.textureMissing ? '<div class="small" style="margin-top:4px;color:#fbbf24;">Its texture file was not found — flat colour instead. Export the FBX (binary) with <b>Embed Media</b>, or put the image next to the file.</div>' : ''}
+        ${s.loaded && s.textures.length ? `
+        <div class="small muted" style="margin-top:8px;">Texture <span style="opacity:.7">(images next to the file)</span></div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">
+          <button class="btn" data-skin-tex="" style="font-size:11px;padding:3px 8px;${!s.texture ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="The texture the file itself names">file's own</button>
+          ${s.textures.map(t => `<button class="btn" data-skin-tex="${_esc(t)}" style="font-size:11px;padding:3px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${s.texture === t ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="${_esc(t)}">${_esc(t.replace(/\.[^.]+$/, ''))}</button>`).join('')}
+        </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:6px;">
           <button class="btn" id="hand-skin-load" style="flex:1;" title="An .fbx or .glb with a mesh skinned to the exported bones">Load skin…</button>
           <button class="btn" id="hand-skin-clear" ${s.path ? '' : 'disabled'} title="Back to the procedural hand">✕</button>
