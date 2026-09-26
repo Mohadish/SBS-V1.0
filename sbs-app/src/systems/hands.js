@@ -492,57 +492,77 @@ function _signedAngle(axis, u, v) {
   return Math.atan2(new Th.Vector3().crossVectors(pu, pv).dot(a), pu.dot(pv));
 }
 
-/** CCD: bend one finger toward a world target (from its current pose). Returns the remaining distance. */
+/**
+ * Bend one finger toward a world target (from its current pose). Returns the remaining distance.
+ *
+ * V0.3.4.148 — the SPREAD is found by SEARCH, the flex by CCD. Every closed form
+ * for the knuckle's spread (.127: the projected tip-vs-target angle inside the
+ * CCD; .147: the azimuth of the target in the palm plane) is ill-conditioned
+ * exactly when the finger is curled — tip and target both sit near the spread
+ * axis, the angle is noise, the knuckle ran to ±limit ("snaps hard left / right",
+ * "curls sideways"). So: for a spread angle the flex-only CCD is well behaved;
+ * scan the spread range, refine around the best (golden section), keep the
+ * spread that leaves the tip closest — with a small pull toward the pose's own
+ * spread, so a curled finger whose tip barely moves with the spread does not
+ * wander. Continuous in the target, no formula to break.
+ */
 function _solveFinger(fg, targetW) {
   const Th = T();
   const tip = new Th.Vector3(), jp = new Th.Vector3(), ax = new Th.Vector3();
   const worldAxis = (j, local) => ax.copy(local).applyQuaternion(j.getWorldQuaternion(new Th.Quaternion())).normalize();
   const X = new Th.Vector3(1, 0, 0);
-  // V0.3.4.147 — the SPREAD is solved once, analytically: the knuckle turns about its
-  // spread axis until the finger's flex plane contains the target (in the knuckle's
-  // rest frame: a = atan2(−x, y)). Iterating it inside the CCD, from the projected
-  // tip-vs-target angle, sent it to ±limit whenever the target sat near the finger's
-  // own axis — the user's "snaps hard left or hard right, nothing to do with the target".
-  if (!fg.ballCone) {
-    const j0 = fg.joints[0];
-    j0.parent.updateMatrixWorld(true);
-    const pq = j0.parent.getWorldQuaternion(new Th.Quaternion());
-    const tl = targetW.clone().sub(j0.getWorldPosition(new Th.Vector3())).applyQuaternion(pq.invert()).applyQuaternion(fg.basis.clone().invert());
-    if (tl.lengthSq() > 1e-9) fg.alpha = _clamp(Math.atan2(-tl.x, tl.y), -fg.spread, fg.spread);
-    _setFingerAngles(fg);
-  }
-  for (let it = 0; it < 14; it++) {
-    for (let ji = 2; ji >= 0; ji--) {
-      const j = fg.joints[ji];
-      fg.joints[0].updateMatrixWorld(true);
-      fg.tip.getWorldPosition(tip); j.getWorldPosition(jp);
-      if (tip.distanceTo(targetW) < 0.3) return 0;
-      const u = tip.clone().sub(jp), v = targetW.clone().sub(jp);
-      if (ji === 0 && fg.ballCone) {
-        // the thumb's base: a BALL joint — the shortest arc taking the tip toward the
-        // target, then held inside a cone about the rest direction (opposition is free,
-        // the hinge-plus-spread of the other knuckles was what made it feel stuck)
-        if (u.lengthSq() > 1e-9 && v.lengthSq() > 1e-9) {
-          const qw = new Th.Quaternion().setFromUnitVectors(u.clone().normalize(), v.clone().normalize());
-          const pq = j.parent.getWorldQuaternion(new Th.Quaternion());
-          const cur = pq.clone().multiply(j.quaternion);
-          let local = pq.clone().invert().multiply(qw.multiply(cur));
-          const restY = new Th.Vector3(0, 1, 0).applyQuaternion(fg.basis), newY = new Th.Vector3(0, 1, 0).applyQuaternion(local);
-          const ang = restY.angleTo(newY);
-          if (ang > fg.ballCone) local = fg.basis.clone().slerp(local, fg.ballCone / ang);
-          fg.ball = local;
-          _setFingerAngles(fg);
+  const done = () => { fg.joints[0].updateMatrixWorld(true); fg.tip.getWorldPosition(tip); return tip.distanceTo(targetW); };
+  // flex-only CCD from the angles as they are (the thumb's base: its ball joint)
+  const flex = (iters) => {
+    for (let it = 0; it < iters; it++) {
+      for (let ji = 2; ji >= 0; ji--) {
+        const j = fg.joints[ji];
+        fg.joints[0].updateMatrixWorld(true);
+        fg.tip.getWorldPosition(tip); j.getWorldPosition(jp);
+        if (tip.distanceTo(targetW) < 0.3) return 0;
+        const u = tip.clone().sub(jp), v = targetW.clone().sub(jp);
+        if (ji === 0 && fg.ballCone) {
+          // the thumb's base: a BALL joint — the shortest arc taking the tip toward the
+          // target, then held inside a cone about the rest direction (opposition is free,
+          // the hinge-plus-spread of the other knuckles was what made it feel stuck)
+          if (u.lengthSq() > 1e-9 && v.lengthSq() > 1e-9) {
+            const qw = new Th.Quaternion().setFromUnitVectors(u.clone().normalize(), v.clone().normalize());
+            const pq = j.parent.getWorldQuaternion(new Th.Quaternion());
+            const cur = pq.clone().multiply(j.quaternion);
+            let local = pq.clone().invert().multiply(qw.multiply(cur));
+            const restY = new Th.Vector3(0, 1, 0).applyQuaternion(fg.basis), newY = new Th.Vector3(0, 1, 0).applyQuaternion(local);
+            const ang = restY.angleTo(newY);
+            if (ang > fg.ballCone) local = fg.basis.clone().slerp(local, fg.ballCone / ang);
+            fg.ball = local;
+            _setFingerAngles(fg);
+          }
+          continue;
         }
-        continue;
+        const d = _signedAngle(worldAxis(j, X), u, v);
+        fg.phi[ji] = _clamp(fg.phi[ji] + d, -6 * DEG, fg.flexMax[ji]);
+        _setFingerAngles(fg);
       }
-      const d = _signedAngle(worldAxis(j, X), u, v);
-      fg.phi[ji] = _clamp(fg.phi[ji] + d, -6 * DEG, fg.flexMax[ji]);
-      _setFingerAngles(fg);
     }
+    return done();
+  };
+  if (fg.ballCone) return flex(14);
+
+  const phi0 = fg.phi.slice(), alpha0 = fg.alpha;
+  const L = fg.joints[0].parent?.userData?.rig?.L || 190;
+  const pull = 0.04 * L / Math.max(1e-6, fg.spread);   // at the full spread away from the pose: as bad as being 4 % of the hand short
+  const cost = (a, iters) => { fg.phi = phi0.slice(); fg.alpha = a; fg.ball = null; _setFingerAngles(fg); return flex(iters) + pull * Math.abs(a - alpha0); };
+  const lo = -fg.spread, hi = fg.spread, N = 8;
+  let bestA = alpha0, bestC = Infinity;
+  for (let i = 0; i <= N; i++) { const a = lo + (hi - lo) * i / N; const c = cost(a, 6); if (c < bestC) { bestC = c; bestA = a; } }
+  let a1 = Math.max(lo, bestA - (hi - lo) / N), a2 = Math.min(hi, bestA + (hi - lo) / N);
+  for (let k = 0; k < 6; k++) {
+    const m1 = a1 + (a2 - a1) * 0.382, m2 = a1 + (a2 - a1) * 0.618;
+    if (cost(m1, 6) < cost(m2, 6)) a2 = m2; else a1 = m1;
   }
-  fg.joints[0].updateMatrixWorld(true);
-  fg.tip.getWorldPosition(tip);
-  return tip.distanceTo(targetW);
+  const aR = (a1 + a2) / 2;
+  const cR = cost(aR, 14);
+  if (cR > bestC) cost(bestA, 14);   // never worse than the scan's best
+  return done();
 }
 
 // ── the solve ────────────────────────────────────────────────────────────────
@@ -873,6 +893,26 @@ export function initHands() {
   const step = (now) => { try { if (tickHands(now)) sceneCore.requestRender?.(120); } catch (e) { console.warn('[hands] tick failed:', e?.message); } };
   if (typeof sceneCore.addTickHook === 'function') sceneCore.addTickHook(step);
   else { const raf = (now) => { step(now); requestAnimationFrame(raf); }; requestAnimationFrame(raf); }
+  // console diagnostics (V0.3.4.148, the user: "a real-time reader of the bones and the effector"):
+  // sbsHands.diag() → per finger the spread, the three flex angles, and the distance left to its pin
+  window.sbsHands = {
+    diag(id) {
+      const Th = T();
+      const rows = [];
+      for (const n of _liveHands()) {
+        if (id && n.id !== id) continue;
+        const rig = n.object3d.userData.rig;
+        for (const f of HAND_FINGERS) {
+          const fg = rig.fingers[f];
+          const t = targetWorld(n, f);
+          const tipW = fg.tip.getWorldPosition(new Th.Vector3());
+          rows.push({ hand: n.name, finger: f, spread_deg: +(fg.alpha / DEG).toFixed(1), flex_deg: fg.phi.map(v => +(v / DEG).toFixed(1)).join(' / '), ball: !!fg.ball, pinned: !!t, gap_mm: t ? +tipW.distanceTo(t).toFixed(1) : null });
+        }
+      }
+      console.table(rows);
+      return rows;
+    },
+  };
   // 🧤 the skin the user loaded last time (a machine setting, not project data)
   userSettings.initUserSettings()
     .then(s => { const p = s?.hands?.skinPath; if (p) return setHandSkinFile(p, { persist: false }); })
