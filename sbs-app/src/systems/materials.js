@@ -1081,8 +1081,8 @@ class MaterialsSystem {
       hm.roughness = original.roughness ?? hm.roughness;
       hm.metalness = original.metalness ?? hm.metalness;
     }
-    hm.opacity = 1;   // solidness lives in uSolid (see _handMaterial); opacity would be forced to 1 anyway
-    if (hm.transparent) { hm.transparent = false; hm.needsUpdate = true; }   // a transition may have flipped it
+    hm.opacity = 1;   // solidness lives in uSolid (see _handMaterial)
+    if (!hm.transparent) { hm.transparent = true; hm.needsUpdate = true; }   // always blended (V0.3.4.160)
   }
   /** 🖐 A (re)built hand puts on its material at once — without a full applyAll mid-activation. */
   refreshHand(nodeId) {
@@ -1095,7 +1095,7 @@ class MaterialsSystem {
   /**
    * 🖐 V0.3.4.157 — the hand's one material: a clone of its original (texture kept)
    * with a tint-mix patch — `diffuseColor.rgb = mix(textured, uTint, uTintMix)` right
-   * after the map is applied — and the screen-door fade on top. Rebuilt only when
+   * after the map is applied — blended alpha = solidness × fade (V0.3.4.160). Rebuilt only when
    * the original changes (a new rig / skin / texture).
    */
   _handMaterial(mesh, original) {
@@ -1103,43 +1103,64 @@ class MaterialsSystem {
     if (hm && hm.userData?.handOriginalUuid === original.uuid) return hm;
     try { hm?.dispose?.(); } catch {}
     hm = original.clone();
-    hm.transparent = false;
+    // V0.3.4.160 — REAL see-through (his call: the screen-door dither "is not an
+    // opacity"). Always BLENDED — never flipped opaque ↔ transparent, so neither a
+    // solidness change nor a show/hide fade switches programs mid-way (the .157
+    // snap); at solidness 1 the alpha is 1 and it reads opaque.
+    hm.transparent = true;
+    hm.depthWrite  = true;
+    hm.opacity     = 1;
     const tint = { uTint: { value: new THREE.Color(1, 1, 1) }, uTintMix: { value: 0 }, uSolid: { value: 1 } };
+    const fade = { value: 1 };
     // (the original by uuid, never by reference: a Material in userData would be
-    //  JSON-serialised by any later .clone())
-    hm.userData = { ...(hm.userData || {}), handTint: tint, handOriginalUuid: original.uuid };
+    //  JSON-serialised by any later .clone()). transitionFadeState = the show/hide
+    //  fade _setMaterialFade drives; transitionDitherPatched keeps the dither off it.
+    hm.userData = { ...(hm.userData || {}), handTint: tint, handOriginalUuid: original.uuid,
+                    transitionFadeState: fade, transitionDitherPatched: true };
     const priorCompile = hm.onBeforeCompile;
     hm.onBeforeCompile = function (shader) {
       if (typeof priorCompile === 'function') priorCompile.call(this, shader);
       shader.uniforms.uTint = tint.uTint;
       shader.uniforms.uTintMix = tint.uTintMix;
       shader.uniforms.uSolid = tint.uSolid;
+      shader.uniforms.uHandFade = fade;
       if (!shader.fragmentShader.includes('uniform vec3 uTint;')) {
-        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\nuniform float uSolid;\n' + shader.fragmentShader;
+        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\nuniform float uSolid;\nuniform float uHandFade;\n' + shader.fragmentShader;
       }
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <map_fragment>',
         '#include <map_fragment>\n\tdiffuseColor.rgb = mix(diffuseColor.rgb, uTint, clamp(uTintMix, 0.0, 1.0));',
       );
-      // V0.3.4.158 — SOLIDNESS as the alpha the dither reads, written AFTER three has
-      // forced alpha to 1 for an opaque material (OPAQUE — why .157's opacity did
-      // nothing). The SBS X-ray: edges keep their cover, the face-on middle opens up —
+      // SOLIDNESS × FADE as the blended alpha, written after output_fragment. The SBS
+      // X-ray: edges keep their cover, the face-on middle opens up —
       // alpha = mix(pow(1 − |N·V|, 2.5), 1, solidness), the curve of the SBS shader.
-      // The material stays opaque (no program switch, so nothing snaps mid-fade).
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <dithering_fragment>',
         `{
 \t\tfloat sbsFacing = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);
 \t\tfloat sbsXray   = pow(1.0 - sbsFacing, 2.5);
-\t\tgl_FragColor.a  = mix(sbsXray, 1.0, clamp(uSolid, 0.0, 1.0));
+\t\tgl_FragColor.a  = mix(sbsXray, 1.0, clamp(uSolid, 0.0, 1.0)) * clamp(uHandFade, 0.0, 1.0);
 \t}
 #include <dithering_fragment>`,
       );
     };
     const priorKey = hm.customProgramCacheKey;
-    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint2'; };
+    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint3'; };
+    // DEPTH PRE-PASS: while see-through, the hand first lays down its depth alone
+    // (no colour), so the blended pass draws only its OUTER shell — no fingers
+    // ghosting through the palm, no triangle-order patches. Rendered right before
+    // the hand's own draw, so it keeps the hand's place in the back-to-front sort.
+    // (Pushed a hair back — polygonOffset — so the shell's own pixels pass LessEqual.)
+    const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
+    depthMat.polygonOffset = true;
+    depthMat.polygonOffsetFactor = 1;
+    depthMat.polygonOffsetUnits = 1;
+    hm.onBeforeRender = function (renderer, scene, camera, geometry, object, group) {
+      if (tint.uSolid.value >= 0.999 && fade.value >= 0.999) return;   // solid: nothing inside shows
+      renderer.renderBufferDirect(camera, scene, geometry, depthMat, object, group);
+    };
+    hm.addEventListener('dispose', () => { try { depthMat.dispose(); } catch {} });
     hm.needsUpdate = true;
-    this._patchScreenDoorFade(hm);   // chains onto the tint patch
     mesh.userData.handMat = hm;
     return hm;
   }

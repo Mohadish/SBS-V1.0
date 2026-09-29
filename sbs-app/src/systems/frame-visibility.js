@@ -142,7 +142,9 @@ function _ensureGpu(T, h) {
 // falloff (uSolidness < 1 — the unified shader discards per fragment).
 function _isTransparent(m) {
   const mats = Array.isArray(m) ? m : [m];
-  return mats.some(x => x && (x.transparent === true || (x.opacity ?? 1) < 0.999 || (x.alphaTest ?? 0) > 0
+  return mats.some(x => x && (x.userData?.handTint   // 🖐 always blended (V0.3.4.160) — solidness decides
+    ? x.userData.handTint.uSolid.value < 0.999
+    : x.transparent === true || (x.opacity ?? 1) < 0.999 || (x.alphaTest ?? 0) > 0
     || x.userData?.xray || (x.uniforms?.uSolidness?.value ?? 1) < 0.999));
 }
 
