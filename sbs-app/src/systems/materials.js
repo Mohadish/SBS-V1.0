@@ -918,8 +918,8 @@ class MaterialsSystem {
     });
 
     // Meshes with solidness >= 0.9 write stencil=1 at their pixels each frame.
-    // Back-pass outlines use depthTest:false + stencil!=1 to avoid bleeding
-    // through these solid-enough objects while still being smooth (no depth pop).
+    // (Back-pass outlines used depthTest:false + stencil!=1 until V0.3.4.157; they now
+    // draw first in the transparent queue with the depth test — the stencil is inert.)
     if (solidness >= 0.9) {
       mat.stencilWrite = true;
       mat.stencilRef   = 1;
@@ -1056,6 +1056,78 @@ class MaterialsSystem {
    * (screen-door dithered fade during step transitions).
    * No-op on shader materials (they already have it built in).
    */
+  /** 🖐 The hand branch of applyAll, for one registered hand mesh (see the comment there). */
+  _applyHand(nodeId, mesh, original, presetById) {
+    if (!original) return;
+    const sid = this.meshColorAssignments[nodeId] ?? null;
+    const pst = sid ? presetById.get(sid) : null;
+    const hm  = this._handMaterial(mesh, original);
+    if (mesh.material !== hm) {
+      const old = mesh.material;
+      mesh.material = hm;
+      if (old && old !== original && old !== hm) { try { old.dispose?.(); } catch {} }
+    }
+    const tint = hm.userData.handTint;
+    if (pst) {
+      this.ensurePresetDefaults(pst);
+      tint.uTint.value.set(pst.color || '#cccccc');
+      tint.uTintMix.value = 1;
+      hm.roughness = typeof pst.roughness === 'number' ? pst.roughness : (original.roughness ?? hm.roughness);
+      hm.metalness = typeof pst.metalness === 'number' ? pst.metalness : (original.metalness ?? hm.metalness);
+      hm.opacity   = typeof pst.solidness === 'number' ? Math.max(0, Math.min(1, pst.solidness)) : 1;
+    } else {
+      tint.uTintMix.value = 0;   // uTint kept: a fade-out mixes the last shade away
+      hm.roughness = original.roughness ?? hm.roughness;
+      hm.metalness = original.metalness ?? hm.metalness;
+      hm.opacity   = 1;
+    }
+    if (hm.transparent) { hm.transparent = false; hm.needsUpdate = true; }   // a transition may have flipped it
+  }
+  /** 🖐 A (re)built hand puts on its material at once — without a full applyAll mid-activation. */
+  refreshHand(nodeId) {
+    const mesh = this.meshById.get(nodeId);
+    if (!mesh?.userData?.handNodeId) return;
+    const presets = state.get('colorPresets') || [];
+    this._applyHand(nodeId, mesh, this.originalMaterials.get(nodeId), new Map(presets.map(p => [p.id, p])));
+  }
+
+  /**
+   * 🖐 V0.3.4.157 — the hand's one material: a clone of its original (texture kept)
+   * with a tint-mix patch — `diffuseColor.rgb = mix(textured, uTint, uTintMix)` right
+   * after the map is applied — and the screen-door fade on top. Rebuilt only when
+   * the original changes (a new rig / skin / texture).
+   */
+  _handMaterial(mesh, original) {
+    let hm = mesh.userData.handMat;
+    if (hm && hm.userData?.handOriginalUuid === original.uuid) return hm;
+    try { hm?.dispose?.(); } catch {}
+    hm = original.clone();
+    hm.transparent = false;
+    const tint = { uTint: { value: new THREE.Color(1, 1, 1) }, uTintMix: { value: 0 } };
+    // (the original by uuid, never by reference: a Material in userData would be
+    //  JSON-serialised by any later .clone())
+    hm.userData = { ...(hm.userData || {}), handTint: tint, handOriginalUuid: original.uuid };
+    const priorCompile = hm.onBeforeCompile;
+    hm.onBeforeCompile = function (shader) {
+      if (typeof priorCompile === 'function') priorCompile.call(this, shader);
+      shader.uniforms.uTint = tint.uTint;
+      shader.uniforms.uTintMix = tint.uTintMix;
+      if (!shader.fragmentShader.includes('uniform vec3 uTint;')) {
+        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\n' + shader.fragmentShader;
+      }
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        '#include <map_fragment>\n\tdiffuseColor.rgb = mix(diffuseColor.rgb, uTint, clamp(uTintMix, 0.0, 1.0));',
+      );
+    };
+    const priorKey = hm.customProgramCacheKey;
+    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint'; };
+    hm.needsUpdate = true;
+    this._patchScreenDoorFade(hm);   // chains onto the tint patch
+    mesh.userData.handMat = hm;
+    return hm;
+  }
+
   _patchScreenDoorFade(material) {
     if (!material || Array.isArray(material)) return;
     material.userData = material.userData ?? {};
@@ -1188,39 +1260,18 @@ gl_FragColor.a = 1.0;
         continue;
       }
 
-      // ── 🖐 hand branch (V0.3.4.155) ────────────────────────────────
+      // ── 🖐 hand branch (V0.3.4.155, crossfade V0.3.4.157) ──────────
       // A hand is registered under its node id by its visible mesh (the skinned
-      // mesh, or the palm whose material every capsule shares). A per-step preset
-      // paints it a SOLID shade — the texture goes, the preset's colour / roughness /
-      // metalness come — on a plain standard material so the skinned mesh still
-      // skins (the SBS shader has no skinning chunks). No default colour exists
-      // for a hand: without an assignment it is its textured self. Independent of
-      // the solid-override toggle, like a primitive.
+      // mesh, or the palm whose material every capsule shares). It wears ONE
+      // persistent material (the original + a tint-mix patch + the dither fade):
+      // the texture always stays on it, and a per-step preset MIXES a solid shade
+      // over it (uTintMix 0 → 1) with the preset's roughness / metalness and
+      // solidness (opacity → dithered X-ray). One material means the colour slot
+      // can lerp the mix, so texture ↔ shade is a real crossfade. A plain
+      // standard material, so the skinned mesh still skins. No default colour for
+      // a hand: without an assignment it is its textured self.
       if (mesh.userData?.handNodeId) {
-        const sid = this.meshColorAssignments[nodeId] ?? null;
-        const pst = sid ? presetById.get(sid) : null;
-        if (pst && original) {
-          this.ensurePresetDefaults(pst);
-          _disposeGenerated(mesh.material);
-          const solid = original.clone();
-          solid.map = null;
-          if (solid.color?.set) solid.color.set(pst.color || '#cccccc');
-          if (typeof pst.roughness === 'number' && 'roughness' in solid) solid.roughness = pst.roughness;
-          if (typeof pst.metalness === 'number' && 'metalness' in solid) solid.metalness = pst.metalness;
-          // solidness (V0.3.4.156): the preset's see-through goes into `opacity`; the
-          // screen-door patch below turns that alpha into a dither, the X-ray look every
-          // other object has — no blending, no sorting
-          const sol = typeof pst.solidness === 'number' ? Math.max(0, Math.min(1, pst.solidness)) : 1;
-          solid.opacity = sol;
-          solid.transparent = false;
-          solid.needsUpdate = true;
-          mesh.material = solid;
-          this._patchScreenDoorFade(mesh.material);
-        } else if (original && mesh.material !== original) {
-          _disposeGenerated(mesh.material);
-          mesh.material = original;
-          this._patchScreenDoorFade(mesh.material);
-        }
+        this._applyHand(nodeId, mesh, original, presetById);
         continue;
       }
 
@@ -1389,12 +1440,6 @@ gl_FragColor.a = 1.0;
   _captureUniformValues() {
     const values = new Map();
     for (const [nodeId, mesh] of this.meshById) {
-      // 🖐 V0.3.4.156 — a hand is left out of the colour LERP: lerping `color` while the
-      // map switches at once gave a white blink (texture → shade) and a tinted-texture
-      // snapshot (shade → texture). Its material is built at the target and switches at
-      // the start of the colour slot; a true texture ↔ shade crossfade needs a mixing
-      // shader and is not built.
-      if (mesh.userData?.handNodeId) continue;
       const mat = mesh.material;
       let color               = new THREE.Color(1, 1, 1);
       let solidness           = 1.0;
@@ -1438,7 +1483,11 @@ gl_FragColor.a = 1.0;
                        ?? back?.material?.uniforms?.uDitherOpacity?.value
                        ?? 0;
 
-      values.set(nodeId, { color, solidness, metalness, roughness, reflectionIntensity, backOpacity });
+      const entry = { color, solidness, metalness, roughness, reflectionIntensity, backOpacity };
+      // 🖐 V0.3.4.157 — a hand's shade over its texture: the tint and how much of it
+      const ht = mat?.userData?.handTint;
+      if (ht) { entry.tint = ht.uTint.value.clone(); entry.tintMix = ht.uTintMix.value; }
+      values.set(nodeId, entry);
     }
     return values;
   }
@@ -1478,6 +1527,11 @@ gl_FragColor.a = 1.0;
         mat.uniforms.uReflectionIntensity.value = v.reflectionIntensity;
       } else if (mat && typeof mat.envMapIntensity === 'number') {
         mat.envMapIntensity = v.reflectionIntensity * 0.5;
+      }
+
+      if (v.tintMix != null && mat?.userData?.handTint) {
+        mat.userData.handTint.uTint.value.copy(v.tint);
+        mat.userData.handTint.uTintMix.value = v.tintMix;
       }
 
       const back = this._outlineBackMeshes.get(nodeId);
@@ -1616,6 +1670,16 @@ gl_FragColor.a = 1.0;
         mat.uniforms.uReflectionIntensity.value = lerp(from.reflectionIntensity, to.reflectionIntensity);
       } else if (mat && typeof mat.envMapIntensity === 'number') {
         mat.envMapIntensity = lerp(from.reflectionIntensity, to.reflectionIntensity) * 0.5;
+      }
+
+      // 🖐 V0.3.4.157 — a hand: texture ↔ shade is the MIX, lerped. A side with no
+      // shade (mix 0) borrows the other side's tint, so the fade never passes
+      // through a stale colour.
+      if (from.tintMix != null && to.tintMix != null && mat?.userData?.handTint) {
+        const tFrom = from.tintMix < 0.001 ? to.tint : from.tint;
+        const tTo   = to.tintMix   < 0.001 ? tFrom   : to.tint;
+        mat.userData.handTint.uTint.value.setRGB(lerp(tFrom.r, tTo.r), lerp(tFrom.g, tTo.g), lerp(tFrom.b, tTo.b));
+        mat.userData.handTint.uTintMix.value = lerp(from.tintMix, to.tintMix);
       }
 
       // Back outline opacity — skip if a visibility transition is already driving it
@@ -2167,10 +2231,17 @@ gl_FragColor.a = 1.0;
         outline.material.uniforms.uOpacity.value = opacity;
       }
 
-      // ── Back-pass outline (smart shader, depthTest=false + stencil) ───────
+      // ── Back-pass outline (smart shader) ──────────────────────────────────
       // Discards front-facing edges — only back/hidden edges drawn.
-      // depthTest:false so back edges aren't killed by the depth buffer.
-      // Stencil mask (written by solid meshes) prevents bleed through solids.
+      //
+      // V0.3.4.157 — drawn FIRST in the transparent queue (renderOrder −1) WITH the
+      // depth test. The opaque objects are already in the depth buffer, so one in
+      // front hides the lines; the semi-transparent body they belong to is not yet
+      // drawn, so it does not — and when it draws, it is blended OVER its own back
+      // lines, which then read as seen through it. The old pass (depth test off,
+      // drawn after everything, guarded only by a stencil that just some opaque
+      // materials write) put the lines over the object's own front faces and over
+      // any object that should have covered them.
       //
       // Fade range: solidness ≥ 0.9 → uOpacity 0.0  (invisible)
       //             solidness ≤ 0.3 → uOpacity 1.0  (fully visible)
@@ -2182,26 +2253,26 @@ gl_FragColor.a = 1.0;
           vertexShader:   SMART_OUTLINE_VERT,
           fragmentShader: SMART_BACK_FRAG,
           transparent:    true,
-          depthTest:      false,
+          depthTest:      true,
           depthWrite:     false,
-          stencilWrite:   true,
-          stencilFunc:    THREE.NotEqualStencilFunc,
-          stencilRef:     1,
-          stencilFail:    THREE.KeepStencilOp,
-          stencilZFail:   THREE.KeepStencilOp,
-          stencilZPass:   THREE.KeepStencilOp,
         });
         // Share the annotated geometry with the front-pass
         outlineBack = new THREE.LineSegments(outline.geometry, backMat);
         outlineBack.raycast           = () => {};
         outlineBack.userData.noSelect = true;
         outlineBack.visible           = false;
-        outlineBack.renderOrder       = 1;
         mesh.add(outlineBack);
         this._outlineBackMeshes.set(nodeId, outlineBack);
       } else {
         outlineBack.material.uniforms.uColor.value.set(color);
       }
+      // (also migrates a back pass built by an older version in this session)
+      if (!outlineBack.material.depthTest || outlineBack.material.stencilWrite) {
+        outlineBack.material.depthTest    = true;
+        outlineBack.material.stencilWrite = false;
+        outlineBack.material.needsUpdate  = true;
+      }
+      outlineBack.renderOrder = -1;
 
       // Update back-pass opacity for current solidness
       const presetId  = this.meshColorAssignments[nodeId];

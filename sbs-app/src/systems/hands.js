@@ -447,7 +447,8 @@ export function ensureHandObject3D(node) {
     const keepAssign = materials.meshColorAssignments?.[node.id];
     materials.unregisterMesh(node.id);
     materials.registerMesh(node.id, rep);
-    if (keepAssign) { materials.meshColorAssignments[node.id] = keepAssign; materials.applyAll(); }
+    if (keepAssign) materials.meshColorAssignments[node.id] = keepAssign;
+    materials.refreshHand?.(node.id);   // V0.3.4.157 — the tint-mix material on at once (the colour slot lerps its mix)
   } catch (e) { console.warn('[hands] materials registration:', e?.message); }
   return group;
 }
