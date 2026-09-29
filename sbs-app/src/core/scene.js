@@ -29,6 +29,12 @@
  */
 
 import { getCanonicalSize, computeSafeFrameRect } from './safe-frame.js';
+import { listClipObjects, clipBoxesOf, viewDepthRange, snapPlane } from './clip-fit.js';
+
+// Adaptive clip planes (see _updateClipPlanes). ratioCap = the old sphere fit's
+// floor; fitRatioCap = the visible-depth fit's floor, reached only when the camera
+// really sits inside a visible part's box.
+const CLIP_CFG_DEFAULT = { enabled: true, fit: true, nearFactor: 0.5, farMargin: 1.5, ratioCap: 50000, fitRatioCap: 5000 };
 // 🎯 V0.3.2.231 — only to read '_exporting' for the orbit-pivot marker.
 // state.js imports schema.js alone, so this closes no cycle.
 import { state } from './state.js';
@@ -360,13 +366,17 @@ export class SceneCore extends Emitter {
         overscan: (n) => { this.setOverscan(n); console.log('[scene] live overscan ×', this.getOverscan()); return this.getOverscan(); },
       };
       // Adaptive near/far controls. on(false) → legacy fixed 0.1/1e6 planes (A/B).
-      // set({nearFactor, farMargin, ratioCap}) — lower nearFactor pushes the near
-      // plane closer (fixes close-up AO cutout) at a little precision cost.
-      this._clipCfg = this._clipCfg || { enabled: true, nearFactor: 0.5, farMargin: 1.5, ratioCap: 50000 };
-      window.sbsClip = {
+      // set({fit:false}) → the pre-V0.3.4.162 sphere fit (A/B for the AO lens bands).
+      // set({nearFactor, farMargin, ratioCap, fitRatioCap}) — lower nearFactor pushes
+      // the near plane closer at a little precision cost.
+      // (V0.3.4.162 — was window.sbsClip, which the clipboard pool took over in .90.)
+      this._clipCfg = this._clipCfg || { ...CLIP_CFG_DEFAULT };
+      window.sbsClipPlanes = {
         on:  (b) => { this._clipCfg.enabled = (b !== false); this.requestRender(300); console.log('[scene] adaptive clip', b !== false ? 'ON' : 'OFF'); },
-        set: (o) => { Object.assign(this._clipCfg, o || {}); this.requestRender(300); },
-        get: () => ({ near: this.camera && this.camera.near, far: this.camera && this.camera.far, cfg: { ...this._clipCfg } }),
+        set: (o) => { Object.assign(this._clipCfg, o || {}); this._clipBoundsMs = 0; this.requestRender(300); },
+        get: () => ({ near: this.camera && this.camera.near, far: this.camera && this.camera.far,
+                      ratio: this.camera && Math.round(this.camera.far / this.camera.near),
+                      fit: this._clipLastFit || null, cfg: { ...this._clipCfg } }),
       };
     }
 
@@ -511,6 +521,7 @@ export class SceneCore extends Emitter {
         if ('SRGBColorSpace' in THREE) rt.texture.colorSpace = THREE.SRGBColorSpace;
       } else if (rt.width !== dw || rt.height !== dh) rt.setSize(dw, dh);
       const prevRT = this.renderer.getRenderTarget();
+      this._updateClipPlanes(true);   // V0.3.4.162 — a step may have just moved the camera
       this.renderer.setRenderTarget(rt);
       this.renderer.autoClear = true;
       this.renderer.render(this.scene, this.camera);
@@ -691,7 +702,7 @@ export class SceneCore extends Emitter {
     if (this.overlayScene.children.length > 0) {
       this.renderer.autoClear = false;
       this.renderer.clearDepth();
-      this.renderer.render(this.overlayScene, this.camera);
+      this.renderer.render(this.overlayScene, this._overlayCamera());
       this.renderer.autoClear = true;
     }
   }
@@ -1665,12 +1676,53 @@ export class SceneCore extends Emitter {
    * The bounds traversal is the costly part, so it's cached and refreshed on a
    * 200 ms throttle while interactive; during export (loop stopped) it refreshes
    * every frame so a step animation can't drift outside stale planes.
+   *
+   * 🩹 V0.3.4.162 — NEAR FROM WHAT IS VISIBLE (the AO lens bands, for real). The
+   * sphere above counts HIDDEN parts (Box3.expandByObject ignores .visible) and the
+   * 400-unit grid, and its near collapsed to far / 50000 the moment the dolly-zoom
+   * camera came inside it — a lens around 12–37° for a typical framing, the exact
+   * lens moving with the framing and with what was hidden. A depth step at the
+   * model then spanned several pixels: bands and blotches all over the AO, and near
+   * changed ~1000× within one wheel notch — his "snap" at 15.7° → 17.5°. (That is
+   * also why .85's float depth changed nothing: standard depth near 1.0 has the
+   * same 2⁻²⁴ spacing in float32 as in 24-bit.) Now near comes from the view depth
+   * of the nearest VISIBLE part inside the frustum (clip-fit.js), grid and axes
+   * left out (a grid line cut close to the camera is harmless); far stays the loose
+   * sphere far — it costs almost no precision and keeps mirrors, cables and parts
+   * about to appear inside. The visible list is throttled like the bounds; the
+   * boxes and depths are re-read every frame, so a moving camera or part is never
+   * stale. Both planes snap to a fixed 1/16-octave grid — the same scene and
+   * camera always give the same planes (bit-identical frames for the render cache).
+   * The overlay scene (gizmos, pickers) draws with its own loose camera.
    */
-  _updateClipPlanes() {
+  /**
+   * V0.3.4.162 — the overlay scene's camera: the live camera's pose, lens, zoom and
+   * view offset with LOOSE planes. Its depth is cleared before it draws, so
+   * precision is irrelevant there — but the tight near of the main camera would cut
+   * a gizmo ring or a picker that reaches toward the lens.
+   */
+  _overlayCamera() {
+    const c = this.camera;
+    const oc = this._overlayCam || (this._overlayCam = new THREE.PerspectiveCamera());
+    c.updateMatrixWorld();
+    c.matrixWorld.decompose(oc.position, oc.quaternion, oc.scale);   // (no .copy(): it JSON-clones userData)
+    oc.fov = c.fov; oc.aspect = c.aspect; oc.zoom = c.zoom;
+    oc.filmGauge = c.filmGauge; oc.filmOffset = c.filmOffset; oc.focus = c.focus;
+    oc.view = c.view ? { ...c.view } : null;
+    oc.layers.mask = c.layers.mask;
+    oc.far  = c.far * 4;
+    oc.near = oc.far / 1e6;
+    oc.updateProjectionMatrix();
+    return oc;
+  }
+
+  _updateClipPlanes(force = false) {
     const cam = this.camera;
     if (!cam) return;
     const now = performance.now();
-    const throttleMs = this._loopRunning ? 200 : 0;
+    const throttleMs = (this._loopRunning && !force) ? 200 : 0;
+    // Tunable via window.sbsClipPlanes. enabled=false → legacy fixed planes (A/B test).
+    const cfg = this._clipCfg || (this._clipCfg = { ...CLIP_CFG_DEFAULT });
     if (!this._clipSphere || (now - (this._clipBoundsMs || 0)) > throttleMs) {
       const box = this.computeBoundingBox(null);                 // rootGroup
       if (this.gridHelper?.visible) box.expandByObject(this.gridHelper);
@@ -1681,12 +1733,11 @@ export class SceneCore extends Emitter {
         this._clipSphere = this._clipSphere || new THREE.Sphere();
         box.getBoundingSphere(this._clipSphere);
       }
+      this._clipObjects = cfg.fit
+        ? listClipObjects([this.scene], cam.layers, [this.gridHelper, this.axesHelper])
+        : null;
       this._clipBoundsMs = now;
     }
-
-    // Tunable via window.sbsClip. enabled=false → legacy fixed planes (A/B test).
-    const cfg = this._clipCfg ||
-      (this._clipCfg = { enabled: true, nearFactor: 0.5, farMargin: 1.5, ratioCap: 50000 });
 
     let near, far;
     if (!cfg.enabled) {
@@ -1705,10 +1756,20 @@ export class SceneCore extends Emitter {
       } else {
         near = 0.1; far = 100000;                   // empty scene → safe default
       }
+      if (cfg.fit && this._clipObjects?.length) {
+        this._clipBoxes = clipBoxesOf(this._clipObjects, this._clipBoxes);
+        const range = viewDepthRange(cam, this._clipBoxes);
+        this._clipLastFit = range;
+        if (range) {
+          far  = Math.max(far, range.farthest * cfg.farMargin);
+          near = Math.max(far / (cfg.fitRatioCap || cfg.ratioCap), range.nearest * cfg.nearFactor);
+        }
+      }
+      near = snapPlane(near, false);
+      far  = snapPlane(far, true);
     }
 
-    // Rebuild the projection only on a meaningful change (avoid per-frame churn).
-    if (Math.abs(cam.near - near) > near * 0.02 || Math.abs(cam.far - far) > far * 0.02) {
+    if (cam.near !== near || cam.far !== far) {
       cam.near = near;
       cam.far  = far;
       cam.updateProjectionMatrix();
