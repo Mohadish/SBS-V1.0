@@ -92,6 +92,28 @@ float transitionDitherNoise(vec2 p) {
 }
 `;
 
+// 🖐 V0.3.4.161 — scratch targets, shared by every hand, for a hand's OWN nearest
+// depth while it fades (materials._handMaterial). One per viewport size: a frame
+// draws the hand into the canvas-sized composer targets AND each planar-mirror /
+// thumbnail target, and resizing one target between them would reallocate it several
+// times a frame. Float depth, sampled nearest. Only ever allocated once a hand fades.
+const _handShellRTs = new Map();
+function _handShellTarget(w, h) {
+  const key = w + 'x' + h;
+  let rt = _handShellRTs.get(key);
+  if (rt) return rt;
+  if (_handShellRTs.size >= 6) {   // window resizes leave stale sizes behind
+    for (const old of _handShellRTs.values()) { try { old.depthTexture?.dispose(); old.dispose(); } catch {} }
+    _handShellRTs.clear();
+  }
+  rt = new THREE.WebGLRenderTarget(w, h);
+  const dt = new THREE.DepthTexture(w, h, THREE.FloatType);
+  dt.format = THREE.DepthFormat;
+  rt.depthTexture = dt;
+  _handShellRTs.set(key, rt);
+  return rt;
+}
+
 // Simple view-space Phong lighting helper
 const PHONG_GLSL = `
 vec3 sbsPhong(vec3 albedo, vec3 N, vec3 V, float roughness, float metalness, float reflectivity) {
@@ -1112,6 +1134,8 @@ class MaterialsSystem {
     hm.opacity     = 1;
     const tint = { uTint: { value: new THREE.Color(1, 1, 1) }, uTintMix: { value: 0 }, uSolid: { value: 1 } };
     const fade = { value: 1 };
+    // V0.3.4.161 — the hand's own nearest depth during a show/hide fade (see onBeforeRender)
+    const shell = { uHandDepth: { value: null }, uHandDepthOn: { value: 0 }, uHandDepthVp: { value: new THREE.Vector4(0, 0, 1, 1) } };
     // (the original by uuid, never by reference: a Material in userData would be
     //  JSON-serialised by any later .clone()). transitionFadeState = the show/hide
     //  fade _setMaterialFade drives; transitionDitherPatched keeps the dither off it.
@@ -1124,8 +1148,12 @@ class MaterialsSystem {
       shader.uniforms.uTintMix = tint.uTintMix;
       shader.uniforms.uSolid = tint.uSolid;
       shader.uniforms.uHandFade = fade;
+      shader.uniforms.uHandDepth = shell.uHandDepth;
+      shader.uniforms.uHandDepthOn = shell.uHandDepthOn;
+      shader.uniforms.uHandDepthVp = shell.uHandDepthVp;
       if (!shader.fragmentShader.includes('uniform vec3 uTint;')) {
-        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\nuniform float uSolid;\nuniform float uHandFade;\n' + shader.fragmentShader;
+        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\nuniform float uSolid;\nuniform float uHandFade;\n'
+          + 'uniform highp sampler2D uHandDepth;\nuniform float uHandDepthOn;\nuniform vec4 uHandDepthVp;\n' + shader.fragmentShader;
       }
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <map_fragment>',
@@ -1140,26 +1168,62 @@ class MaterialsSystem {
 \t\tfloat sbsFacing = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);
 \t\tfloat sbsXray   = pow(1.0 - sbsFacing, 2.5);
 \t\tgl_FragColor.a  = mix(sbsXray, 1.0, clamp(uSolid, 0.0, 1.0)) * clamp(uHandFade, 0.0, 1.0);
+\t\tif (uHandDepthOn > 0.5) {   // mid-fade: only the hand's outer shell (its own depth, not the frame's)
+\t\t\tvec2 sbsHdUv = (gl_FragCoord.xy - uHandDepthVp.xy) * uHandDepthVp.zw;
+\t\t\tif (gl_FragCoord.z > texture2D(uHandDepth, sbsHdUv).r + 1e-5) discard;
+\t\t}
 \t}
 #include <dithering_fragment>`,
       );
     };
     const priorKey = hm.customProgramCacheKey;
-    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint3'; };
-    // DEPTH PRE-PASS: while see-through, the hand first lays down its depth alone
-    // (no colour), so the blended pass draws only its OUTER shell — no fingers
-    // ghosting through the palm, no triangle-order patches. Rendered right before
-    // the hand's own draw, so it keeps the hand's place in the back-to-front sort.
-    // (Pushed a hair back — polygonOffset — so the shell's own pixels pass LessEqual.)
-    const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false });
-    depthMat.polygonOffset = true;
-    depthMat.polygonOffsetFactor = 1;
-    depthMat.polygonOffsetUnits = 1;
+    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint4'; };
+    // DEPTH PASSES — while see-through, the blended colour draw writes no depth; two
+    // depth-only draws of the same object, right before it (so it keeps the hand's
+    // place in the back-to-front sort), do:
+    //  • depthMat → the FRAME's depth, thinned by the same screen-door noise every
+    //    other object fades with. That depth is what N8AO reads: the hand's ambient
+    //    occlusion now fades with the hand instead of staying full and popping off at
+    //    the end (V0.3.4.161 — his catch). The colour itself stays real alpha.
+    //    At full fade nothing is thinned: the outer shell's depth, as in .160.
+    //  • shellMat → mid-fade only: the hand's OWN nearest depth into a scratch
+    //    target, since the thinned frame depth can no longer keep the colour pass to
+    //    the outer shell — the colour draw discards anything behind it (no fingers
+    //    ghosting through the palm).
+    // (depthMat is pushed a hair back — polygonOffset — so the shell's own pixels pass
+    //  LessEqual; shellMat is exact — the colour draw compares against it with an epsilon.
+    //  Both take the hand's side: a double-sided skin must lay down its back faces too.)
+    const depthMat = new THREE.MeshBasicMaterial({ colorWrite: false, side: hm.side });
+    const shellMat = new THREE.MeshBasicMaterial({ colorWrite: false, side: hm.side });
+    depthMat.polygonOffset = true; depthMat.polygonOffsetFactor = 1; depthMat.polygonOffsetUnits = 1;
+    depthMat.onBeforeCompile = function (shader) {
+      shader.uniforms.uHandFade = fade;
+      shader.fragmentShader = 'uniform float uHandFade;\n' + DITHER_NOISE_GLSL + shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        'if (clamp(uHandFade, 0.0, 1.0) <= transitionDitherNoise(gl_FragCoord.xy)) discard;\n#include <dithering_fragment>');
+    };
+    depthMat.customProgramCacheKey = () => 'sbs_handdepth';
+    const vp = new THREE.Vector4();
     hm.onBeforeRender = function (renderer, scene, camera, geometry, object, group) {
-      if (tint.uSolid.value >= 0.999 && fade.value >= 0.999) return;   // solid: nothing inside shows
+      shell.uHandDepthOn.value = 0;
+      if (tint.uSolid.value >= 0.999 && fade.value >= 0.999) { hm.depthWrite = true; return; }   // solid: nothing inside shows
+      hm.depthWrite = false;
+      if (fade.value < 0.999) {
+        renderer.getCurrentViewport(vp);
+        const prev = renderer.getRenderTarget(), face = renderer.getActiveCubeFace(), mip = renderer.getActiveMipmapLevel();
+        const rt = _handShellTarget(Math.max(1, vp.z), Math.max(1, vp.w));
+        renderer.setRenderTarget(rt);
+        renderer.state.buffers.depth.setMask(true);   // clear() honours the last draw's depth mask
+        renderer.clear(false, true, false);
+        renderer.renderBufferDirect(camera, scene, geometry, shellMat, object, group);
+        renderer.setRenderTarget(prev, face, mip);
+        shell.uHandDepth.value = rt.depthTexture;
+        shell.uHandDepthVp.value.set(vp.x, vp.y, 1 / Math.max(1, vp.z), 1 / Math.max(1, vp.w));
+        shell.uHandDepthOn.value = 1;
+      }
       renderer.renderBufferDirect(camera, scene, geometry, depthMat, object, group);
     };
-    hm.addEventListener('dispose', () => { try { depthMat.dispose(); } catch {} });
+    hm.addEventListener('dispose', () => { try { depthMat.dispose(); shellMat.dispose(); } catch {} });
     hm.needsUpdate = true;
     mesh.userData.handMat = hm;
     return hm;
