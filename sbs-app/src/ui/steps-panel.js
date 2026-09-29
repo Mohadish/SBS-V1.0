@@ -4357,6 +4357,14 @@ function _duplicateStep(stepId) {
   // flushSync is synchronous (returns undefined), so don't .then() it —
   // that's what was throwing "Cannot read properties of undefined".
   steps.flushSync();
+  // V0.3.4.159 — a card that is part of a multi-selection duplicates the whole
+  // selection as one block after the last selected step
+  const sel = state.get('selectedStepIds');
+  if (sel instanceof Set && sel.size >= 2 && sel.has(stepId)) {
+    const made = actions.duplicateStepsAsBlock([...sel]);
+    if (made.length) setStatus(`Duplicated ${made.length} steps — together, after the last selected.`);
+    return;
+  }
   const copy = actions.duplicateStep(stepId);
   if (copy) setStatus(`Duplicated "${copy.name}".`);
 }

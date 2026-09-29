@@ -1027,6 +1027,55 @@ export function duplicateStep(stepId) {
   return copy;
 }
 
+/**
+ * ⎘ V0.3.4.159 — duplicate several steps as ONE BLOCK: copies of all of them, in
+ * timeline order, right after the LAST selected one (the user: "select 2, 7 and 9,
+ * duplicate — 10 = copy of 2, 11 = copy of 7, 12 = copy of 9, the rest pushed
+ * down"). The copies join the anchor's chapter and group run (a step dropped into a
+ * run must belong to it). One undo. A single step = the ordinary duplicate.
+ * @returns {object[]} the copies
+ */
+export function duplicateStepsAsBlock(stepIds) {
+  const all0 = state.get('steps') || [];
+  const idx  = new Map(all0.map((s, i) => [s.id, i]));
+  const ids  = [...new Set(stepIds || [])]
+    .filter(id => idx.has(id) && !all0[idx.get(id)].isBaseStep)
+    .sort((a, b) => idx.get(a) - idx.get(b));
+  if (!ids.length) return [];
+  if (ids.length === 1) { const c = duplicateStep(ids[0]); return c ? [c] : []; }
+
+  const anchor    = all0[idx.get(ids[ids.length - 1])];
+  const joinGroup = anchor.groupHead ? anchor.id : (anchor.groupId || null);
+  const copies = [];
+  for (const id of ids) {
+    const c = steps.duplicateStep(id, { place: false });
+    if (!c) continue;
+    c.altered   = true;                 // ★ a new step — never rendered under its own id
+    c.chapterId = anchor.chapterId;
+    c.groupId   = joinGroup;
+    copies.push(c);
+  }
+  if (!copies.length) return [];
+  const copyIds = new Set(copies.map(c => c.id));
+  const place = () => {
+    const cur = (state.get('steps') || []).filter(s => !copyIds.has(s.id));
+    const at  = cur.findIndex(s => s.id === anchor.id);
+    cur.splice(at < 0 ? cur.length : at + 1, 0, ...copies);
+    state.setState({ steps: cur });
+    state.setActiveStep(copies[0].id);
+    state.setState({ selectedStepIds: new Set(copyIds) });
+    state.markDirty();
+  };
+  place();
+  for (const c of copies) state.emit('step:created', c);
+  undoManager.push(
+    `Duplicate ${copies.length} steps`,
+    () => { for (const c of copies) steps.deleteStep(c.id); },
+    () => place(),
+  );
+  return copies;
+}
+
 export function updateTransition(stepId, patch) {
   const step = steps.getStepById(stepId);
   if (!step) return;

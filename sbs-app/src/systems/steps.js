@@ -3162,7 +3162,7 @@ class StepManager {
    * @param {string} stepId
    * @returns {Step|null}
    */
-  duplicateStep(stepId) {
+  duplicateStep(stepId, { place = true } = {}) {
     const steps  = state.get('steps');
     const source = steps.find(s => s.id === stepId);
     if (!source) return null;
@@ -3191,6 +3191,8 @@ class StepManager {
       // arrived with an empty stage.
       overlay:      source.overlay || null,
     });
+    // V0.3.4.159 — place:false = the copy only (a block duplicate places them all at once)
+    if (!place) return copy;
 
     const sourceIdx = steps.indexOf(source);
     const newSteps  = [...steps];

@@ -5718,16 +5718,28 @@ function _takeoverOpen() {
   return !!dw && dw.style.display !== 'none';
 }
 
+// ⧉ V0.3.4.159 — Ctrl+D duplicates what was CLICKED LAST: a click in the steps
+// panel makes the steps the target, a click in the tree or the viewport the scene
+// selection (the user: an object stayed selected, he clicked a step, Ctrl+D tried
+// the object and said "nothing here to duplicate").
+let _lastPickDomain = 'scene';
+window.addEventListener('pointerdown', (e) => {
+  const t = e.target;
+  if (!t?.closest) return;
+  if (t.closest('#steps-panel')) _lastPickDomain = 'steps';
+  else if (t.closest('#viewport-surface') || t.closest('#tree-mount')) _lastPickDomain = 'scene';
+}, true);
+
 /** ⧉ Ctrl+D on the 3D selection: every selected item that has a duplicate gets one. */
 async function _duplicateSceneSelection({ inPlace = false } = {}) {
   const selSet = state.get('multiSelectedIds');
   const selId  = state.get('selectedId');
   const ids = [...((selSet instanceof Set && selSet.size) ? selSet : (selId ? [selId] : []))];
   const nodeById = state.get('nodeById');
-  // ⎘ V0.3.4.106 — nothing selected in the scene: the STEPS. The multi-selection
-  // of step cards when there is one, else the active step; each copy lands
-  // right after its original (the panel's own Duplicate), one undo each.
-  if (!ids.length) {
+  // ⎘ the STEPS — when a step was clicked last, or nothing is selected in the scene.
+  // The multi-selection of step cards (else the active step), duplicated as ONE block
+  // right after the last of them (V0.3.4.159), one undo.
+  if (_lastPickDomain === 'steps' || !ids.length) {
     const all = state.get('steps') || [];
     const sel = state.get('selectedStepIds');
     const picked = (sel instanceof Set && sel.size)
@@ -5735,11 +5747,9 @@ async function _duplicateSceneSelection({ inPlace = false } = {}) {
       : (state.get('activeStepId') ? [state.get('activeStepId')] : []);
     if (!picked.length) { setStatus('Select something to duplicate — a step, a screw, a primitive, a shape, or an overlay item.', 'warn', 5000); return; }
     steps.flushSync();
-    const made = [];
-    for (const id of picked.slice().reverse()) {   // last first: every copy still lands right after its own original
-      try { const c = actions.duplicateStep(id); if (c) made.push(c); } catch (err) { console.warn('[duplicate] step failed', id, err); }
-    }
-    setStatus(made.length === 1 ? `Duplicated "${made[0].name}".` : `Duplicated ${made.length} steps.`, made.length ? 'success' : 'warn', 4000);
+    let made = [];
+    try { made = actions.duplicateStepsAsBlock(picked); } catch (err) { console.warn('[duplicate] steps failed', err); }
+    setStatus(made.length === 1 ? `Duplicated "${made[0].name}".` : `Duplicated ${made.length} steps — together, after the last selected.`, made.length ? 'success' : 'warn', 4000);
     return;
   }
   const hw = await import('./systems/hardware-actions.js');
