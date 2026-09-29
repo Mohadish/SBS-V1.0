@@ -138,6 +138,56 @@ export function _migrateAnimationString(animation) {
 }
 
 /**
+ * 🖐 V0.3.4.154 — a hand saved before .154 lived only in the steps where it was
+ * created / edited (the creator never propagated it), so elsewhere it was a
+ * ghost object with no tree node, duplicated on every return. At load, every
+ * hand found in any step's tree is added to the steps that lack it — HIDDEN,
+ * with the params of the nearest step that has it, under the same parent when
+ * that parent exists there (else the scene root). A project with no hands is
+ * returned untouched (same array).
+ */
+function _repairHandsAcrossSteps(stepsIn) {
+  if (!Array.isArray(stepsIn) || !stepsIn.length) return stepsIn;
+  const handSpecs = new Map();   // id → { spec, parentId, stepIndex }
+  const walk = (n, parentId, i) => {
+    if (!n) return;
+    if (n.type === 'hand' && n.id && !handSpecs.has(n.id)) handSpecs.set(n.id, { spec: n, parentId, stepIndex: i });
+    for (const c of (n.children || [])) walk(c, n.id, i);
+  };
+  stepsIn.forEach((s, i) => walk(s?.snapshot?.tree, null, i));
+  if (!handSpecs.size) return stepsIn;
+  const hasId = (n, id) => { if (!n) return false; if (n.id === id) return true; return (n.children || []).some(c => hasId(c, id)); };
+  const addUnder = (n, parentId, child) => {
+    if (!n) return n;
+    if (n.id === parentId) return { ...n, children: [...(n.children || []), child] };
+    if (!n.children?.length) return n;
+    let changed = false;
+    const kids = n.children.map(c => { const r = addUnder(c, parentId, child); if (r !== c) changed = true; return r; });
+    return changed ? { ...n, children: kids } : n;
+  };
+  let repaired = 0;
+  const out = stepsIn.map(s => {
+    const snap = s?.snapshot;
+    if (!snap?.tree) return s;
+    let tree = snap.tree, vis = snap.visibility, tr = snap.transforms, changed = false;
+    for (const [id, h] of handSpecs) {
+      if (hasId(tree, id)) continue;
+      const child = { ...h.spec, children: [] };
+      let nt = h.parentId ? addUnder(tree, h.parentId, child) : tree;
+      if (nt === tree) nt = { ...tree, children: [...(tree.children || []), child] };
+      tree = nt;
+      vis = { ...(vis || {}), [id]: false };
+      const src = stepsIn[h.stepIndex]?.snapshot?.transforms?.[id];
+      if (src) tr = { ...(tr || {}), [id]: JSON.parse(JSON.stringify(src)) };
+      changed = true; repaired++;
+    }
+    return changed ? { ...s, snapshot: { ...snap, tree, visibility: vis, transforms: tr } } : s;
+  });
+  if (repaired) console.warn(`[project] hands repaired into ${repaired} step slot(s) they were missing from (hidden there) — save to keep`);
+  return out;
+}
+
+/**
  * Selection-group migration: legacy projects (and the original v0.266
  * format) stored groups as `{name, ids[]}`. We add a stable `id` and a
  * `color` swatch so groups can be referenced by id in undo entries and
@@ -1205,13 +1255,13 @@ export function applyProjectToState(project) {
 
   // ── Content arrays ────────────────────────────────────────────────────────
   state.setState({
-    steps:                _internOnLoad(project.steps?.items || []).map(s => {
+    steps:                _repairHandsAcrossSteps(_internOnLoad(project.steps?.items || []).map(s => {
       // 🖐 V0.3.4.137 — a step's PRIVATE animation is a string of its own, outside
       // the preset migration: it gains the same late channels here (first block).
       const pa = s?.transition?.privateAnimation;
       const na = (typeof pa === 'string' && pa.trim()) ? _migrateAnimationString(pa) : pa;
       return na !== pa ? { ...s, transition: { ...s.transition, privateAnimation: na } } : s;
-    }),
+    })),
     chapters:             project.chapters?.items           || [],
     cameraViews:          project.cameras?.items            || [],
     colorPresets:         project.colors?.items             || [],

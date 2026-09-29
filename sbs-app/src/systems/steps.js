@@ -4171,7 +4171,16 @@ function rebuildFromTreeSpec(spec, nodeById, object3dById, parentObject3d) {
     // load, a hand nested under a model's folders). Params are PER STEP: the
     // step's spec always wins, unlike a primitive's definition.
     node = nodeById.get(spec.id);
-    if (!node) { node = { id: spec.id, type: 'hand' }; nodeById.set(spec.id, node); }
+    if (!node) {
+      node = { id: spec.id, type: 'hand' };
+      nodeById.set(spec.id, node);
+      // V0.3.4.154 — a hand recreated from a spec takes the Object3D that already
+      // stands in the scene under its id: ensureHandObject3D reuses it (same build
+      // key) instead of building a second rig beside the first. That second rig
+      // was the user's "duplicated every time you visit the step".
+      const standing = object3dById.get(spec.id);
+      if (standing?.userData?.isHand) node.object3d = standing;
+    }
     node.name         = spec.name || node.name || 'Hand';
     node.localVisible = spec.localVisible !== false;
     node.handSide     = spec.handSide === 'left' ? 'left' : (node.handSide || 'right');

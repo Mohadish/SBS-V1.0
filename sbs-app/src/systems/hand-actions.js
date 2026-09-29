@@ -20,6 +20,7 @@ import { undoManager } from './undo.js';
 import { createNode, generateId } from '../core/schema.js';
 import * as userSettings from '../core/user-settings.js';   // ★ V0.3.4.145 the grip library (a machine setting)
 import { buildNodeMap, findParent } from '../core/nodes.js';
+import { propagateNewNodeToSteps } from './actions.js';   // 🖐 V0.3.4.154 — a hand exists in EVERY step's tree, like any created object
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import * as hands      from './hands.js';
@@ -60,6 +61,11 @@ function _attach(node, parentId) {
   parent.children = parent.children || [];
   if (!parent.children.some(c => c.id === node.id)) parent.children.push(node);
   state.setState({ nodeById: buildNodeMap(root) });
+  // V0.3.4.154 — into EVERY step's snapshot (tree + transform), visible on the active
+  // step only, like a freshly placed primitive or shape. Without this the hand lived in
+  // one step's spec: elsewhere its Object3D stood in the scene with no tree node (a
+  // ghost nothing could grab), and each return to its step rebuilt it beside the ghost.
+  propagateNewNodeToSteps(node, parent.id, { activeStepOnly: true });
   state.emit('change:treeData', root);
   hands.markHandDirty(node.id);
   steps.scheduleTransformSync?.();

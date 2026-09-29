@@ -12994,6 +12994,8 @@ function _propagateNewNodeToSteps(node, parentId, opts = {}) {
   });
   state.setState({ steps: next });
 }
+/** 🖐 V0.3.4.154 — the hand creator needs the same: a created object exists in EVERY step's tree. */
+export const propagateNewNodeToSteps = _propagateNewNodeToSteps;
 
 /** Returns a new spec with `child` appended to `parentId`'s children, or original if parent not found. */
 function _addToTreeSpec(spec, parentId, child) {
