@@ -1072,15 +1072,16 @@ class MaterialsSystem {
       this.ensurePresetDefaults(pst);
       tint.uTint.value.set(pst.color || '#cccccc');
       tint.uTintMix.value = 1;
+      tint.uSolid.value   = typeof pst.solidness === 'number' ? Math.max(0, Math.min(1, pst.solidness)) : 1;
       hm.roughness = typeof pst.roughness === 'number' ? pst.roughness : (original.roughness ?? hm.roughness);
       hm.metalness = typeof pst.metalness === 'number' ? pst.metalness : (original.metalness ?? hm.metalness);
-      hm.opacity   = typeof pst.solidness === 'number' ? Math.max(0, Math.min(1, pst.solidness)) : 1;
     } else {
       tint.uTintMix.value = 0;   // uTint kept: a fade-out mixes the last shade away
+      tint.uSolid.value   = 1;
       hm.roughness = original.roughness ?? hm.roughness;
       hm.metalness = original.metalness ?? hm.metalness;
-      hm.opacity   = 1;
     }
+    hm.opacity = 1;   // solidness lives in uSolid (see _handMaterial); opacity would be forced to 1 anyway
     if (hm.transparent) { hm.transparent = false; hm.needsUpdate = true; }   // a transition may have flipped it
   }
   /** 🖐 A (re)built hand puts on its material at once — without a full applyAll mid-activation. */
@@ -1103,7 +1104,7 @@ class MaterialsSystem {
     try { hm?.dispose?.(); } catch {}
     hm = original.clone();
     hm.transparent = false;
-    const tint = { uTint: { value: new THREE.Color(1, 1, 1) }, uTintMix: { value: 0 } };
+    const tint = { uTint: { value: new THREE.Color(1, 1, 1) }, uTintMix: { value: 0 }, uSolid: { value: 1 } };
     // (the original by uuid, never by reference: a Material in userData would be
     //  JSON-serialised by any later .clone())
     hm.userData = { ...(hm.userData || {}), handTint: tint, handOriginalUuid: original.uuid };
@@ -1112,16 +1113,31 @@ class MaterialsSystem {
       if (typeof priorCompile === 'function') priorCompile.call(this, shader);
       shader.uniforms.uTint = tint.uTint;
       shader.uniforms.uTintMix = tint.uTintMix;
+      shader.uniforms.uSolid = tint.uSolid;
       if (!shader.fragmentShader.includes('uniform vec3 uTint;')) {
-        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\n' + shader.fragmentShader;
+        shader.fragmentShader = 'uniform vec3 uTint;\nuniform float uTintMix;\nuniform float uSolid;\n' + shader.fragmentShader;
       }
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <map_fragment>',
         '#include <map_fragment>\n\tdiffuseColor.rgb = mix(diffuseColor.rgb, uTint, clamp(uTintMix, 0.0, 1.0));',
       );
+      // V0.3.4.158 — SOLIDNESS as the alpha the dither reads, written AFTER three has
+      // forced alpha to 1 for an opaque material (OPAQUE — why .157's opacity did
+      // nothing). The SBS X-ray: edges keep their cover, the face-on middle opens up —
+      // alpha = mix(pow(1 − |N·V|, 2.5), 1, solidness), the curve of the SBS shader.
+      // The material stays opaque (no program switch, so nothing snaps mid-fade).
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `{
+\t\tfloat sbsFacing = clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0);
+\t\tfloat sbsXray   = pow(1.0 - sbsFacing, 2.5);
+\t\tgl_FragColor.a  = mix(sbsXray, 1.0, clamp(uSolid, 0.0, 1.0));
+\t}
+#include <dithering_fragment>`,
+      );
     };
     const priorKey = hm.customProgramCacheKey;
-    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint'; };
+    hm.customProgramCacheKey = function () { return (typeof priorKey === 'function' ? priorKey.call(this) : '') + '|sbs_handtint2'; };
     hm.needsUpdate = true;
     this._patchScreenDoorFade(hm);   // chains onto the tint patch
     mesh.userData.handMat = hm;
@@ -1486,7 +1502,7 @@ gl_FragColor.a = 1.0;
       const entry = { color, solidness, metalness, roughness, reflectionIntensity, backOpacity };
       // 🖐 V0.3.4.157 — a hand's shade over its texture: the tint and how much of it
       const ht = mat?.userData?.handTint;
-      if (ht) { entry.tint = ht.uTint.value.clone(); entry.tintMix = ht.uTintMix.value; }
+      if (ht) { entry.tint = ht.uTint.value.clone(); entry.tintMix = ht.uTintMix.value; entry.handSolid = ht.uSolid.value; }
       values.set(nodeId, entry);
     }
     return values;
@@ -1532,6 +1548,7 @@ gl_FragColor.a = 1.0;
       if (v.tintMix != null && mat?.userData?.handTint) {
         mat.userData.handTint.uTint.value.copy(v.tint);
         mat.userData.handTint.uTintMix.value = v.tintMix;
+        if (v.handSolid != null) mat.userData.handTint.uSolid.value = v.handSolid;
       }
 
       const back = this._outlineBackMeshes.get(nodeId);
@@ -1680,6 +1697,7 @@ gl_FragColor.a = 1.0;
         const tTo   = to.tintMix   < 0.001 ? tFrom   : to.tint;
         mat.userData.handTint.uTint.value.setRGB(lerp(tFrom.r, tTo.r), lerp(tFrom.g, tTo.g), lerp(tFrom.b, tTo.b));
         mat.userData.handTint.uTintMix.value = lerp(from.tintMix, to.tintMix);
+        if (from.handSolid != null && to.handSolid != null) mat.userData.handTint.uSolid.value = lerp(from.handSolid, to.handSolid);
       }
 
       // Back outline opacity — skip if a visibility transition is already driving it
