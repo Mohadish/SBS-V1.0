@@ -33,6 +33,7 @@ import { sceneCore }                    from '../core/scene.js';
 import { resolveNodeWorldPosition }     from './cables.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { APP_VERSION }                  from '../core/schema.js';
+import { materials }                    from './materials.js';   // 🎨 V0.3.4.155 — the hand is a registered mesh: it fades and takes a colour
 import * as userSettings                from '../core/user-settings.js';           // 🧤 V0.3.4.139 the skin file is a machine setting
 import { skinnedMeshGlb }               from '../io/glb-write.js';                // 🧤 the rig export
 import { skinnedMeshFbx }               from '../io/fbx-write.js';                // 🧤 … and as FBX (V0.3.4.140)
@@ -434,6 +435,20 @@ export function ensureHandObject3D(node) {
   }
   node.object3d = group;
   _sigCache.delete(node.id);
+  // 🎨 V0.3.4.155 — registered with the materials system under the hand's id by its
+  // VISIBLE mesh: the skinned mesh, else the palm (every capsule shares its material;
+  // the tick keeps them on whatever the palm wears). That one registration gives the
+  // hand the visibility fade of every other object and a per-step colour. A rebuild
+  // re-registers; the step's colour assignment survives it.
+  try {
+    const rep = rig.skin?.mesh || palm;
+    rig.rep = rep;
+    rig.tintMeshes = [palm, forearm, ...HAND_FINGERS.flatMap(f => fingers[f].bones)];
+    const keepAssign = materials.meshColorAssignments?.[node.id];
+    materials.unregisterMesh(node.id);
+    materials.registerMesh(node.id, rep);
+    if (keepAssign) { materials.meshColorAssignments[node.id] = keepAssign; materials.applyAll(); }
+  } catch (e) { console.warn('[hands] materials registration:', e?.message); }
   return group;
 }
 
@@ -873,6 +888,11 @@ export function tickHands(now) {
     const show = fine === n.id || selCtl?.nodeId === n.id;
     const rig2 = n.object3d.userData.rig;
     if (n._ghostLock && _holdGhost(n)) changed = true;   // 🔧 adjust mode: the prop stays put
+    // 🎨 the capsules wear what the registered palm wears (a colour, a fade patch)
+    if (!rig2.skin && rig2.rep && rig2.tintMeshes) {
+      const m = rig2.rep.material;
+      for (const t of rig2.tintMeshes) if (t !== rig2.rep && t.material !== m) { t.material = m; changed = true; }
+    }
     if (rig2.foreHandle.visible !== show) {
       for (const f of HAND_FINGERS) rig2.fingers[f].handle.visible = show;
       rig2.foreHandle.visible = show;
@@ -1328,7 +1348,9 @@ function _instantiateSkin(tpl, rig, group, wantRight, L, mat, tag) {
   // the capsules step aside (handles, tips, ghost stay)
   rig.palm.visible = false; rig.forearm.visible = false;
   for (const f of HAND_FINGERS) for (const b of rig.fingers[f].bones) b.visible = false;
-  return { root, map };
+  let mesh = null;
+  root.traverse(o => { if (!mesh && o.isSkinnedMesh) mesh = o; });
+  return { root, map, mesh };
 }
 
 /** After a solve / blend: every mapped bone takes its joint's rotation (and the forearm its stretch). */

@@ -2300,7 +2300,8 @@ function _renderColorsTab() {
     // ensureHardwareInstanceObject3D), so once it shows up here every
     // existing preset path works.
     return t === 'mesh' || t === 'flatShape' || t === 'replaceModel'
-        || t === 'hardwareInstance' || t === 'primitive';   // V0.2.22.91 — primitives colourable
+        || t === 'hardwareInstance' || t === 'primitive'    // V0.2.22.91 — primitives colourable
+        || t === 'hand';                                    // 🖐 V0.3.4.155 — a solid shade per step over the skin
   });
 
   // V0.1.99/V0.2.2: presets used by visible meshes (drives the 👁 filter).

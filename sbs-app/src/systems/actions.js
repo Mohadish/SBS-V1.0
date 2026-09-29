@@ -206,7 +206,11 @@ function _bulkAssignColorMulti(meshIds, presetId, stepIdSet, label) {
  * Set a preset as the permanent default color for meshes (undoable).
  */
 export function assignDefaultColor(meshIds, presetId) {
-  const ids = _expandRMSelection(_stripArchived(meshIds));
+  // 🖐 V0.3.4.155 — hands take a colour per step, never a default (their texture IS the default)
+  const nb = state.get('nodeById');
+  const hands = (meshIds || []).filter(id => nb?.get(id)?.type === 'hand');
+  if (hands.length) setStatus(`A hand has no default colour — its texture is the default. Give it a colour on the steps you want (${hands.length} hand${hands.length > 1 ? 's' : ''} left out).`, 'warn', 6000);
+  const ids = _expandRMSelection(_stripArchived((meshIds || []).filter(id => nb?.get(id)?.type !== 'hand')));
   if (!ids.length) return;
   const prevAssign  = Object.fromEntries(ids.map(id => [id, materials.meshColorAssignments[id] ?? null]));
   const prevDefault = Object.fromEntries(ids.map(id => [id, materials.meshDefaultColors[id] ?? null]));

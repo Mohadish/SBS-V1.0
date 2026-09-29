@@ -1188,6 +1188,36 @@ gl_FragColor.a = 1.0;
         continue;
       }
 
+      // ── 🖐 hand branch (V0.3.4.155) ────────────────────────────────
+      // A hand is registered under its node id by its visible mesh (the skinned
+      // mesh, or the palm whose material every capsule shares). A per-step preset
+      // paints it a SOLID shade — the texture goes, the preset's colour / roughness /
+      // metalness come — on a plain standard material so the skinned mesh still
+      // skins (the SBS shader has no skinning chunks). No default colour exists
+      // for a hand: without an assignment it is its textured self. Independent of
+      // the solid-override toggle, like a primitive.
+      if (mesh.userData?.handNodeId) {
+        const sid = this.meshColorAssignments[nodeId] ?? null;
+        const pst = sid ? presetById.get(sid) : null;
+        if (pst && original) {
+          this.ensurePresetDefaults(pst);
+          _disposeGenerated(mesh.material);
+          const solid = original.clone();
+          solid.map = null;
+          if (solid.color?.set) solid.color.set(pst.color || '#cccccc');
+          if (typeof pst.roughness === 'number' && 'roughness' in solid) solid.roughness = pst.roughness;
+          if (typeof pst.metalness === 'number' && 'metalness' in solid) solid.metalness = pst.metalness;
+          solid.needsUpdate = true;
+          mesh.material = solid;
+          this._patchScreenDoorFade(mesh.material);
+        } else if (original && mesh.material !== original) {
+          _disposeGenerated(mesh.material);
+          mesh.material = original;
+          this._patchScreenDoorFade(mesh.material);
+        }
+        continue;
+      }
+
       // ── primitive branch (V0.2.22.93) ─────────────────────────────
       // Parametric primitives get the FULL SBS shader for their assigned preset
       // — metalness / roughness / reflection / solidness, same as CAD meshes —
@@ -2858,6 +2888,11 @@ gl_FragColor.a = 1.0;
    * applied at capture/apply. Step snapshots only ever hold real overrides.
    */
   assignDefaultColor(meshNodeIds, presetId) {
+    // 🖐 V0.3.4.155 — a hand has no default colour: its texture is the default.
+    // (The UI says so; here the hand ids are simply left out.)
+    const nb = state.get('nodeById');
+    meshNodeIds = (meshNodeIds || []).filter(id => nb?.get(id)?.type !== 'hand');
+    if (!meshNodeIds.length) return;
     const prevDefaults = {};
     meshNodeIds.forEach(id => {
       prevDefaults[id] = this.meshDefaultColors[id];

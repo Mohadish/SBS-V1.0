@@ -21,6 +21,7 @@ import { createNode, generateId } from '../core/schema.js';
 import * as userSettings from '../core/user-settings.js';   // ★ V0.3.4.145 the grip library (a machine setting)
 import { buildNodeMap, findParent } from '../core/nodes.js';
 import { propagateNewNodeToSteps } from './actions.js';   // 🖐 V0.3.4.154 — a hand exists in EVERY step's tree, like any created object
+import { materials }   from './materials.js';   // 🎨 V0.3.4.155 — a deleted hand leaves the materials registry
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import * as hands      from './hands.js';
@@ -80,6 +81,7 @@ function _detach(id) {
   const obj = n?.object3d || steps.object3dById?.get(id);
   if (obj) { if (obj.parent) obj.parent.remove(obj); obj.traverse?.(o => { o.geometry?.dispose?.(); }); }
   steps.object3dById.delete(id);
+  try { materials.unregisterMesh(id); } catch {}
   (function splice(p) {
     const kids = p.children || [];
     for (let i = 0; i < kids.length; i++) { if (kids[i].id === id) { kids.splice(i, 1); return true; } if (splice(kids[i])) return true; }
