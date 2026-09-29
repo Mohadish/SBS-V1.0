@@ -1207,6 +1207,12 @@ gl_FragColor.a = 1.0;
           if (solid.color?.set) solid.color.set(pst.color || '#cccccc');
           if (typeof pst.roughness === 'number' && 'roughness' in solid) solid.roughness = pst.roughness;
           if (typeof pst.metalness === 'number' && 'metalness' in solid) solid.metalness = pst.metalness;
+          // solidness (V0.3.4.156): the preset's see-through goes into `opacity`; the
+          // screen-door patch below turns that alpha into a dither, the X-ray look every
+          // other object has — no blending, no sorting
+          const sol = typeof pst.solidness === 'number' ? Math.max(0, Math.min(1, pst.solidness)) : 1;
+          solid.opacity = sol;
+          solid.transparent = false;
           solid.needsUpdate = true;
           mesh.material = solid;
           this._patchScreenDoorFade(mesh.material);
@@ -1383,6 +1389,12 @@ gl_FragColor.a = 1.0;
   _captureUniformValues() {
     const values = new Map();
     for (const [nodeId, mesh] of this.meshById) {
+      // 🖐 V0.3.4.156 — a hand is left out of the colour LERP: lerping `color` while the
+      // map switches at once gave a white blink (texture → shade) and a tinted-texture
+      // snapshot (shade → texture). Its material is built at the target and switches at
+      // the start of the colour slot; a true texture ↔ shade crossfade needs a mixing
+      // shader and is not built.
+      if (mesh.userData?.handNodeId) continue;
       const mat = mesh.material;
       let color               = new THREE.Color(1, 1, 1);
       let solidness           = 1.0;
@@ -2117,7 +2129,10 @@ gl_FragColor.a = 1.0;
     const presetById   = new Map(presets.map(p => [p.id, p]));
 
     for (const [nodeId, mesh] of this.meshById) {
-      if (!settings.enabled) {
+      // 🖐 V0.3.4.156 — never on a hand: an edge outline is built from the bind-pose
+      // geometry, so on a skinned hand it drew the rest pose over the posed one, and
+      // on the capsules it is noise. The user: "drop it on hands".
+      if (!settings.enabled || mesh.userData?.handNodeId) {
         this._removeOutline(nodeId);
         continue;
       }
