@@ -29,6 +29,7 @@ import { buildNodeMap } from '../core/nodes.js';
 import { storeBaseTransformFromObject3D, captureMeshModelLocalMatrices } from '../core/transforms.js';
 import * as modelCache  from './model-cache.js';            // V0.2.22.80 — CAD fast-load tail cache
 import * as userSettings from '../core/user-settings.js';   // remembered bake preference
+import { repairNormalsIfBad } from './normal-repair.js';     // V0.3.4.171 — unusable stored normals rebuilt at the door
 
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
@@ -412,6 +413,29 @@ async function ensureOCCT() {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  NORMAL REPAIR (V0.3.4.171) — see io/normal-repair.js. Every imported mesh is
+//  measured; one whose stored normals do not belong to its faces (joint.obj from
+//  3ds Max: every vn 90° off) gets them rebuilt in place. One summary line per
+//  import burst, not one per mesh.
+// ═══════════════════════════════════════════════════════════════════════════
+let _nrPending = null;
+function _checkNormals(geometry, label) {
+  let r;
+  try { r = repairNormalsIfBad(geometry); } catch (e) { console.warn('[import] normal check failed on', label, e?.message || e); return; }
+  if (!r?.repaired) return;
+  if (!_nrPending) {
+    _nrPending = { n: 0, worst: 0, names: [] };
+    setTimeout(() => {
+      const p = _nrPending; _nrPending = null;
+      console.warn(`[import] rebuilt the normals of ${p.n} mesh(es) — the file's own were unusable (worst mean tilt ${p.worst.toFixed(0)}°): ${p.names.slice(0, 3).join(', ')}${p.n > 3 ? ', …' : ''}`);
+    }, 0);
+  }
+  _nrPending.n++;
+  if (r.measure && r.measure.meanDeg > _nrPending.worst) _nrPending.worst = r.measure.meanDeg;
+  if (_nrPending.names.length < 3) _nrPending.names.push(label || '?');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  GEOMETRY BUILDER
 // ═══════════════════════════════════════════════════════════════════════════
 /**
@@ -440,6 +464,7 @@ function buildGeometry(meshData) {
   }
 
   if (!norm && pos) geom.computeVertexNormals();
+  else if (pos)     _checkNormals(geom, 'cad mesh');
   geom.computeBoundingBox();
   geom.computeBoundingSphere();
   return geom;
@@ -641,6 +666,8 @@ export function buildNodeFromThreeObject(obj, obj3dMap) {
     } else {
       obj.material = normalizeMaterial(obj.material);
     }
+
+    if (obj.geometry?.attributes?.position) _checkNormals(obj.geometry, name);   // V0.3.4.171
 
     // Store bounding box for placeholder visualisation when this asset is missing.
     const meshNode = createNode('mesh', { id: meshId, name });
