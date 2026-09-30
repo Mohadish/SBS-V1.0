@@ -2260,6 +2260,12 @@ async function _encodeAlphaWebm(seg, abs, onProgress, isCancelled = () => false)
       '-map', '[v]', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
       '-b:v', '6M', '-deadline', 'good', '-cpu-used', '2',
       '-row-mt', '1', '-threads', String(threads), '-tile-columns', '2',
+      // 🎯 V0.3.4.183 — a keyframe every 10 frames. The export seeks this clip
+      // frame by frame, and every seek decodes from the previous keyframe (two
+      // 1080p planes for alpha): libvpx's default spacing (~128 frames) made a
+      // seek cost 170–360 ms — the "stuck, then jumps" in rendered segments.
+      // Measured on a real segment: median seek 179 ms → 30 ms, file +5%.
+      '-g', '10',
       '-an', '-progress', progressFile, '-stats_period', '0.5', abs,
     ]);
   } finally {

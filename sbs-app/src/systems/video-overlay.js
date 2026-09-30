@@ -471,6 +471,73 @@ function _isExporting() { try { return !!state.get('_exporting'); } catch { retu
 
 export function hasActiveVideos() { return _players.size > 0; }
 
+// ─── 🎯 Export seeks: WAIT for the decoder (V0.3.4.183) ─────────────────────
+//
+// THE STALL-AND-JUMP ROOT CAUSE (user field report, 2026-09-30: an imported
+// transparent clip "gets stuck mid-way for half a second, then jumps ahead as
+// if that stretch was skipped" — in the rendered segment, not in the clip).
+// Every export frame seeks the <video>; the wait used to give up after 250 ms
+// and capture whatever frame was still on the element ("a dead decoder must
+// never stall the export"). A VP9-with-alpha clip decodes TWO 1080p planes
+// from its last keyframe on every seek — and the imported WebMs carried one
+// keyframe per ~128 frames — so a seek near the end of a group takes 170–360
+// ms (measured: median 179 ms, one seek in four past the cap). Worse, the next
+// frame's seek CANCELS the one still in flight and restarts from the keyframe,
+// so once behind the decoder stayed behind until the target crossed a
+// keyframe: N stale captures (the "stuck"), then a leap (the "jump").
+//
+// Now: a seek waits for 'seeked' up to SEEK_CAP_MS (a truly dead decoder is
+// still not fatal — the frame is captured stale, but that is COUNTED and
+// logged, never silent), and the encode side puts a keyframe every 10 frames
+// (steps-panel.js _encodeAlphaWebm) so the wait is ~30 ms, not ~180.
+export const SEEK_CAP_MS  = 8000;
+export const SEEK_SLOW_MS = 1000;
+const _seekStats = { seeks: 0, skipped: 0, totalMs: 0, maxMs: 0, slow: 0, timedOut: 0 };
+
+/** Forget the counters (the exporter calls it at the start of a run). */
+export function resetSeekStats() { for (const k of Object.keys(_seekStats)) _seekStats[k] = 0; }
+/** The counters + averages — window.sbsDiag.videoSeeks() prints them. */
+export function seekStats() {
+  return { ..._seekStats, meanMs: _seekStats.seeks ? +(_seekStats.totalMs / _seekStats.seeks).toFixed(1) : 0, maxMs: +_seekStats.maxMs.toFixed(1) };
+}
+/** One console line per export run — the numbers behind "the clip stutters". */
+export function logSeekStats(label = 'export') {
+  const s = seekStats();
+  if (!s.seeks) return s;
+  const fn = s.timedOut ? console.warn : console.log;
+  fn(`[video] ${label}: ${s.seeks} seek(s), mean ${s.meanMs} ms, max ${s.maxMs} ms, ${s.slow} slower than ${SEEK_SLOW_MS} ms, ${s.timedOut} timed out (captured stale)${s.timedOut ? ' — re-import the clip (keyframes every 10 frames since V0.3.4.183) or check the decoder' : ''}`);
+  return s;
+}
+
+/**
+ * Seek one element and resolve when the decoder has landed there (or at the
+ * cap). Resolves true when the seek completed, false when it timed out.
+ */
+function _seekTo(video, targetSec, capMs, label) {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    let done = false, timer = 0;
+    const finish = (timedOut) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      video.removeEventListener('seeked', onSeeked);
+      const dt = performance.now() - t0;
+      _seekStats.seeks++; _seekStats.totalMs += dt; if (dt > _seekStats.maxMs) _seekStats.maxMs = dt;
+      if (dt > SEEK_SLOW_MS) _seekStats.slow++;
+      if (timedOut) {
+        _seekStats.timedOut++;
+        console.warn(`[video] seek to ${targetSec.toFixed(3)}s did not land within ${capMs} ms (${label}) — frame captured stale`);
+      }
+      resolve(!timedOut);
+    };
+    const onSeeked = () => finish(false);
+    video.addEventListener('seeked', onSeeked);
+    timer = setTimeout(() => finish(true), capMs);
+    try { video.currentTime = targetSec; } catch { finish(false); }
+  });
+}
+
 /**
  * Seek every live clip to the synthetic clock and resolve when their frames
  * are decoded. `synthMs` anchors each player on first sight — a clip plays
@@ -488,20 +555,18 @@ export async function seekAllToClock(synthMs) {
     // frozen first frame. The fade lands on a still, exactly per spec.
     const inMs  = _trimIn(node);
     const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0);
-    const target = (p.anchorMs == null)
-      ? inMs / 1000
-      : Math.min(Math.max(inMs + (synthMs - p.anchorMs), inMs), outMs) / 1000;
-    if (Math.abs(video.currentTime - target) < 0.012) continue;   // within ~1/4 frame — keep
-    waits.push(new Promise((resolve) => {
-      let done = false;
-      const ok = () => { if (!done) { done = true; video.removeEventListener('seeked', ok); resolve(); } };
-      video.addEventListener('seeked', ok, { once: true });
-      // A dead decoder must never stall the export — cap the wait; the
-      // capture then reuses the previous decoded frame (visually a held
-      // frame, never a blink).
-      setTimeout(ok, 250);
-      try { video.currentTime = target; } catch { ok(); }
-    }));
+    const wantMs = (p.anchorMs == null)
+      ? inMs
+      : Math.min(Math.max(inMs + (synthMs - p.anchorMs), inMs), outMs);
+    // V0.3.4.183 — +1 ms: Chromium truncates the seek target to whole
+    // microseconds, so a target sitting EXACTLY on a frame boundary (2/30 s =
+    // 66666.67 µs) lands on the frame BEFORE it — measured: a third of the
+    // frames of a 30 fps clip exported at 30 fps came out as the previous
+    // frame (a duplicate, then a skip). One millisecond inside the frame
+    // cannot reach the next one at any sane frame rate.
+    const target = Math.min(wantMs + 1, Math.max(outMs, inMs)) / 1000;
+    if (Math.abs(video.currentTime - target) < 0.002) { _seekStats.skipped++; continue; }   // this frame was already asked for
+    waits.push(_seekTo(video, target, SEEK_CAP_MS, node.getAttr('videoRel') || node.getAttr('videoPath') || 'clip'));
   }
   if (waits.length) await Promise.all(waits);
 }
@@ -563,13 +628,11 @@ export async function parkAtEnd() {
     if (!node || node.isDestroyed?.() || video.readyState < 1) continue;
     const outMs = _trimOut(node) || Number(node.getAttr('videoDurationMs') ?? 0);
     p.anchorMs = -1e12;
-    await new Promise((res) => {
-      if (Math.abs(video.currentTime * 1000 - outMs) < 12) return res();
-      const ok = () => res();
-      video.addEventListener('seeked', ok, { once: true });
-      setTimeout(ok, 400);
-      try { video.currentTime = outMs / 1000; } catch { ok(); }
-    });
+    if (Math.abs(video.currentTime * 1000 - outMs) < 2) continue;
+    // V0.3.4.183 — was a 400 ms cap: reaching the LAST frame of a long-GOP
+    // alpha clip decodes the whole group (~300 ms+), so the lead's crossfade
+    // sometimes faded out the first frame instead. Same real wait as the frames.
+    await _seekTo(video, outMs / 1000, SEEK_CAP_MS, 'park at end');
   }
 }
 
@@ -735,4 +798,10 @@ export function diagVideos() {
   }
   console.table(rows);
   return rows;
+}
+
+// window.sbsDiag.videoSeeks() — the export's seek cost so far (V0.3.4.183).
+if (typeof window !== 'undefined') {
+  window.sbsDiag = window.sbsDiag || {};
+  window.sbsDiag.videoSeeks = () => { const s = seekStats(); console.table([s]); return s; };
 }

@@ -422,6 +422,7 @@ export async function measureTimelineDurations({ fps, onProgress, signal } = {})
   const onStepStart = (i, step) => stepMarkers.push({ stepId: step.id, timeInMs: Math.round(encodedMs) });
 
   state.setState({ _exporting: true });        // suppress live narration playback
+  videoOverlay.resetSeekStats();               // 🎯 V0.3.4.183 — per-run seek accounting
   await _hardResetToFirstStep(stepsToPlay);
   sceneCore.stopLoop();
   clock.setClockImpl(() => synthMs);
@@ -439,6 +440,7 @@ export async function measureTimelineDurations({ fps, onProgress, signal } = {})
     _setWaitImpl(null);
     sceneCore.startLoop();
     state.setState({ _exporting: false });
+    videoOverlay.logSeekStats('timing pass');
     // Land the scene back where the user was (instant apply).
     try { if (prevActiveId) await steps.activateStep(prevActiveId, false); } catch {}
   }
@@ -1065,6 +1067,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
 
   // Suppress live narration playback while the timeline runs for capture.
   state.setState({ _exporting: true });
+  videoOverlay.resetSeekStats();   // 🎯 V0.3.4.183 — per-run seek accounting (logged in the finally)
   // V0.3.0.86 — render the TIGHT export frame (no live overscan margin) during capture.
   sceneCore.setExportFraming(true);
   // Authoring-aid Bbox placeholders are hidden from the encoded frames
@@ -1120,6 +1123,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       sceneCore.startLoop();
     }
     state.setState({ _exporting: false });
+    videoOverlay.logSeekStats('video export');   // 🎯 one line: seeks, mean/max ms, stale captures
     sceneCore.setExportFraming(false);   // restore live overscan
     if (!exportBboxes) steps.setPlaceholderBboxesVisible(true);
   }
