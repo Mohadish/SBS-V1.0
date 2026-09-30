@@ -1127,7 +1127,29 @@ class StepManager {
       // insertSimP never resolves and the export hangs (the bug the user hit).
       const insertTotalDur = _stagedActorIds.size ? getStagedInsertTotalMs(objDur) : 0;
       const maxDur = Math.max(cameraDur, objDur, insertTotalDur);
-      await Promise.all([cameraP, objectP, cableSimP, overlaySimP, insertSimP, _sleep(maxDur)]);
+      // V0.3.4.179 — THE EXPORT STALL ON FRESH STEPS. In an export the overlay
+      // crossfade is armed only after the step's overlay LOAD promise settles (a
+      // microtask, V0.3.2.95) — but the synthetic sleep below runs its ticks
+      // SYNCHRONOUSLY to the end of the transition (it yields only every 100
+      // frames), so the fade armed after every tick had fired, nothing advanced it,
+      // overlaySimP never resolved and the export waited until the user's arrow
+      // press snapped it (steps made in this session have no preset → this path;
+      // loaded steps get a preset on migration → the phased path, which already
+      // drives ticks until its fade is done). So: yield one task first (the arm
+      // lands), then keep ticking past maxDur while anything is still pending —
+      // capped, and loud when the cap is hit.
+      await new Promise(r => setTimeout(r, 0));
+      let simDone = false;
+      const simAll = Promise.all([cameraP, objectP, cableSimP, overlaySimP, insertSimP]).then(() => { simDone = true; });
+      await _sleep(maxDur);
+      let extra = 0;
+      const capMs = 30000;
+      while (!simDone && extra < capMs) { await _sleep(40, { minOneFrame: true }); extra += 40; }
+      if (!simDone) {
+        console.error(`[steps] transition promises did not settle within ${Math.round(capMs / 1000)}s after the ${maxDur}ms move — continuing (camera/object/cable/overlay/insert)`);
+        this.snapCurrentToFinal?.();
+      }
+      await simAll;
     }
 
     // ── Guard: if a newer animation started while we awaited, bail out ──
