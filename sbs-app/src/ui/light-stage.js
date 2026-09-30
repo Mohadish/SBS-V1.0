@@ -20,11 +20,12 @@ import { sceneCore } from '../core/scene.js';
 import * as userSettings from '../core/user-settings.js';
 
 const HDRI_LABELS = {
-  '': 'Built-in studio', studio_small_08: 'Studio — soft boxes',
+  '': 'Built-in studio', gradient: 'Smooth gradient — no features',   // gradient: V0.3.4.172
+  studio_small_08: 'Studio — soft boxes',
   studio_small_09: 'Studio — bright', photo_studio_01: 'Photo — warm',
   brown_photostudio_02: 'Photo — earthy',
 };
-const HDRI_CYCLE = ['', 'studio_small_08', 'studio_small_09', 'photo_studio_01', 'brown_photostudio_02'];
+const HDRI_CYCLE = ['', 'gradient', 'studio_small_08', 'studio_small_09', 'photo_studio_01', 'brown_photostudio_02'];
 
 let _dlg = null;
 
