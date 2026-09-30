@@ -114,6 +114,24 @@ function _handShellTarget(w, h) {
   return rt;
 }
 
+// V0.3.4.168 — THE SHADING NORMAL, ORIENTED BY THE GEOMETRY. Both SBS passes used
+// faceforward(N, -V, N): flip N wherever dot(N, V) < 0. On a part whose vertex
+// normals lean away from its faces (CAD tessellation), that zero crossing is not
+// at the silhouette but a LINE across the face — one screen row, moving with the
+// camera, the same row on every parallel plate, one side lit with N and the other
+// with −N (his horizontal / vertical "environment box" lines; in production the
+// rim's curvature gate lit the jump as a white hairline). Now N is flipped only
+// when it disagrees with the face's own geometric normal (from the position
+// derivatives, turned toward the viewer so winding does not matter) — a decision
+// that is constant across the face.
+const FACING_GLSL = `
+vec3 sbsFaceNormal(vec3 N, vec3 V, vec3 viewPos) {
+  vec3 Ng = cross(dFdx(viewPos), dFdy(viewPos));
+  if (dot(Ng, V) < 0.0) Ng = -Ng;
+  return dot(N, Ng) < 0.0 ? -N : N;
+}
+`;
+
 // Simple view-space Phong lighting helper
 const PHONG_GLSL = `
 vec3 sbsPhong(vec3 albedo, vec3 N, vec3 V, float roughness, float metalness, float reflectivity) {
@@ -238,6 +256,7 @@ vec3 sbsACES(vec3 x) {
 // viewMatrix is injected automatically by Three.js — do NOT redeclare it here
 uniform float transitionOpacity;     // 0=invisible, 1=visible (dither fade)
 ${DITHER_NOISE_GLSL}
+${FACING_GLSL}
 ${PHONG_GLSL}
 // V0.3.4.167 — THE ENVIRONMENT IS THE PMREM. Until now this shader took a
 // samplerCube: first six unrelated canvas gradients (a box with hard edges),
@@ -258,8 +277,7 @@ vec3 sbsEnv(vec3 dir, float rough) {
 }
 void main() {
   vec3  V   = normalize(-vViewPos);
-  vec3  N   = normalize(vNormalView);
-  N = faceforward(N, -V, N);
+  vec3  N   = sbsFaceNormal(normalize(vNormalView), V, vViewPos);   // V0.3.4.168 (was faceforward)
   float dotNV = clamp(dot(N, V), 0.0, 1.0);
 
   // ── Opacity: smooth curve blend ─────────────────────────────────────
@@ -334,10 +352,10 @@ vec3 sbsACES(vec3 x) {
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 ${DITHER_NOISE_GLSL}
+${FACING_GLSL}
 void main() {
   vec3  V   = normalize(-vViewPos);
-  vec3  N   = normalize(vNormalView);
-  N = faceforward(N, -V, N);
+  vec3  N   = sbsFaceNormal(normalize(vNormalView), V, vViewPos);   // V0.3.4.168 (was faceforward)
   float dotNV  = clamp(dot(N, V), 0.0, 1.0);
   float fall   = pow(1.0 - dotNV, 2.5);   // fixed falloff power matches front shader
   float darken = mix(1.0, 1.0 - uBackEdgeDarken, fall);
@@ -509,6 +527,48 @@ class MaterialsSystem {
         materials: { total: sampled, current, stale, textured: standard } };
       console.log('[sbsEnvDiag]', JSON.stringify(out));
       return out;
+    };
+
+    // V0.3.4.168 — console: sbsNormalDiag() → how far each part's vertex normals lean
+    // from its faces (selected parts, or all with sbsNormalDiag(true)). meanDeg / maxDeg
+    // = angle between a triangle's geometric normal (from its winding) and its vertex
+    // normals; tiltedPct = triangles over 30°, flippedPct = over 90° (pointing into the
+    // part). A healthy CAD mesh reads a few degrees; a plate that draws a moving line
+    // across itself reads tens of degrees or flips.
+    if (typeof window !== 'undefined') window.sbsNormalDiag = (all = false) => {
+      const ids = (all || !this._selectedMeshIds?.size) ? [...this.meshById.keys()] : [...this._selectedMeshIds];
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      const ng = new THREE.Vector3(), nv = new THREE.Vector3(), t1 = new THREE.Vector3(), t2 = new THREE.Vector3();
+      const rows = [];
+      for (const id of ids) {
+        const mesh = this.meshById.get(id);
+        const g = mesh?.geometry;
+        if (!g?.attributes?.position) continue;
+        const pos = g.attributes.position, nor = g.attributes.normal, idx = g.index;
+        if (!nor) { rows.push({ id, name: mesh.name || '', normals: 'NONE' }); continue; }
+        const tris = idx ? Math.floor(idx.count / 3) : Math.floor(pos.count / 3);
+        const step = Math.max(1, Math.floor(tris / 4000));
+        let n = 0, tilted = 0, flipped = 0, sum = 0, max = 0;
+        for (let t = 0; t < tris; t += step) {
+          const i0 = idx ? idx.getX(t * 3) : t * 3, i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1, i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+          a.fromBufferAttribute(pos, i0); b.fromBufferAttribute(pos, i1); c.fromBufferAttribute(pos, i2);
+          ng.subVectors(b, a).cross(t2.subVectors(c, a));
+          if (ng.lengthSq() < 1e-24) continue;
+          ng.normalize();
+          nv.fromBufferAttribute(nor, i0).add(t1.fromBufferAttribute(nor, i1)).add(t2.fromBufferAttribute(nor, i2));
+          if (nv.lengthSq() < 1e-12) continue;
+          nv.normalize();
+          const ang = Math.acos(Math.max(-1, Math.min(1, ng.dot(nv)))) * 180 / Math.PI;
+          n++; sum += ang; if (ang > max) max = ang; if (ang > 30) tilted++; if (ang > 90) flipped++;
+        }
+        if (!n) continue;
+        rows.push({ id, name: mesh.name || '', tris, meanDeg: +(sum / n).toFixed(1), maxDeg: +max.toFixed(1),
+          tiltedPct: +(100 * tilted / n).toFixed(1), flippedPct: +(100 * flipped / n).toFixed(1),
+          mirrored: mesh.matrixWorld.determinant() < 0 });
+      }
+      rows.sort((x, y) => (y.tiltedPct ?? 0) - (x.tiltedPct ?? 0));
+      console.table(rows.slice(0, 40));
+      return rows;
     };
   }
 
