@@ -3190,6 +3190,10 @@ class StepManager {
       // step starts with an identical overlay. Without this the dup
       // arrived with an empty stage.
       overlay:      source.overlay || null,
+      // V0.3.4.177 — these two were dropped: the copy lost its translated
+      // subtitles and its per-step header hides.
+      ...(source.subtitles            ? { subtitles: JSON.parse(JSON.stringify(source.subtitles)) } : {}),
+      ...(source.hiddenHeaderIds?.length ? { hiddenHeaderIds: [...source.hiddenHeaderIds] }          : {}),
     });
     // V0.3.4.159 — place:false = the copy only (a block duplicate places them all at once)
     if (!place) return copy;
@@ -3199,7 +3203,10 @@ class StepManager {
     newSteps.splice(sourceIdx + 1, 0, copy);
 
     state.setState({ steps: newSteps });
-    state.setActiveStep(copy.id);
+    // V0.3.4.177 — ACTIVATE the copy (apply its scene), don't just mark it active:
+    // duplicating a non-active step left the live scene on the old step while the
+    // copy was "active", and the next sync wrote the old step's picture into it.
+    this.activateStep(copy.id, false);
     state.markDirty();
     state.emit('step:created', copy);
     return copy;

@@ -1018,7 +1018,7 @@ export function duplicateStep(stepId) {
         const srcIdx = cur.findIndex(s => s.id === stepId);
         cur.splice(srcIdx + 1, 0, copy);
         state.setState({ steps: cur });
-        state.setActiveStep(copy.id);
+        steps.activateStep(copy.id, false);   // V0.3.4.177 — apply its scene, not just the id
         forceUniteStepSelection(copy.id);
         state.markDirty();
       }
@@ -1045,24 +1045,48 @@ export function duplicateStepsAsBlock(stepIds) {
   if (ids.length === 1) { const c = duplicateStep(ids[0]); return c ? [c] : []; }
 
   const anchor    = all0[idx.get(ids[ids.length - 1])];
-  const joinGroup = anchor.groupHead ? anchor.id : (anchor.groupId || null);
+  const headOf    = (s) => (s.groupHead ? s.id : (s.groupId || null));
+  const joinGroup = headOf(anchor);
+  // V0.3.4.177 — GROUPS: a group copied WHOLE (its head and every member selected)
+  // becomes a NEW group, not more members of the original; loose steps join the
+  // anchor's run as before. Only when the anchor sits inside a run that continues
+  // after it does everything join (a new group dropped mid-run would split it).
+  const next = all0[idx.get(anchor.id) + 1];
+  const runContinues = !!(joinGroup && next && headOf(next) === joinGroup);
+  const selected = new Set(ids);
+  const copyOf = new Map();           // source id → copy
   const copies = [];
   for (const id of ids) {
     const c = steps.duplicateStep(id, { place: false });
     if (!c) continue;
     c.altered   = true;                 // ★ a new step — never rendered under its own id
     c.chapterId = anchor.chapterId;
-    c.groupId   = joinGroup;
+    copyOf.set(id, c);
     copies.push(c);
   }
   if (!copies.length) return [];
+  for (const id of ids) {
+    const src = all0[idx.get(id)], c = copyOf.get(id);
+    if (!c) continue;
+    const head = headOf(src);
+    const wholeGroup = !runContinues && head && selected.has(head) && copyOf.has(head);
+    if (wholeGroup) {
+      if (src.groupHead) { c.groupHead = true; c.groupId = null; if (src.groupLocked !== undefined) c.groupLocked = src.groupLocked; }
+      else               { c.groupHead = false; c.groupId = copyOf.get(head).id; }
+    } else {
+      c.groupHead = false;
+      c.groupId   = joinGroup;
+    }
+  }
   const copyIds = new Set(copies.map(c => c.id));
+  const prevActive = state.get('activeStepId');
+  const prevSel    = new Set(state.get('selectedStepIds') instanceof Set ? state.get('selectedStepIds') : []);
   const place = () => {
     const cur = (state.get('steps') || []).filter(s => !copyIds.has(s.id));
     const at  = cur.findIndex(s => s.id === anchor.id);
     cur.splice(at < 0 ? cur.length : at + 1, 0, ...copies);
     state.setState({ steps: cur });
-    state.setActiveStep(copies[0].id);
+    steps.activateStep(copies[0].id, false);   // V0.3.4.177 — apply its scene, not just the id
     state.setState({ selectedStepIds: new Set(copyIds) });
     state.markDirty();
   };
@@ -1070,7 +1094,14 @@ export function duplicateStepsAsBlock(stepIds) {
   for (const c of copies) state.emit('step:created', c);
   undoManager.push(
     `Duplicate ${copies.length} steps`,
-    () => { for (const c of copies) steps.deleteStep(c.id); },
+    () => {   // V0.3.4.177 — one removal, back to the step and selection of before (no N cascading activations)
+      const cur = (state.get('steps') || []).filter(s => !copyIds.has(s.id));
+      state.setState({ steps: cur });
+      if (cur.some(s => s.id === prevActive)) steps.activateStep(prevActive, false);
+      else if (cur.length) steps.activateStep(cur[Math.min(cur.length - 1, Math.max(0, idx.get(anchor.id) ?? 0))].id, false);
+      state.setState({ selectedStepIds: new Set([...prevSel].filter(id => cur.some(s => s.id === id))) });
+      state.markDirty();
+    },
     () => place(),
   );
   return copies;
