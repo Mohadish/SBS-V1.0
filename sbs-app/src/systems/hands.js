@@ -1134,8 +1134,9 @@ export async function setHandSkinFile(path, { setting } = {}) {
       // textures next to the file resolve against its folder (embedded ones need no path)
       const dir = _skin.path.replace(/[\\/][^\\/]*$/, '');
       const base = dir ? 'file:///' + dir.replace(/\\/g, '/').replace(/^\/+/, '') + '/' : '';
+      const beside = await _imagesNextTo(dir);   // V0.3.4.192 — known BEFORE the parse so the texture redirect can check what is really there
       if (ext === 'fbx') {
-        const group = new FBXLoader(_skinLoadingManager()).parse(ab, base);   // sync; binary or ASCII ≥ 7.0
+        const group = new FBXLoader(_skinLoadingManager(beside)).parse(ab, base);   // sync; binary or ASCII ≥ 7.0
         _skin.template = _analyseSkin({ scene: group, parser: null });
       } else {
         const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, base, res, rej));
@@ -1146,7 +1147,7 @@ export async function setHandSkinFile(path, { setting } = {}) {
       // then drop every map that has none: flat skin colour beats black.
       await _settleTextures(_skin.template);
       _skin.template.dir = dir;
-      _skin.textures = await _imagesNextTo(dir);
+      _skin.textures = beside;
     } catch (e) {
       _skin.error = String(e?.message || e);
       console.warn('[hands] skin:', e);
@@ -1172,9 +1173,16 @@ function _aliasTexture(name) {
   }
   return String(name || '');
 }
-function _skinLoadingManager() {
+/** The FBX's own texture name → the file that IS beside it: redirected only when the named file is missing and its bundled name is there. */
+function _skinLoadingManager(namesBeside = []) {
   const mgr = new (T().LoadingManager)();
-  mgr.setURLModifier(url => url.replace(/M4JeremyRR[^/\\]*\.jpg$/i, (m) => _aliasTexture(m)));
+  const lc = namesBeside.map(n => n.toLowerCase());
+  mgr.setURLModifier(url => url.replace(/[^/\\]+\.(jpe?g|png|webp)$/i, (file) => {
+    try { file = decodeURIComponent(file); } catch { /* keep as is */ }
+    if (!lc.length || lc.includes(file.toLowerCase())) return file;   // the file is there (or unknown): leave it alone
+    const alias = _aliasTexture(file);
+    return lc.includes(alias.toLowerCase()) ? encodeURIComponent(alias) : file;
+  }));
   return mgr;
 }
 
@@ -1194,11 +1202,15 @@ async function _imagesNextTo(dir) {
  */
 export async function setHandSkinTexture(name, { persist = true } = {}) {
   const tpl = _skin.template;
-  let want = _aliasTexture(name);   // V0.3.4.190 — an old saved name still works
-  // V0.3.4.191 — a name that is not beside the file (a stale machine setting) never
-  // reaches the loader: fall back to the file's own texture, quietly.
+  let want = String(name || '');
+  // V0.3.4.192 — the name is taken AS IS when that file is beside the skin (the
+  // user's own skin folder may still carry the artist's names — .191 renamed
+  // them blindly and then could not find them). Only a name that is NOT there
+  // is tried under its new bundled name (an old saved setting on the built-in
+  // skin); still nothing → the file's own texture, quietly.
   if (want && _skin.textures.length && !_skin.textures.includes(want)) {
-    const ci = _skin.textures.find(t => t.toLowerCase() === want.toLowerCase());
+    const lc = want.toLowerCase(), alias = _aliasTexture(want).toLowerCase();
+    const ci = _skin.textures.find(t => t.toLowerCase() === lc) || _skin.textures.find(t => t.toLowerCase() === alias);
     if (ci) want = ci;
     else { console.warn('[hands] texture not beside the skin file, using its own:', want); want = ''; }
   }
