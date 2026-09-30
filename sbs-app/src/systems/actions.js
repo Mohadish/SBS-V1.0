@@ -10506,7 +10506,30 @@ function _primLateralOffset(kind, p = {}) {
 /** Create + insert a primitive from an explicit spec; selects it; one undo.
  *  parentId overrides the default (selected-folder) parent; transform overrides the
  *  default origin pose; baseAtOrigin overrides the default base-face flag. */
-function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel, parentId, transform, baseAtOrigin }) {
+// 🎨 V0.3.4.180 — a primitive is born wearing the "Primitive" colour preset (made
+// on the first primitive, like "Hardware"), assigned as its DEFAULT colour. Without
+// a preset in the list a primitive had no base to transition FROM: shading it on one
+// step later could not crossfade, because its default was no colour at all (user:
+// "same as hardware — a base colour every new primitive gets").
+const PRIMITIVE_PRESET_NAME  = 'Primitive';
+const PRIMITIVE_PRESET_COLOR = '#a9b6c4';
+function _ensurePrimitivePreset() {
+  const presets = state.get('colorPresets') || [];
+  const existing = presets.find(p => p.name === PRIMITIVE_PRESET_NAME);
+  if (existing) return existing;
+  const preset = { id: generateId('preset'), name: PRIMITIVE_PRESET_NAME, type: 'solid', color: PRIMITIVE_PRESET_COLOR };
+  state.setState({ colorPresets: [...presets, preset] });
+  if (state.get('solidOverride') !== true) state.setState({ solidOverride: true });   // presets must show
+  return preset;
+}
+function _assignPrimitiveDefault(nodeId, presetId = null) {
+  const pid = presetId || _ensurePrimitivePreset()?.id;
+  if (!pid) return;
+  materials.assignDefaultColor([nodeId], pid);   // the DEFAULT colour, carried across every step
+  materials.applyAll?.();
+}
+
+function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel, parentId, transform, baseAtOrigin, defaultPresetId = null }) {
   const def = PRIMITIVE_DEFS[kind];
   if (!def) return null;
   const parent = (parentId && state.get('nodeById')?.get(parentId)) || _primitiveParent();
@@ -10522,6 +10545,7 @@ function _spawnPrimitive({ kind, params, quality, primLinkId, name, undoLabel, p
   });
   if (!ensurePrimitiveObject3D(node)) return null;
   _readdPrimitiveNode(node, parent.id);
+  try { _assignPrimitiveDefault(node.id, defaultPresetId); } catch (e) { console.warn('[primitive] default colour:', e?.message); }
   state.markDirty();
   if (undoLabel) {
     undoManager.push(undoLabel,
@@ -10602,6 +10626,7 @@ function _pastePrimitive({ linked, undoLabel = null, inPlace = false }) {
     params, quality, baseAtOrigin, parentId, transform,
     primLinkId: linked ? (cb.primLinkId || generateId('primLink')) : generateId('primLink'),
     name:       cb.name,
+    defaultPresetId: live ? (materials.meshDefaultColors?.[live.id] || null) : null,   // V0.3.4.180 — a copy wears the source's default
     undoLabel:  undoLabel || (linked ? 'Paste linked primitive' : 'Paste primitive'),
   });
   if (!id) return null;
