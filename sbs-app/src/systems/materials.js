@@ -468,6 +468,11 @@ class MaterialsSystem {
     // Build PMREM env map as soon as the Three.js renderer is available.
     // sceneCore emits 'init' after the WebGLRenderer is created.
     sceneCore.on('init', () => this._initPmremEnvMap());
+    // V0.3.4.164 — that event had ALREADY fired: main.js boots the scene (step 2)
+    // before materials.init() (step 3), so the studio never built at start-up —
+    // scene.environment stayed empty and the SBS shader kept the six-canvas box
+    // (why .163 changed nothing on screen). Build it now if the renderer is up.
+    if (sceneCore.renderer) this._initPmremEnvMap();
   }
 
 
