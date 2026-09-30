@@ -576,10 +576,41 @@ class MaterialsSystem {
   /** Returns the best available env map for the SBS shader's samplerCube.
    *  IMPORTANT: this MUST be a real CubeTexture — PMREM output is a 2D
    *  CubeUV-packed texture and silently fails when bound to a samplerCube
-   *  (the V0.3.2.49 HDRI "does nothing" bug). HDRI cube wins when active. */
+   *  (the V0.3.2.49 HDRI "does nothing" bug). HDRI cube wins when active;
+   *  then the studio cube (V0.3.4.163); the canvas cube only before the
+   *  renderer exists. */
   get metalEnvMap() {
     return this._hdriCubeMap
+      ?? this._studioCubeMap
       ?? (this._canvasEnvMap ??= this._createCanvasEnvMap());
+  }
+
+  /**
+   * V0.3.4.163 — THE STUDIO AS THE SHADER'S CUBE. The canvas cube above was
+   * meant as a stop-gap "until the PMREM is ready", but the SBS shader can never
+   * take the PMREM (2D packing), so every part's reflection and ambient came from
+   * six unrelated 64-px gradients: a BOX with hard edges — his "very hard vertical
+   * line" wandering over parts as the view turns, one face black, the next dark,
+   * the next light. Now the same procedural studio that feeds scene.environment is
+   * rendered into a real cube (the HDRI pipeline's route, half-float so the key
+   * hotspot keeps its range, mipmapped so textureLod's roughness blur and the LOD-4
+   * ambient work as before). Continuous by construction — no seams.
+   */
+  _buildStudioCube(renderer, data, W, H) {
+    const half = new Uint16Array(W * H * 4);
+    for (let i = 0; i < half.length; i++) half[i] = THREE.DataUtils.toHalfFloat(Math.min(data[i], 65504));
+    const eq = new THREE.DataTexture(half, W, H, THREE.RGBAFormat, THREE.HalfFloatType);
+    eq.mapping = THREE.EquirectangularReflectionMapping;
+    eq.generateMipmaps = true;                        // fromEquirectangularTexture copies these onto the cube
+    eq.minFilter = THREE.LinearMipmapLinearFilter;
+    eq.magFilter = THREE.LinearFilter;
+    eq.needsUpdate = true;
+    const rt = new THREE.WebGLCubeRenderTarget(128).fromEquirectangularTexture(renderer, eq);
+    eq.dispose();
+    this._studioCubeMap?.dispose?.();
+    this._studioCubeRT?.dispose?.();
+    this._studioCubeRT  = rt;
+    this._studioCubeMap = rt.texture;
   }
 
   /**
@@ -650,6 +681,10 @@ class MaterialsSystem {
     eqTex.dispose();
 
     this._pmremEnvMap = rt.texture;
+
+    // The same studio for the SBS shader's samplerCube (V0.3.4.163, see _buildStudioCube).
+    try { this._buildStudioCube(renderer, data, W, H); }
+    catch (e) { console.warn('[materials] studio cube failed — keeping the canvas cube:', e?.message || e); }
 
     // Apply to scene so MeshStandardMaterial meshes also benefit
     if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
