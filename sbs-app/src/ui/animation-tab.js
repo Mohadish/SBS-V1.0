@@ -369,7 +369,7 @@ function _renderPhasesView(host, ctx) {
   // Resolve AL token to ms for the "total" display (purely informational)
   const resolveAL = (tok) => {
     if (tok === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
-    if (tok === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+    if (tok === 'AL2') return state.get('objectAnimDurationMs')  ?? 400;
     const n = parseInt(tok, 10);
     return Number.isFinite(n) ? n : 0;
   };
@@ -631,7 +631,7 @@ function _renderPhasesView(host, ctx) {
               if (!ph[idx]) return;
               const cur = ph[idx].durationRaw;
               if (cur === 'AL1') ph[idx].durationRaw = String(state.get('cameraAnimDurationMs') ?? 1500);
-              else if (cur === 'AL2') ph[idx].durationRaw = String(state.get('objectAnimDurationMs') ?? 1500);
+              else if (cur === 'AL2') ph[idx].durationRaw = String(state.get('objectAnimDurationMs') ?? 400);
               // else: already custom — leave as-is
             });
             // Focus + select the input so user can immediately type
@@ -1353,7 +1353,7 @@ function _renderPhasesPreview(host, animStr) {
 
   const resolveAL = (tok) => {
     if (tok === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
-    if (tok === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+    if (tok === 'AL2') return state.get('objectAnimDurationMs')  ?? 400;
     const n = parseInt(tok, 10);
     return Number.isFinite(n) ? n : 0;
   };

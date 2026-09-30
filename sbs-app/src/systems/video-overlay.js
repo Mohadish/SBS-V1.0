@@ -403,7 +403,7 @@ export async function refreshPoster(node) {
 // and every duration model reads it the same way (narration-timeline,
 // video-export perStepHold, the audio-mix offset), else the narration lands
 // 1.2 s off — the V0.3.4.184 lesson.
-export const FADE_IN_DEFAULT = 'AL2';   // what a NEW clip gets (insert / import); a clip with no value keeps the preset's slot
+export const FADE_IN_DEFAULT = 'AL2';   // every clip without a value fades in over AL2 (V0.3.4.188 — the user's default)
 export const FADE_MAX_MS = 99_999;      // the Animation tab's own cap on a typed duration
 
 /** 'AL1' | 'AL2' | { ms } from typed text ('800', '1.5s', 'al1'); null when unreadable or empty. */
@@ -430,21 +430,22 @@ export function resolveFadeRaw(raw) {
   const p = _parseFadeText(raw);
   if (!p) return null;
   if (p.kind === 'AL1') return Math.max(0, Number(state.get('cameraAnimDurationMs') ?? 1500) || 0);
-  if (p.kind === 'AL2') return Math.max(0, Number(state.get('objectAnimDurationMs') ?? 1500) || 0);
+  if (p.kind === 'AL2') return Math.max(0, Number(state.get('objectAnimDurationMs') ?? 400) || 0);
   return p.ms;
 }
 
 const _fadeMemo = new Map();   // stepId -> { ref: overlayString, raws }
 /**
- * The step's clip fade-in in ms — the LONGEST among the video nodes that carry
- * a readable value — or null when none does (callers then keep the slot's own
- * length: a clip placed before this build behaves exactly as it did, so no
- * cached segment changes under an unchanged key). Resolved live so an AL1/AL2
+ * The step's clip fade-in in ms — the LONGEST among its video nodes, a node
+ * without a (readable) value counting as AL2 — or null when the step has no
+ * clip (callers then keep the slot's own length). Resolved live so an AL1/AL2
  * edit in Animation settings applies at once. Never below one frame.
+ * (V0.3.4.188 — the user's rule: the default is AL2 for every clip, old or
+ * new; render-cache _videoTimingRev 4 re-renders the video segments once.)
  */
 export function stepVideoFadeInMs(step) {
   const ov = step?.overlay;
-  if (typeof ov !== 'string' || !ov || ov.indexOf('"isVideo":true') === -1 || ov.indexOf('"fadeInRaw"') === -1) return null;
+  if (typeof ov !== 'string' || !ov || ov.indexOf('"isVideo":true') === -1) return null;
   let raws;
   const memo = _fadeMemo.get(step.id);
   if (memo && memo.ref === ov) raws = memo.raws;
@@ -453,15 +454,16 @@ export function stepVideoFadeInMs(step) {
     try {
       (function walk(n) {
         if (!n) return;
-        if (n.attrs?.isVideo && n.attrs.fadeInRaw != null) raws.push(n.attrs.fadeInRaw);
+        if (n.attrs?.isVideo) raws.push(n.attrs.fadeInRaw ?? FADE_IN_DEFAULT);
         (n.children || []).forEach(walk);
       })(JSON.parse(ov));
     } catch { /* unparseable overlay → no clips */ }
     if (step.id) _fadeMemo.set(step.id, { ref: ov, raws });
   }
+  if (!raws.length) return null;
   let ms = null;
-  for (const r of raws) { const v = resolveFadeRaw(r); if (v != null && (ms === null || v > ms)) ms = v; }
-  return ms === null ? null : Math.max(40, ms);   // at least one frame: a 0 ms crossfade has no tick to complete on
+  for (const r of raws) { const v = resolveFadeRaw(r) ?? resolveFadeRaw(FADE_IN_DEFAULT) ?? 0; if (ms === null || v > ms) ms = v; }
+  return Math.max(40, ms);   // at least one frame: a 0 ms crossfade has no tick to complete on
 }
 
 /** Apply a trim/mute/fade patch to a node and re-sync the live element. */

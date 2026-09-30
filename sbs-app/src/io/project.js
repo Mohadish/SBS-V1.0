@@ -428,7 +428,7 @@ export function serialize(targetPath = null, { onlyStepIds = null } = {}) {
   cfg.solidOverride        = state.get('solidOverride')        ?? false;
   cfg.gridVisible          = state.get('gridVisible')          ?? false;
   cfg.cameraAnimDurationMs = state.get('cameraAnimDurationMs') ?? 1500;
-  cfg.objectAnimDurationMs = state.get('objectAnimDurationMs') ?? 1500;
+  cfg.objectAnimDurationMs = state.get('objectAnimDurationMs') ?? 400;
   cfg.cameraFillLight      = { ...(state.get('cameraFillLight') || {}) };
   cfg.geometryOutline      = { ...(state.get('geometryOutline') || {}) };
   cfg.export               = { ...(state.get('export')         || {}) };
@@ -1226,7 +1226,7 @@ export function applyProjectToState(project) {
     solidOverride:        s.solidOverride           ?? false,
     gridVisible:          s.gridVisible             ?? false,
     cameraAnimDurationMs: s.cameraAnimDurationMs    ?? 1500,
-    objectAnimDurationMs: s.objectAnimDurationMs    ?? 1500,
+    objectAnimDurationMs: s.objectAnimDurationMs    ?? 400,
     cameraFillLight:      s.cameraFillLight
                             ? { ...state.get('cameraFillLight'), ...s.cameraFillLight }
                             : state.get('cameraFillLight'),

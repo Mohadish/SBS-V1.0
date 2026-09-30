@@ -115,7 +115,7 @@ function _stepKeyView(s, keep, animStr, camTpl) {
   //   • steps whose two easings disagreed — .237 made cameraEasing govern
   //     objects too, so they render a different curve under the same key.
   // Only those spans re-key; everything else keeps its segment.
-  if (typeof c.overlay === 'string' && c.overlay.includes('"isVideo":true')) c._videoTimingRev = 3;   // 3 = V0.3.4.184: seek wait + hold model — segments with the stall baked in must re-render
+  if (typeof c.overlay === 'string' && c.overlay.includes('"isVideo":true')) c._videoTimingRev = 4;   // 3 = V0.3.4.184 seek wait + hold model; 4 = V0.3.4.188 every clip fades in over AL2 (was the preset slot)
   {
     const _ce = c.transition?.cameraEasing, _oe = c.transition?.objectEasing;
     if (_ce && _oe && _ce !== _oe) c._easingRev = 2;

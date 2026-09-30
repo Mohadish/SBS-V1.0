@@ -716,7 +716,7 @@ class StepManager {
     this._warmMatrices();
 
     const globalCam = state.get('cameraAnimDurationMs') ?? 1500;
-    const globalObj = state.get('objectAnimDurationMs') ?? 1500;
+    const globalObj = state.get('objectAnimDurationMs') ?? 400;
     // ONE easing governs the whole move into this step — camera and objects
     // alike (V0.3.2.237). They used to be separate fields with separate
     // dropdowns, so a step could ease its objects while its camera ran
@@ -861,7 +861,7 @@ class StepManager {
     );
     const _resolveALToken = (tk) => {
       if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
-      if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+      if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 400;
       return 0;
     };
     const phases = animStr ? parseAnimation(animStr, _resolveALToken) : null;
@@ -1906,7 +1906,7 @@ class StepManager {
     // omits it — exactly the regression the user hit for cable + overlay
     // before this fallback block grew.
     const fallbackCam = state.get('cameraAnimDurationMs') ?? 1500;
-    const fallbackObj = state.get('objectAnimDurationMs') ?? 1500;
+    const fallbackObj = state.get('objectAnimDurationMs') ?? 400;
     const fallbackPromises = [];
 
     if (!cameraHandled && toSnapshot.camera) {

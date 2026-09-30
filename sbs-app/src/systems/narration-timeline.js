@@ -24,7 +24,7 @@ const _groupKeyOf = (s) => (s?.groupHead ? s.id : (s?.groupId || null));
 
 function _resolveAL(tk) {
   if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
-  if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+  if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 400;
   return 0;
 }
 
@@ -165,7 +165,7 @@ function _stepTimelineMs(step, stepHoldMs) {
   // phased-string total — and narration starts at narrOffset (the phases BEFORE
   // its narration phase), not at 0 (overlap → under-counts) nor after the whole
   // animation (additive → over-counts). Group audio-tail is approximated per-step.
-  const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+  const globalObjDur = state.get('objectAnimDurationMs') ?? 400;
   const t = step.transition || {};
   const { totalMs: phasedMs, narrOffsetMs } = _animTiming(step);   // narrOffsetMs === exporter's _narrationStartOffsetMs
   // ⚡ V0.3.2.246 — mirror of the exporter's _estimateAnimDur: an Instant /

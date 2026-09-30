@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.4.187';
+export const APP_VERSION  = 'V0.3.4.188';
 // The oldest CORE (electron/*.js, preload, helper pages) this interface can run on.
 // BUMP THIS whenever a change under electron/ lands — the interface then tells a
 // Ctrl+R'd session that a full restart is needed, and stays quiet otherwise.
@@ -155,7 +155,7 @@ export function createEmptyProject() {
       solidOverride:          false,
       gridVisible:            false,
       cameraAnimDurationMs:   1500,
-      objectAnimDurationMs:   1500,
+      objectAnimDurationMs:   400,
       cameraFillLight: {
         enabled: false, color: '#ffffff', intensity: 1.1,
         distance: 0, decay: 2, offsetX: -120, offsetY: 70, offsetZ: 140,

@@ -382,7 +382,7 @@ function _syncDurationInputs() {
   const camEl = document.getElementById('global-cam-dur');
   const objEl = document.getElementById('global-obj-dur');
   if (camEl) camEl.value = state.get('cameraAnimDurationMs') ?? 1500;
-  if (objEl) objEl.value = state.get('objectAnimDurationMs') ?? 1500;
+  if (objEl) objEl.value = state.get('objectAnimDurationMs') ?? 400;
 }
 
 function _setGlobalDuration(key, val) {

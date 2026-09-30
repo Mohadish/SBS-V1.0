@@ -272,7 +272,7 @@ export async function saveBlobToPath(blob, outPath) {
  * wait for the whole group's audio tail (offset-aware) + stepHoldMs breath.
  */
 function _computePerStepHolds(stepsToPlay, stepHoldMs) {
-  const globalObjDur = state.get('objectAnimDurationMs') ?? 1500;
+  const globalObjDur = state.get('objectAnimDurationMs') ?? 400;
   const _presets     = state.get('animationPresets') || [];
   const _estimateAnimDur = (s) => {
     const t = s.transition || {};
@@ -1452,7 +1452,7 @@ function _phasedTotalMs(animStr) {
   if (!animStr) return 0;
   const resolveAL = (tk) => {
     if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
-    if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
+    if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 400;
     return 0;
   };
   const phases = parseAnimation(animStr, resolveAL);

@@ -576,7 +576,7 @@ function createInitialState() {
 
     // ── Animation durations
     cameraAnimDurationMs: 1500,
-    objectAnimDurationMs: 1500,
+    objectAnimDurationMs: 400,
 
     // ── Selection groups
     selectionGroups:      [],
