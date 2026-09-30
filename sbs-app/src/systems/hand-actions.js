@@ -410,7 +410,8 @@ export function commitHandControl(id, key, before) {
   const label = key === 'forearm' ? 'Move the forearm' : `Pin the ${hands.FINGER_LABEL[key]?.toLowerCase() || 'finger'} tip`;
   _applyParams(id, after);
   state.markDirty();
-  undoManager.push(label, () => _applyParams(id, prev), () => _applyParams(id, after));
+  // V0.3.4.186 — undo/redo of a fingertip / forearm drag is saved state too (Save → Ctrl+Z → close was silent)
+  undoManager.push(label, () => { _applyParams(id, prev); state.markDirty(); }, () => { _applyParams(id, after); state.markDirty(); });
 }
 
 // ── 🧤 skin: the rig out as .glb, a skinned hand back in ─────────────────────

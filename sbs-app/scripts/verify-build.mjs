@@ -42,7 +42,8 @@ ok(!/\{set wasmPaths\(\w+\)\{\w+\.backends\.onnx\.wasm\.wasmPaths=/.test(kok), '
 const sharpDir = `${UNP}/app.asar.unpacked/node_modules/@img`;
 const sharpPkgs = existsSync(sharpDir) ? readdirSync(sharpDir).filter(d => d.startsWith('sharp-win32')) : [];
 const sharpV = sharpPkgs.length ? JSON.parse(readFileSync(`${sharpDir}/${sharpPkgs[0]}/package.json`, 'utf8')).version : null;
-ok(sharpV && sharpV >= '0.35.4', `sharp native ${sharpPkgs[0] || '(none)'} ${sharpV}`);
+const semverGte = (a, b) => { const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); } return true; };
+ok(sharpV && semverGte(sharpV, '0.35.4'), `sharp native ${sharpPkgs[0] || '(none)'} ${sharpV} (≥ 0.35.4, the libheif advisory)`);   // numeric, not string: '0.35.10' >= '0.35.4'
 
 // extraResources
 ok(existsSync(`${UNP}/manual/SBS-Manual.pdf`) && existsSync(`${UNP}/manual/SBS-Manual.html`), `manual resources: ${existsSync(`${UNP}/manual`) ? readdirSync(`${UNP}/manual`).join(', ') : 'MISSING'}`);

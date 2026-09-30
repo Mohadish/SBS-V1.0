@@ -1587,6 +1587,16 @@ function _recordRenderedDurations(stepMarkers) {
  */
 async function _hardResetToFirstStep(stepsToPlay) {
   if (!stepsToPlay?.length) return;
+  // V0.3.4.186 — an HDRI still decoding (project just opened, or just picked in
+  // the render panel) must land BEFORE the first frame: the environment is
+  // applied fire-and-forget, so the first spans could be cached under the new
+  // HDRI's key with the previous environment's pixels. Real time, once per run.
+  try {
+    const { materials } = await import('./materials.js');
+    await materials._hdriLoading?.promise;
+    const wantHdri = state.get('render')?.production?.hdri;
+    if (wantHdri && wantHdri !== 'gradient' && materials._pmremForHdri !== wantHdri) console.warn(`[export] environment "${wantHdri}" is not loaded — rendering with the current one`);
+  } catch { /* an environment load failure is logged where it happens */ }
   console.log('[export] virtual double-click on first export step:', stepsToPlay[0].name);
   // Clear selection so the gizmo + selection outlines don't leak into the
   // recorded frames. setSelection(null, empty) drops both primary + multi.
