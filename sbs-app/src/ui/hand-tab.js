@@ -17,6 +17,17 @@ let _activeId = null;
 
 const _esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+
+/** 🧤 V0.3.4.190 — what a texture button says: the bundled three by name, anything else by its file stem. */
+function _texLabel(file) {
+  const stem = String(file || '').replace(/\.[^.]+$/, '');
+  const k = stem.toLowerCase();
+  if (k === 'skin' || /limbs/.test(k)) return 'Skin';
+  if (k === 'blue'  || /blue/.test(k))  return 'Blue glove';
+  if (k === 'white' || /white/.test(k)) return 'White glove';
+  return stem;
+}
+
 function _liveHands() {
   const nb = state.get('nodeById'); const out = [];
   if (!nb) return out;
@@ -95,7 +106,7 @@ function _skinCard() {
         <div class="small muted" style="margin-top:8px;">Texture <span style="opacity:.7">(images next to the file)</span></div>
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">
           <button class="btn" data-skin-tex="" style="font-size:11px;padding:3px 8px;${!s.texture ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="The texture the file itself names">file's own</button>
-          ${s.textures.map(t => `<button class="btn" data-skin-tex="${_esc(t)}" style="font-size:11px;padding:3px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${s.texture === t ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="${_esc(t)}">${_esc(t.replace(/\.[^.]+$/, ''))}</button>`).join('')}
+          ${s.textures.map(t => `<button class="btn" data-skin-tex="${_esc(t)}" style="font-size:11px;padding:3px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${s.texture === t ? 'background:rgba(34,211,238,0.14);border-color:rgba(34,211,238,0.5);' : ''}" title="${_esc(t)}">${_esc(_texLabel(t))}</button>`).join('')}
         </div>` : ''}
         <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
           <button class="btn" id="hand-skin-load" style="flex:1;" title="An .fbx or .glb with a mesh skinned to the exported bones">Load skin…</button>

@@ -1135,7 +1135,7 @@ export async function setHandSkinFile(path, { setting } = {}) {
       const dir = _skin.path.replace(/[\\/][^\\/]*$/, '');
       const base = dir ? 'file:///' + dir.replace(/\\/g, '/').replace(/^\/+/, '') + '/' : '';
       if (ext === 'fbx') {
-        const group = new FBXLoader().parse(ab, base);   // sync; binary or ASCII ≥ 7.0
+        const group = new FBXLoader(_skinLoadingManager()).parse(ab, base);   // sync; binary or ASCII ≥ 7.0
         _skin.template = _analyseSkin({ scene: group, parser: null });
       } else {
         const gltf = await new Promise((res, rej) => new GLTFLoader().parse(ab, base, res, rej));
@@ -1158,6 +1158,17 @@ export async function setHandSkinFile(path, { setting } = {}) {
   return handSkinInfo();
 }
 
+// 🧤 V0.3.4.190 — the bundled textures are skin.jpg / blue.jpg / white.jpg now
+// (the user: "don't call them by their original file name"). The FBX still
+// names its own map by the artist's file, and a machine may have the old name
+// saved as its texture choice — both are redirected here.
+const _TEX_ALIAS = { 'M4JeremyRRLimbsM.jpg': 'skin.jpg', 'M4JeremyRR-latex-Blue.jpg': 'blue.jpg', 'M4JeremyRR-latex-white.jpg': 'white.jpg' };
+function _skinLoadingManager() {
+  const mgr = new (T().LoadingManager)();
+  mgr.setURLModifier(url => url.replace(/M4JeremyRRLimbsM\.jpg$/i, 'skin.jpg'));
+  return mgr;
+}
+
 /** Image files next to the skin file — the textures the user can swap in. */
 async function _imagesNextTo(dir) {
   if (!dir || !window.sbsNative?.listDir) return [];
@@ -1174,7 +1185,7 @@ async function _imagesNextTo(dir) {
  */
 export async function setHandSkinTexture(name, { persist = true } = {}) {
   const tpl = _skin.template;
-  const want = String(name || '');
+  const want = _TEX_ALIAS[String(name || '')] || String(name || '');   // V0.3.4.190 — an old saved name still works
   if (tpl?.mats?.length) {
     const Th = T();
     if (!want) {
