@@ -579,6 +579,9 @@ class MaterialsSystem {
       }
       rows.sort((x, y) => (y.tiltedPct ?? 0) - (x.tiltedPct ?? 0));
       console.table(rows.slice(0, 40));
+      // …and where the geometry came from (V0.3.4.170), so the source file can be tested outside the app.
+      const assets = (state.get('assets') || []).map(a => ({ id: a.id, name: a.name, type: a.type, path: a.resolvedPath || a.originalPath || a.path || '' }));
+      console.log('[sbsNormalDiag] sources:', JSON.stringify(assets));
       return rows;
     };
   }
