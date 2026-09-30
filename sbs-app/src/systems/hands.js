@@ -29,6 +29,7 @@
  */
 
 import { state }                        from '../core/state.js';
+import * as clock                       from '../core/clock.js';   // V0.3.4.178 — the export's synthetic clock, never wall time
 import { sceneCore }                    from '../core/scene.js';
 import { resolveNodeWorldPosition }     from './cables.js';
 import { applyNodeTransformToObject3D } from '../core/transforms.js';
@@ -832,7 +833,10 @@ function _solveBlend(node, from, to, t) {
 
 /** Called where a step transition's object channel starts: every hand whose params changed blends over it. */
 export function beginHandTransitions(durationMs, easeFn) {
-  const now = _now;
+  // V0.3.4.178 — clock.now(): inside an export the clock is synthetic (frame time),
+  // and this used to take the LAST TICK's wall-clock value, so every grip
+  // transition in a rendered segment started from a bogus t0 and never played.
+  const now = clock.now();
   for (const n of _liveHands()) {
     const from = n._handFrom;
     delete n._handFrom;
@@ -872,7 +876,8 @@ export function markHandDirty(nodeId) { _sigCache.delete(nodeId); }
 
 export function tickHands(now) {
   const Th = T(); if (!Th) return false;
-  if (Number.isFinite(now)) _now = now;
+  _now = clock.now();   // V0.3.4.178 — same clock as beginHandTransitions (synthetic during export)
+  void now;
   const fine = state.get('handFineTune');
   const selCtl = state.get('selectedHandControl');
   let changed = false;

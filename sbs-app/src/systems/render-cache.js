@@ -36,6 +36,17 @@ import { materials } from './materials.js';                 // 🎨 V0.3.2.257 �
 import * as frameVis from './frame-visibility.js';          // 🎞 V0.3.2.259 — signed in-frame records narrow the visible set
 import { pickCameraView } from '../core/schema.js';         // 📷 V0.3.4.95 — a template-bound step keys on the template's VIEW
 
+/**
+ * V0.3.4.178 — THE LOOK VERSION. Bump when a renderer change alters the PIXELS of
+ * every step without any project data changing (shading, environment, normals,
+ * clip planes, AO): 2 = the .162–.171 line (PMREM environment, geometric normal
+ * orientation, normal repair, visible-depth near plane, blended hands). It rides
+ * on the settings key, so every span re-keys ONCE and goes through the soft-drift
+ * prompt in _adoptPriorSegments — unlike RENDER_CACHE_EPOCH below, which
+ * purgeOrphans treats as "delete unconditionally".
+ */
+export const RENDER_LOOK_VERSION = 2;
+
 /** Bump when renderer/exporter changes make previously-cached pixels stale. */
 export const RENDER_CACHE_EPOCH = 5;   // 2: canonical hashing (V0.3.2.22); 3: scoped defs (.32); 4: pruned object roster (.33); 5: overlay defs — shape AND text — reach the span key (.156/.158)
 // 🎭 Crop masks (V0.3.2.218) deliberately did NOT bump this. A PRIVATE mask
@@ -392,6 +403,7 @@ export async function computeSegmentPlan() {
     // previous state. Spread-only-when-ON so the default-off case keeps
     // every existing cache key valid (no mass re-render for anyone).
     ...(exp.exportBoundaryBoxes ? { bboxes: true } : {}),
+    look: RENDER_LOOK_VERSION,   // V0.3.4.178 — see the constant
     epoch: RENDER_CACHE_EPOCH,
   };
 
