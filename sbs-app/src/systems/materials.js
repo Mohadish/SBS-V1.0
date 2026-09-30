@@ -804,15 +804,39 @@ class MaterialsSystem {
   async applyProductionEnvironment(prod) {
     const want = (prod?.enabled && prod?.hdri) ? String(prod.hdri) : null;
     if (want === (this._activeHdri ?? null) && (want ? this._pmremForHdri === want : !this._pmremForHdri)) return;
+    // V0.3.4.181 — one load per HDRI at a time: every render-settings write re-entered
+    // this while the file was still decoding (a second decode + PMREM of the same file).
+    if (this._hdriLoading?.name === want) return this._hdriLoading.promise;
 
     const renderer = sceneCore.renderer;
     if (!renderer) return;
     this._activeHdri = want;
+    const run = this._applyProductionEnvironmentNow(prod, want, renderer);
+    this._hdriLoading = { name: want, promise: run };
+    try { await run; } finally { if (this._hdriLoading?.promise === run) this._hdriLoading = null; }
+  }
+
+  /** V0.3.4.181 — every live material that still points at an old environment texture follows the swap. */
+  _rebindEnvironment(oldTex) {
+    const env = this._pmremEnvMap ?? null;
+    const fix = (m) => {
+      if (!m || !m.isMaterial) return;
+      if (m.isShaderMaterial) return;                       // SBS materials rebind through applyAll (uEnvMap + .envMap)
+      if (m.envMap && (m.envMap === oldTex || m.envMap !== env)) { m.envMap = null; m.needsUpdate = true; }   // scene.environment is the live one
+    };
+    try { sceneCore.scene?.traverse(o => { const ms = Array.isArray(o.material) ? o.material : [o.material]; for (const m of ms) fix(m); }); } catch {}
+    try { for (const [, m] of this.originalMaterials) (Array.isArray(m) ? m : [m]).forEach(fix); } catch {}
+  }
+
+  async _applyProductionEnvironmentNow(prod, want, renderer) {
 
     if (!want) {                       // back to the built-in procedural studio
       this._hdriEquirect = null;
+      const oldStudio = this._pmremEnvMap;
       this._pmremEnvMap = null;
       this._initPmremEnvMap();         // rebuilds scene.environment + applyAll()
+      this._rebindEnvironment(oldStudio);
+      oldStudio?.dispose?.();
       return;
     }
     if (want === 'gradient') {         // V0.3.4.172 — the built-in smooth gradient (no file)
@@ -823,6 +847,7 @@ class MaterialsSystem {
         this._pmremForHdri = want;
         if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
         this.applyAll();
+        this._rebindEnvironment(old);
         old?.dispose?.();
         console.log('[materials] 🎬 smooth gradient environment → PMREM');
       } catch (e) {
@@ -866,6 +891,7 @@ class MaterialsSystem {
       this._pmremForHdri = want;
       if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
       this.applyAll();                 // rebind uEnvMap everywhere
+      this._rebindEnvironment(old);
       old?.dispose?.();
       console.log(`[materials] 🎬 HDRI "${want}" → PMREM`);
     } catch (e) {
@@ -931,8 +957,10 @@ class MaterialsSystem {
     const solidness = preset.solidness ?? 1.0;
     const isOpaque  = solidness >= 0.999;
 
-    // reflectionIntensity (0–1) maps to envMapIntensity (0–0.5 range)
-    const envMapIntensity = (preset.reflectionIntensity ?? 0.5) * 0.5;
+    // reflectionIntensity (0–1) maps to envMapIntensity (0–0.5 range); the production
+    // Environment-strength slider scales it from that base (setProductionLook, V0.3.4.181)
+    const envBase = (preset.reflectionIntensity ?? 0.5) * 0.5;
+    const envMapIntensity = envBase * (_prodToneMap.envIntensity / 0.5);
 
     const mat = new THREE.MeshStandardMaterial({
       color:           preset.color ?? '#ffffff',
@@ -949,6 +977,7 @@ class MaterialsSystem {
       stencilRef:      1,
       stencilZPass:    THREE.ReplaceStencilOp,
     });
+    mat.userData.envBase = envBase;   // V0.3.4.181 — see setProductionLook
 
     // ── Carry through texture maps ────────────────────────────────────────
     // This function is only called when orig has maps (gated by _hasTextureMaps).
@@ -1069,7 +1098,17 @@ class MaterialsSystem {
     _prodToneMap.envBlur      = Number.isFinite(Number(prod.envBlur))      ? Number(prod.envBlur)      : 0.35;
     const apply = (m) => {
       const u = m?.uniforms;
-      if (!u?.uToneMapOn) return;
+      if (!u?.uToneMapOn) {
+        // V0.3.4.181 — a MeshStandardMaterial (textured preset, hand skin, cable)
+        // takes the Environment-strength slider too: its base env intensity (set
+        // where it was made) × strength/0.5, so the default look is unchanged.
+        // (Environment blur has no MeshStandard equivalent in r152 — SBS-only.)
+        if (m?.isMeshStandardMaterial && typeof m.userData?.envBase === 'number') {
+          const v = m.userData.envBase * (_prodToneMap.envIntensity / 0.5);
+          if (m.envMapIntensity !== v) m.envMapIntensity = v;
+        }
+        return;
+      }
       u.uToneMapOn.value = _prodToneMap.on;
       u.uExposure.value  = _prodToneMap.exposure;
       if (u.uRigKey) {
@@ -1222,6 +1261,8 @@ class MaterialsSystem {
     if (hm && hm.userData?.handOriginalUuid === original.uuid) return hm;
     try { hm?.dispose?.(); } catch {}
     hm = original.clone();
+    hm.userData = { ...(hm.userData || {}), envBase: typeof original.envMapIntensity === 'number' ? original.envMapIntensity : 1 };   // V0.3.4.181 — Environment strength reaches the skin
+    hm.envMapIntensity = hm.userData.envBase * (_prodToneMap.envIntensity / 0.5);
     // V0.3.4.160 — REAL see-through (his call: the screen-door dither "is not an
     // opacity"). Always BLENDED — never flipped opaque ↔ transparent, so neither a
     // solidness change nor a show/hide fade switches programs mid-way (the .157

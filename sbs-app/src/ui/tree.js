@@ -1491,11 +1491,10 @@ function _buildContextMenuItems(node) {
   if (count === 1 && node && !node.archived && node.type !== 'scene') {
     items.push(node.follow
       ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
-      : { label: '🔗 Follow object…',  action: () => {
-          // V0.3.4.174 — a raw part has no transform of its own to ride along: wrap it first (as "Make transformable" does).
-          const id = node.type === 'mesh' ? (actions.makeTransformable(node.id) || node.id) : node.id;
-          startFollowPick(id);
-        } });
+      : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id, {
+            // V0.3.4.181 — a raw part is wrapped once the pick is CONFIRMED (a cancel leaves nothing behind)
+            wrap: node.type === 'mesh' ? (id) => actions.makeTransformable(id) : null,
+          }) });
   }
   // 🔦 Spotlight at this step (V0.3.4.82) — parity with the viewport menu.
   if (count === 1 && node && !node.archived && isTransformNode(node)) {

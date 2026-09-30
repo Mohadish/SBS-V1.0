@@ -74,6 +74,21 @@ class UndoManager {
     state.emit('undo:change');
   }
 
+  /** V0.3.4.181 — fold the last `count` entries into one (a wrap + the follow that needed it). */
+  mergeLast(count, label) {
+    if (count < 2 || this._undo.length < count) return false;
+    const cmds = this._undo.splice(this._undo.length - count, count);
+    this._undo.push({
+      label,
+      undo: () => { for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo(); },
+      redo: () => { for (const c of cmds) c.redo(); },
+      scope: cmds[cmds.length - 1].scope,
+      _t: performance.now(),
+    });
+    state.emit('undo:change');
+    return true;
+  }
+
   undo() {
     const cmd = this._undo.pop();
     if (!cmd) return;

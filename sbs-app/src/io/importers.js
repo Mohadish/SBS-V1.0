@@ -518,7 +518,8 @@ function normalizeMaterial(mat) {
     vertexColors:      !!mat.vertexColors,
     roughness,
     metalness,
-    envMap:            materials.metalEnvMap,
+    // (no envMap here — V0.3.4.181: pinned at import, it outlived every environment
+    //  swap; scene.environment is the live one and three falls back to it)
     envMapIntensity:   mat.envMapIntensity ?? 0.01,
   });
 

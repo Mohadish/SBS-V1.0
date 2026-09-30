@@ -42,13 +42,13 @@ export function measureNormals(geometry, { sampleTris = 4000, tiltDeg = 30 } = {
     if (ng.lengthSq() < 1e-24) continue;
     ng.normalize();
     nv.fromBufferAttribute(nor, i0).add(t1.fromBufferAttribute(nor, i1)).add(t2.fromBufferAttribute(nor, i2));
-    if (nv.lengthSq() < 1e-12) continue;
+    if (nv.lengthSq() < 1e-12) { n++; tilted++; sum += 90; if (max < 90) max = 90; continue; }   // V0.3.4.181 — a zero normal is unusable, not healthy
     nv.normalize();
     const d = Math.max(-1, Math.min(1, ng.dot(nv)));
     const ang = Math.acos(d) * 180 / Math.PI;
     n++; sum += ang; if (ang > max) max = ang; if (d < cosTilt) tilted++; if (d < 0) flipped++;
   }
-  if (!n) return null;
+  if (!n) return { tris, meanDeg: 90, maxDeg: 90, tiltedFrac: 1, flippedFrac: 0 };   // nothing measurable → treat as bad
   return { tris, meanDeg: sum / n, maxDeg: max, tiltedFrac: tilted / n, flippedFrac: flipped / n };
 }
 
@@ -61,8 +61,9 @@ export function repairNormalsIfBad(geometry, { creaseDeg = 30, tiltDeg = 30, bad
   const T = globalThis.THREE;
   const pos = geometry?.attributes?.position;
   if (!pos) return { repaired: false, measure: null };
-  const measure = geometry.attributes.normal ? measureNormals(geometry, { tiltDeg }) : null;
-  const bad = !geometry.attributes.normal || force || (measure && measure.tiltedFrac > badFrac);
+  const hadNormals = !!geometry.attributes.normal;
+  const measure = hadNormals ? measureNormals(geometry, { tiltDeg }) : null;
+  const bad = !hadNormals || force || !measure || measure.tiltedFrac > badFrac;
   if (!bad) return { repaired: false, measure };
 
   const idx = geometry.index;
@@ -95,9 +96,13 @@ export function repairNormalsIfBad(geometry, { creaseDeg = 30, tiltDeg = 30, bad
   }
 
   // Each corner: the sum of the adjacent faces within the crease of its own face.
+  // V0.3.4.181 — on INDEXED geometry a vertex shared across a crease would take
+  // whichever corner wrote it last (order-dependent). Such a vertex gets the plain
+  // welded average instead (no crease) — smooth there, deterministic everywhere.
   const cosCrease = Math.cos(creaseDeg * Math.PI / 180);
   const out = new Float32Array(pos.count * 3);
   const written = new Uint8Array(pos.count);
+  const conflict = idx ? new Uint8Array(pos.count) : null;
   const fn = new T.Vector3(), on = new T.Vector3(), acc = new T.Vector3();
   for (let t = 0; t < tris; t++) {
     fn.set(faceN[t * 3], faceN[t * 3 + 1], faceN[t * 3 + 2]);
@@ -115,8 +120,22 @@ export function repairNormalsIfBad(geometry, { creaseDeg = 30, tiltDeg = 30, bad
       if (acc.lengthSq() < 1e-30) acc.copy(fn);
       acc.normalize();
       const v = vi(t, k);
+      if (conflict && written[v] && !conflict[v]) {
+        const dx = out[v * 3] - acc.x, dy = out[v * 3 + 1] - acc.y, dz = out[v * 3 + 2] - acc.z;
+        if (dx * dx + dy * dy + dz * dz > 1e-6) conflict[v] = 1;
+      }
       out[v * 3] = acc.x; out[v * 3 + 1] = acc.y; out[v * 3 + 2] = acc.z;
       written[v] = 1;
+    }
+  }
+  if (conflict) {
+    for (let v = 0; v < pos.count; v++) {
+      if (!conflict[v]) continue;
+      acc.set(0, 0, 0);
+      for (const o of byPos.get(keyOf(v)) || []) acc.add(on.set(faceN[o * 3], faceN[o * 3 + 1], faceN[o * 3 + 2]));
+      if (acc.lengthSq() < 1e-30) continue;
+      acc.normalize();
+      out[v * 3] = acc.x; out[v * 3 + 1] = acc.y; out[v * 3 + 2] = acc.z;
     }
   }
   // Vertices no triangle references keep a harmless up vector.

@@ -57,5 +57,27 @@ for (const [name, g] of [['box', new T.BoxGeometry(2, 3, 0.1)], ['cylinder', new
   const m = measureNormals(g); if (!(m.meanDeg < 0.01)) fail('created normals wrong', m.meanDeg);
 }
 
+// 5. V0.3.4.181 — all-zero normals are unusable (were classed healthy → NaN in the shader)
+{
+  const g = new T.BoxGeometry(1, 1, 1); { const n = g.attributes.normal; for (let i = 0; i < n.count; i++) n.setXYZ(i, 0, 0, 0); }
+  const r = repairNormalsIfBad(g);
+  if (!r.repaired) fail('zero normals not repaired');
+  const m = measureNormals(g); if (!(m.meanDeg < 0.01)) fail('zero normals repaired wrong', m.meanDeg);
+}
+
+// 6. V0.3.4.181 — indexed crease vertex: deterministic (same result whatever the triangle order)
+{
+  const a = wreck(new T.BoxGeometry(2, 2, 2));
+  const b = wreck(new T.BoxGeometry(2, 2, 2));
+  // reverse b's triangle order
+  const ib = b.index.array, rev = new ib.constructor(ib.length);
+  const nt = ib.length / 3; for (let t = 0; t < nt; t++) { const s = (nt - 1 - t) * 3; rev[t * 3] = ib[s]; rev[t * 3 + 1] = ib[s + 1]; rev[t * 3 + 2] = ib[s + 2]; }
+  b.index.array.set(rev);
+  repairNormalsIfBad(a); repairNormalsIfBad(b);
+  const na = a.attributes.normal.array, nb = b.attributes.normal.array;
+  let maxd = 0; for (let i = 0; i < na.length; i++) maxd = Math.max(maxd, Math.abs(na[i] - nb[i]));
+  if (maxd > 1e-6) fail('indexed repair depends on triangle order', maxd);
+}
+
 console.log(`normal-repair: ${fails} failures`);
 process.exit(fails ? 1 : 0);

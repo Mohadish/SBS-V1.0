@@ -320,10 +320,12 @@ export async function promptStopFollowing(nodeId) {
 let _pickFollowerId = null;
 
 /** Begin picking a target for `followerId`. Next viewport click = the target. */
-export function startFollowPick(followerId) {
+let _pickWrap = null;   // V0.3.4.181 — (id) => wrapperId | null, run only once the pick is confirmed
+export function startFollowPick(followerId, { wrap = null } = {}) {
   const A = state.get('nodeById')?.get?.(followerId);
   if (!A) { console.warn('[follow] pick: invalid follower'); return; }
   _pickFollowerId = followerId;
+  _pickWrap = typeof wrap === 'function' ? wrap : null;
   state.setState({ followPickActive: true });
   setStatus(`Follow Object — click the object "${A.name || 'this'}" should follow (Esc to cancel).`, 'info', 8000);
 }
@@ -363,9 +365,19 @@ export async function onFollowPickClick(targetNodeId) {
     ],
   );
   _pickFollowerId = null;
+  const wrap = _pickWrap; _pickWrap = null;
   state.setState({ followPickActive: false });
   if (!choice || choice === 'cancel') { setStatus('Follow cancelled.', 'muted', 1200); return true; }
-  const ok = applyFollow(followerId, targetNodeId, { scope: choice });
-  if (ok) setStatus(`"${A.name || 'Object'}" now follows "${B.name || 'target'}".`, 'success', 2500);
+  // V0.3.4.181 — a raw part is wrapped NOW (after the confirm), not at menu time: a
+  // cancel used to leave a wrapper folder in every step plus a stray undo entry.
+  let fid = followerId, wrapped = false;
+  if (wrap) { try { const w = wrap(followerId); if (w) { fid = w; wrapped = true; } } catch (e) { console.warn('[follow] wrap failed:', e?.message); } }
+  const ok = applyFollow(fid, targetNodeId, { scope: choice });
+  if (ok) {
+    if (wrapped) undoManager.mergeLast?.(2, `Follow "${A.name || 'object'}"`);   // wrap + follow = one Ctrl+Z
+    setStatus(`"${A.name || 'Object'}" now follows "${B.name || 'target'}".`, 'success', 2500);
+  } else if (wrapped) {
+    undoManager.undo();   // the follow did not happen: take the wrapper back
+  }
   return true;
 }

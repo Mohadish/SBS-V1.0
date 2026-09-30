@@ -844,6 +844,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
         }
       });
       cam.updateMatrixWorld(true);   // tick hooks ran; matrices may be stale pre-render
+      sceneCore._updateClipPlanes?.(true);   // V0.3.4.181 — this frame's near/far, not the previous frame's (holes at every cut)
       scn.background = _maskBg;
       rnd.render(scn, cam);
       const sf = computeSafeFrameRect({ width: canvas.width, height: canvas.height });

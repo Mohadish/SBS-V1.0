@@ -1723,7 +1723,13 @@ export class SceneCore extends Emitter {
     const throttleMs = (this._loopRunning && !force) ? 200 : 0;
     // Tunable via window.sbsClipPlanes. enabled=false → legacy fixed planes (A/B test).
     const cfg = this._clipCfg || (this._clipCfg = { ...CLIP_CFG_DEFAULT });
-    if (!this._clipSphere || (now - (this._clipBoundsMs || 0)) > throttleMs) {
+    // V0.3.4.181 — a step change or a tree change (a new object, a rebuild) refreshes
+    // the visible list at once: an object appearing on activation could sit outside
+    // the throttled list for 200 ms and be near-clipped for those frames.
+    const activeId = state.get('activeStepId'), nodeMap = state.get('nodeById');
+    const listStale = this._clipListStep !== activeId || this._clipListNodes !== nodeMap;
+    if (!this._clipSphere || listStale || (now - (this._clipBoundsMs || 0)) > throttleMs) {
+      this._clipListStep = activeId; this._clipListNodes = nodeMap;
       const box = this.computeBoundingBox(null);                 // rootGroup
       if (this.gridHelper?.visible) box.expandByObject(this.gridHelper);
       if (this.axesHelper?.visible) box.expandByObject(this.axesHelper);
