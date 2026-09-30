@@ -356,7 +356,14 @@ export function ensureHandObject3D(node) {
   const mirror = !left;
   const key = `${left ? 'L' : 'R'}:${L}:${p.pose === 'custom' ? 'custom:' + _gripSig(p.grip) : p.pose}:skin${_skin.template ? _skin.rev : 0}`;
   const existing = node.object3d;
-  if (existing && existing.userData?.handBuildKey === key) return existing;
+  if (existing && existing.userData?.handBuildKey === key) {
+    // V0.3.4.176 — a hand un-registered by a delete and brought back by undo keeps its
+    // group and build key, so it never reached the registration below: no fade, no
+    // colour. Register again when the materials system does not know it.
+    const rig = existing.userData?.rig;
+    if (rig?.rep && materials.meshById && !materials.meshById.has(node.id)) _registerHandMaterials(node, rig);
+    return existing;
+  }
 
   let kept = [], prevColor = null;
   if (existing) {
@@ -440,17 +447,21 @@ export function ensureHandObject3D(node) {
   // the tick keeps them on whatever the palm wears). That one registration gives the
   // hand the visibility fade of every other object and a per-step colour. A rebuild
   // re-registers; the step's colour assignment survives it.
+  rig.rep = rig.skin?.mesh || palm;
+  rig.tintMeshes = [palm, forearm, ...HAND_FINGERS.flatMap(f => fingers[f].bones)];
+  _registerHandMaterials(node, rig);
+  return group;
+}
+
+/** The materials registration (V0.3.4.155), also for a hand that comes back by undo (V0.3.4.176). */
+function _registerHandMaterials(node, rig) {
   try {
-    const rep = rig.skin?.mesh || palm;
-    rig.rep = rep;
-    rig.tintMeshes = [palm, forearm, ...HAND_FINGERS.flatMap(f => fingers[f].bones)];
     const keepAssign = materials.meshColorAssignments?.[node.id];
     materials.unregisterMesh(node.id);
-    materials.registerMesh(node.id, rep);
+    materials.registerMesh(node.id, rig.rep);
     if (keepAssign) materials.meshColorAssignments[node.id] = keepAssign;
     materials.refreshHand?.(node.id);   // V0.3.4.157 — the tint-mix material on at once (the colour slot lerps its mix)
   } catch (e) { console.warn('[hands] materials registration:', e?.message); }
-  return group;
 }
 
 function _setFingerAngles(fg) {

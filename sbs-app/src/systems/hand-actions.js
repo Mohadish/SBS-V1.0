@@ -48,7 +48,7 @@ function _parentForNew() {
   return root;
 }
 
-function _attach(node, parentId) {
+function _attach(node, parentId, { propagate = true } = {}) {
   const root = state.get('treeData');
   const parent = state.get('nodeById')?.get(parentId) || root;
   if (!parent) return;
@@ -66,7 +66,7 @@ function _attach(node, parentId) {
   // step only, like a freshly placed primitive or shape. Without this the hand lived in
   // one step's spec: elsewhere its Object3D stood in the scene with no tree node (a
   // ghost nothing could grab), and each return to its step rebuilt it beside the ghost.
-  propagateNewNodeToSteps(node, parent.id, { activeStepOnly: true });
+  if (propagate) propagateNewNodeToSteps(node, parent.id, { activeStepOnly: true });
   state.emit('change:treeData', root);
   hands.markHandDirty(node.id);
   steps.scheduleTransformSync?.();
@@ -129,10 +129,17 @@ export function addHand(side = 'right', pose = 'handle') {
       node.localOffset = [local.x, local.y, local.z];
     }
   } catch {}
-  _attach(node, parent.id);
+  // V0.3.4.176 — the pivot into the prop BEFORE the steps are written (it was set
+  // after _attach's propagate + flush, so every step held the wrist as pivot and
+  // the gizmo snapped back there on the first step round-trip / reload).
+  hands.ensureHandObject3D(node);
   _pivotIntoProp(node);
+  _attach(node, parent.id);
   state.markDirty();
-  undoManager.push(`Add ${node.name}`, () => _detach(node.id), () => _attach(node, parent.id));
+  // Redo puts back the steps as they were right after creation — not a fresh
+  // propagation from whatever step is active then.
+  const stepsAfter = state.get('steps');
+  undoManager.push(`Add ${node.name}`, () => _detach(node.id), () => _restoreHand(node, parent.id, stepsAfter, null));
   state.setState({ selectedId: node.id, multiSelectedIds: new Set([node.id]), selectedHandControl: null, handFineTune: null });
   return node.id;
 }
@@ -142,10 +149,30 @@ export function removeHand(id) {
   if (!n) return false;
   const parentId = findParent(state.get('treeData'), id)?.id || 'scene_root';
   const keep = n;
+  // V0.3.4.176 — undo restores EVERY step's own hand data (grip, pose, placement,
+  // show/hide per step), not one propagation from the live node. _detach maps the
+  // steps to new objects, so this array still holds every snapshot with the hand.
+  const stepsBefore = state.get('steps');
+  const colorBefore = materials.meshColorAssignments?.[id] ?? null;
   _detach(id);
   state.markDirty();
-  undoManager.push(`Delete ${keep.name || 'hand'}`, () => _attach(keep, parentId), () => _detach(id));
+  undoManager.push(`Delete ${keep.name || 'hand'}`, () => _restoreHand(keep, parentId, stepsBefore, colorBefore), () => _detach(id));
   return true;
+}
+
+/** Bring a hand back with the steps as they were (undo of delete, redo of add). */
+function _restoreHand(node, parentId, stepsArr, color) {
+  const activeId = state.get('activeStepId');
+  const known = Array.isArray(stepsArr) && stepsArr.some(s => s.id === activeId);
+  _attach(node, parentId, { propagate: !known });   // a step made after the capture: fall back to today's propagation
+  if (known) {
+    state.setState({ steps: stepsArr });
+    if (color) materials.meshColorAssignments[node.id] = color;
+    const active = stepsArr.find(s => s.id === activeId);
+    if (active?.snapshot) steps.applySnapshotInstant(active.snapshot);   // the live scene = this step's own hand
+  }
+  state.markDirty();
+  sceneCore.requestRender?.(200);
 }
 
 // ── params ───────────────────────────────────────────────────────────────────
@@ -190,8 +217,30 @@ export function setHandParams(id, patch, label = 'Edit hand', { before = null } 
   // re-render under the pointer and kill the drag; the commit (with a label) does
   _applyParams(id, next, { flush: !!label });
   state.markDirty();
-  if (label) undoManager.push(label, () => _applyParams(id, prev), () => _applyParams(id, next));
+  // V0.3.4.176 — undo/redo land on the STEP that was edited: on it when it is active,
+  // else into its stored snapshot (params are per step; writing the live node from
+  // another step used to put the old params into the wrong step).
+  const stepId = state.get('activeStepId');
+  if (label) undoManager.push(label, () => _applyParamsToStep(id, prev, stepId), () => _applyParamsToStep(id, next, stepId));
   return true;
+}
+function _applyParamsToStep(id, params, stepId) {
+  if (!stepId || state.get('activeStepId') === stepId) { _applyParams(id, params); state.markDirty(); return; }
+  const all = state.get('steps') || [];
+  const step = all.find(s => s.id === stepId);
+  if (!step?.snapshot?.tree) return;
+  let hit = false;
+  const patch = (spec) => {
+    if (!spec) return spec;
+    if (spec.id === id) { hit = true; return { ...spec, handParams: _clone(params) }; }
+    if (!spec.children?.length) return spec;
+    const kids = spec.children.map(patch);
+    return kids.some((k, i) => k !== spec.children[i]) ? { ...spec, children: kids } : spec;
+  };
+  const tree = patch(step.snapshot.tree);
+  if (!hit) return;
+  state.setState({ steps: all.map(s => (s === step ? { ...s, snapshot: { ...s.snapshot, tree } } : s)) });
+  state.markDirty();
 }
 export function setHandPose(id, pose) {
   if (!hands.HAND_POSES[pose]) return false;
