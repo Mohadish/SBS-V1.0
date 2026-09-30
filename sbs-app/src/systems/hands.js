@@ -1163,25 +1163,29 @@ export async function setHandSkinFile(path, { setting } = {}) {
 // (the user: "don't call them by their original file name"). The FBX still
 // names its own map by the artist's file, and a machine may have the old name
 // saved as its texture choice — both are redirected here.
-/** An old texture name (any case, any of the artist's variants) → the bundled file it is now; else the name itself. */
-function _aliasTexture(name) {
-  const k = String(name || '').toLowerCase();
-  if (/m4jeremy/.test(k)) {
-    if (/blue/.test(k)) return 'blue.jpg';
-    if (/white/.test(k)) return 'white.jpg';
-    if (/limbs|skin/.test(k)) return 'skin.jpg';
-  }
-  return String(name || '');
+/**
+ * An artist-named texture (M4Jeremy…Limbs / latex-Blue / latex-white) → its
+ * plainly named twin BESIDE the skin file (skin.jpg, blue-glove.jpg / blue.jpg,
+ * white-glove.jpg / white.jpg — whatever is there); the name itself when no
+ * twin exists. V0.3.4.193 — the user duplicates the textures under plain names
+ * in his own skin folder; the app wires the hand to those and lists only them.
+ */
+function _aliasTexture(name, beside = []) {
+  const raw = String(name || ''), k = raw.toLowerCase();
+  if (!/m4jeremy/.test(k)) return raw;
+  const key = /blue/.test(k) ? 'blue' : /white/.test(k) ? 'white' : /limbs|skin/.test(k) ? 'skin' : null;
+  if (!key) return raw;
+  const twin = beside.find(n => { const s = n.toLowerCase(); return !/m4jeremy/.test(s) && s.includes(key); });
+  return twin || raw;
 }
-/** The FBX's own texture name → the file that IS beside it: redirected only when the named file is missing and its bundled name is there. */
+/** The FBX's own texture name → its plainly named twin beside the file, when there is one. */
 function _skinLoadingManager(namesBeside = []) {
   const mgr = new (T().LoadingManager)();
-  const lc = namesBeside.map(n => n.toLowerCase());
   mgr.setURLModifier(url => url.replace(/[^/\\]+\.(jpe?g|png|webp)$/i, (file) => {
-    try { file = decodeURIComponent(file); } catch { /* keep as is */ }
-    if (!lc.length || lc.includes(file.toLowerCase())) return file;   // the file is there (or unknown): leave it alone
-    const alias = _aliasTexture(file);
-    return lc.includes(alias.toLowerCase()) ? encodeURIComponent(alias) : file;
+    let plain = file;
+    try { plain = decodeURIComponent(file); } catch { /* keep as is */ }
+    const twin = _aliasTexture(plain, namesBeside);
+    return twin === plain ? file : encodeURIComponent(twin);
   }));
   return mgr;
 }
@@ -1191,7 +1195,9 @@ async function _imagesNextTo(dir) {
   if (!dir || !window.sbsNative?.listDir) return [];
   try {
     const entries = await window.sbsNative.listDir(dir);
-    return (entries || []).filter(e => e && !e.isDir && /\.(jpe?g|png|webp)$/i.test(e.name)).map(e => e.name).sort((a, b) => a.localeCompare(b));
+    const names = (entries || []).filter(e => e && !e.isDir && /\.(jpe?g|png|webp)$/i.test(e.name)).map(e => e.name).sort((a, b) => a.localeCompare(b));
+    // V0.3.4.193 — an artist-named file whose plainly named twin is beside it is not offered twice
+    return names.filter(n => _aliasTexture(n, names) === n);
   } catch { return []; }
 }
 
@@ -1209,7 +1215,7 @@ export async function setHandSkinTexture(name, { persist = true } = {}) {
   // is tried under its new bundled name (an old saved setting on the built-in
   // skin); still nothing → the file's own texture, quietly.
   if (want && _skin.textures.length && !_skin.textures.includes(want)) {
-    const lc = want.toLowerCase(), alias = _aliasTexture(want).toLowerCase();
+    const lc = want.toLowerCase(), alias = _aliasTexture(want, _skin.textures).toLowerCase();
     const ci = _skin.textures.find(t => t.toLowerCase() === lc) || _skin.textures.find(t => t.toLowerCase() === alias);
     if (ci) want = ci;
     else { console.warn('[hands] texture not beside the skin file, using its own:', want); want = ''; }
