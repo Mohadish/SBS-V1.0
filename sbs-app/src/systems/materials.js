@@ -124,11 +124,22 @@ function _handShellTarget(w, h) {
 // when it disagrees with the face's own geometric normal (from the position
 // derivatives, turned toward the viewer so winding does not matter) — a decision
 // that is constant across the face.
+// V0.3.4.169 — and when the stored normal is nearly PERPENDICULAR to the face (this
+// model: the stored normals are unusable on every part — a sign test on a dot
+// product near zero flipped per pixel → speckle over everything), the face's own
+// geometric normal is used instead; a sane stored normal (|dot| ≥ 0.5, every real
+// smooth surface) is kept, and the two are blended in between so nothing steps.
 const FACING_GLSL = `
 vec3 sbsFaceNormal(vec3 N, vec3 V, vec3 viewPos) {
   vec3 Ng = cross(dFdx(viewPos), dFdy(viewPos));
+  float gl = length(Ng);
+  if (gl < 1e-20) return N;
+  Ng /= gl;
   if (dot(Ng, V) < 0.0) Ng = -Ng;
-  return dot(N, Ng) < 0.0 ? -N : N;
+  float a = dot(N, Ng);
+  vec3  Ns = a < 0.0 ? -N : N;                       // agree with the face
+  float w  = smoothstep(0.2, 0.5, abs(a));           // 0 = stored normal unusable, 1 = trusted
+  return normalize(mix(Ng, Ns, w));
 }
 `;
 
