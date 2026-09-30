@@ -214,7 +214,7 @@ uniform float uSolidness;            // 1=solid, 0=full X-ray
 uniform float uMetalness;
 uniform float uRoughness;
 uniform float uReflectionIntensity;  // 0=matte, 1=shiny (0.5=neutral default)
-uniform samplerCube uEnvMap;         // PMREM environment cube (roughness-prefiltered)
+uniform sampler2D uEnvMap;           // the PMREM (V0.3.4.167) — sampled through three's textureCubeUV below
 uniform float uToneMapOn;            // 🎬 Production Render (V0.3.2.47): 1 = ACES filmic
 uniform float uExposure;             //     linear-space exposure — applied only when on
 uniform float uRigKey;               // 🎬 rig intensities (V0.3.2.48) — key / fill / rim
@@ -239,6 +239,23 @@ vec3 sbsACES(vec3 x) {
 uniform float transitionOpacity;     // 0=invisible, 1=visible (dither fade)
 ${DITHER_NOISE_GLSL}
 ${PHONG_GLSL}
+// V0.3.4.167 — THE ENVIRONMENT IS THE PMREM. Until now this shader took a
+// samplerCube: first six unrelated canvas gradients (a box with hard edges),
+// then a cube of the HDRI without mipmaps (roughness ignored — every material a
+// mirror of the studio's softbox edges), then with hardware mipmaps (a box
+// filter — a coarse level shows its texel grid, so a blurred edge became a
+// staircase). The PMREM is the GGX-prefiltered environment three builds for its
+// own materials — smooth at every roughness. Its 2D CubeUV packing is read with
+// three's own helper; the CUBEUV_* defines come from material.envMap (set on the
+// ShaderMaterial for exactly that), so this chunk is empty until an env exists.
+#include <cube_uv_reflection_fragment>
+vec3 sbsEnv(vec3 dir, float rough) {
+#ifdef ENVMAP_TYPE_CUBE_UV
+  return textureCubeUV(uEnvMap, dir, clamp(rough, 0.0, 1.0)).rgb;
+#else
+  return vec3(0.0);
+#endif
+}
 void main() {
   vec3  V   = normalize(-vViewPos);
   vec3  N   = normalize(vNormalView);
@@ -259,7 +276,7 @@ void main() {
   mat3 v2w = transpose(mat3(viewMatrix));
   vec3 Nw  = normalize(v2w * N);
   vec3 Vw  = normalize(v2w * V);
-  vec3 envAmb   = textureLod(uEnvMap, Nw, 4.0).rgb * uEnvIntensity;   // pre-blurred cube = irradiance-ish (V0.3.2.55)
+  vec3 envAmb   = sbsEnv(Nw, 1.0) * uEnvIntensity;   // fully rough = irradiance-ish (what three's IBL does too)
   vec3 rigColor = sbsRigPhong(albedo, Nw, Vw, N, V,
                               uRoughness, uMetalness, uReflectionIntensity,
                               uRigKey, uRigFill, uRigRim, uRigAngle, uRimWidth,
@@ -268,10 +285,11 @@ void main() {
 
   // ── Environment map reflection (world space) ──────────────────────────
   vec3  R_w    = reflect(-Vw, Nw);
-  // Global env blur is now BAKED into the cube source (CPU downsample in JS,
-  // V0.3.2.55) — reliable, no float-mip dependency. uEnvBlur kept as a uniform
-  // (harmless) but the shader just samples the pre-blurred cube.
-  vec3  envRGB = textureLod(uEnvMap, R_w, uRoughness * 4.0).rgb * uEnvIntensity;
+  // The production env-blur slider (V0.3.4.167): a live roughness offset on the
+  // prefiltered environment — 0 = the material's own roughness, 1 = fully
+  // diffuse. Production only; the preview keeps the material roughness.
+  float envRough = mix(uRoughness, mix(uRoughness, 1.0, clamp(uEnvBlur, 0.0, 1.0)), uToneMapOn);
+  vec3  envRGB = sbsEnv(R_w, envRough) * uEnvIntensity;
   vec3  envF0  = mix(vec3(0.04), albedo, uMetalness);   // Fresnel F0
   litColor    += envRGB * envF0 * uReflectionIntensity * 2.0;
 
@@ -423,9 +441,6 @@ class MaterialsSystem {
     // via "Set as Default". Steps deviate from this; "Revert to Default" returns here.)
     this.meshDefaultColors     = {};
 
-    // Canvas-based fallback env map (used before PMREM is ready)
-    this._canvasEnvMap         = null;
-
     // PMREM-processed HDR environment map (set after renderer is available)
     this._pmremEnvMap          = null;
 
@@ -474,24 +489,24 @@ class MaterialsSystem {
     // (why .163 changed nothing on screen). Build it now if the renderer is up.
     if (sceneCore.renderer) this._initPmremEnvMap();
 
-    // V0.3.4.165 — console: sbsEnvDiag() → which cube the shader samples right now.
+    // V0.3.4.165 — console: sbsEnvDiag() → which environment the shader samples right now.
     if (typeof window !== 'undefined') window.sbsEnvDiag = () => {
-      const cube = this.metalEnvMap;
-      const which = cube === this._hdriCubeMap ? 'HDRI' : cube === this._studioCubeMap ? 'studio' : 'canvas (six faces)';
-      let sampled = 0, studio = 0, hdri = 0, canvas = 0, standard = 0;
+      const env = this.metalEnvMap;
+      const which = !env ? 'none' : this._pmremForHdri ? 'HDRI PMREM (' + this._pmremForHdri + ')' : 'studio PMREM';
+      let sampled = 0, current = 0, stale = 0, standard = 0;
       for (const [, mesh] of this.meshById) {
         const ms = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const m of ms) {
           const t = m?.uniforms?.uEnvMap?.value ?? m?.envMap;
           if (!t) continue;
           sampled++;
-          if (t === this._studioCubeMap) studio++; else if (t === this._hdriCubeMap) hdri++; else if (t === this._canvasEnvMap) canvas++;
+          if (t === env) current++; else stale++;
           if (m?.isMeshStandardMaterial) standard++;
         }
       }
-      const out = { version: APP_VERSION, shaderCubeNow: which, studioBuilt: !!this._studioCubeMap,
-        studioError: this._studioCubeError || null, pmremBuilt: !!this._pmremEnvMap, hdriActive: this._activeHdri || null,
-        materials: { total: sampled, studio, hdri, canvas, textured: standard } };
+      const out = { version: APP_VERSION, envNow: which, envSize: env ? `${env.image?.width}x${env.image?.height}` : null,
+        hdriActive: this._activeHdri || null, envBlur: _prodToneMap.envBlur, productionOn: !!_prodToneMap.on,
+        materials: { total: sampled, current, stale, textured: standard } };
       console.log('[sbsEnvDiag]', JSON.stringify(out));
       return out;
     };
@@ -561,83 +576,18 @@ class MaterialsSystem {
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
-   * Fallback canvas-based cube map used before the PMREM HDR map is ready.
-   * Low dynamic range (8-bit sRGB) so reflections are approximate but instant.
+   * The environment every SBS material samples: the PMREM (V0.3.4.167) — the
+   * HDRI's while Production has one, else the procedural studio's. One texture
+   * for the SBS shader (uEnvMap + material.envMap, read with textureCubeUV) and
+   * for scene.environment (textured MeshStandardMaterial parts). null only before
+   * the renderer exists (the shader then samples nothing; applyAll rebinds).
+   *   History: a six-canvas cube (a box with hard edges), then a cube of the HDRI
+   * without mipmaps (roughness ignored), then with hardware mipmaps (box filter →
+   * staircases). The PMREM is what three's own materials use; it is prefiltered
+   * per roughness and seamless.
    */
-  _createCanvasEnvMap() {
-    const SIZE = 64;
-    const makeFace = (top, bottom, glow = 'rgba(255,255,255,0)') => {
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = SIZE;
-      const g = canvas.getContext('2d');
-      const grad = g.createLinearGradient(0, 0, 0, SIZE);
-      grad.addColorStop(0,    top);
-      grad.addColorStop(0.55, '#a7b3c5');
-      grad.addColorStop(1,    bottom);
-      g.fillStyle = grad;
-      g.fillRect(0, 0, SIZE, SIZE);
-      const rg = g.createRadialGradient(
-        SIZE * 0.3, SIZE * 0.25, 2,
-        SIZE * 0.3, SIZE * 0.25, SIZE * 0.55,
-      );
-      rg.addColorStop(0, glow);
-      rg.addColorStop(1, 'rgba(255,255,255,0)');
-      g.fillStyle = rg;
-      g.fillRect(0, 0, SIZE, SIZE);
-      return canvas;
-    };
-
-    const tex = new THREE.CubeTexture([
-      makeFace('#f8fbff', '#5b6674', 'rgba(255,255,255,0.85)'),
-      makeFace('#f8fbff', '#5b6674', 'rgba(255,255,255,0.85)'),
-      makeFace('#ffffff', '#8e99a8', 'rgba(255,255,255,0.95)'),
-      makeFace('#3a4552', '#111827', 'rgba(255,255,255,0.15)'),
-      makeFace('#dfe7f0', '#44505d', 'rgba(255,255,255,0.55)'),
-      makeFace('#dfe7f0', '#44505d', 'rgba(255,255,255,0.55)'),
-    ]);
-    tex.needsUpdate = true;
-    if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-    return tex;
-  }
-
-  /** Returns the best available env map for the SBS shader's samplerCube.
-   *  IMPORTANT: this MUST be a real CubeTexture — PMREM output is a 2D
-   *  CubeUV-packed texture and silently fails when bound to a samplerCube
-   *  (the V0.3.2.49 HDRI "does nothing" bug). HDRI cube wins when active;
-   *  then the studio cube (V0.3.4.163); the canvas cube only before the
-   *  renderer exists. */
   get metalEnvMap() {
-    return this._hdriCubeMap
-      ?? this._studioCubeMap
-      ?? (this._canvasEnvMap ??= this._createCanvasEnvMap());
-  }
-
-  /**
-   * V0.3.4.163 — THE STUDIO AS THE SHADER'S CUBE. The canvas cube above was
-   * meant as a stop-gap "until the PMREM is ready", but the SBS shader can never
-   * take the PMREM (2D packing), so every part's reflection and ambient came from
-   * six unrelated 64-px gradients: a BOX with hard edges — his "very hard vertical
-   * line" wandering over parts as the view turns, one face black, the next dark,
-   * the next light. Now the same procedural studio that feeds scene.environment is
-   * rendered into a real cube (the HDRI pipeline's route, half-float so the key
-   * hotspot keeps its range, mipmapped so textureLod's roughness blur and the LOD-4
-   * ambient work as before). Continuous by construction — no seams.
-   */
-  _buildStudioCube(renderer, data, W, H) {
-    const half = new Uint16Array(W * H * 4);
-    for (let i = 0; i < half.length; i++) half[i] = THREE.DataUtils.toHalfFloat(Math.min(data[i], 65504));
-    const eq = new THREE.DataTexture(half, W, H, THREE.RGBAFormat, THREE.HalfFloatType);
-    eq.mapping = THREE.EquirectangularReflectionMapping;
-    eq.generateMipmaps = true;                        // fromEquirectangularTexture copies these onto the cube
-    eq.minFilter = THREE.LinearMipmapLinearFilter;
-    eq.magFilter = THREE.LinearFilter;
-    eq.needsUpdate = true;
-    const rt = new THREE.WebGLCubeRenderTarget(128).fromEquirectangularTexture(renderer, eq);
-    eq.dispose();
-    this._studioCubeMap?.dispose?.();
-    this._studioCubeRT?.dispose?.();
-    this._studioCubeRT  = rt;
-    this._studioCubeMap = rt.texture;
+    return this._pmremEnvMap ?? null;
   }
 
   /**
@@ -708,10 +658,7 @@ class MaterialsSystem {
     eqTex.dispose();
 
     this._pmremEnvMap = rt.texture;
-
-    // The same studio for the SBS shader's samplerCube (V0.3.4.163, see _buildStudioCube).
-    try { this._buildStudioCube(renderer, data, W, H); this._studioCubeError = null; }
-    catch (e) { this._studioCubeError = String(e?.message || e); console.warn('[materials] studio cube failed — keeping the canvas cube:', this._studioCubeError); }
+    this._pmremForHdri = null;         // the studio, not an HDRI
 
     // Apply to scene so MeshStandardMaterial meshes also benefit
     if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
@@ -721,36 +668,31 @@ class MaterialsSystem {
   }
 
   /**
-   * 🎬 Production HDRI environment (V0.3.2.49). Swaps the reflection/IBL
-   * environment to a real .hdr from assets/hdri/ (Poly Haven, CC0) — same
-   * PMREM pipeline as the procedural default, so it feeds uEnvMap (SBS
-   * shader) AND scene.environment (textured materials) identically.
-   * Active ONLY while Production Render is on; turning it off (or picking
-   * "Built-in studio") rebuilds the procedural map, keeping preview mode
-   * byte-identical to what every project has always looked like.
+   * 🎬 Production HDRI environment (V0.3.2.49). Swaps the environment to a real
+   * .hdr from assets/hdri/ (Poly Haven, CC0) — the same PMREM pipeline as the
+   * procedural studio, so it feeds uEnvMap (SBS shader) AND scene.environment
+   * (textured materials) identically. Active ONLY while Production Render is on;
+   * turning it off (or picking "Built-in studio") rebuilds the procedural map.
+   *   V0.3.4.167: the env-blur slider no longer rebuilds anything — it is the
+   * uEnvBlur uniform (setProductionLook), a live roughness offset on the PMREM.
+   * The CPU downsample + cube of .55 are gone (see metalEnvMap).
    */
   async applyProductionEnvironment(prod) {
     const want = (prod?.enabled && prod?.hdri) ? String(prod.hdri) : null;
-    const blurQ = Math.round(Math.max(0, Math.min(1, Number(prod?.envBlur) || 0)) * 10) / 10;   // quantize so tiny jitters don't rebuild
-    const key = want ? `${want}|${blurQ}` : null;
-    if (key === (this._envKey ?? null)) return;
+    if (want === (this._activeHdri ?? null) && (want ? this._pmremForHdri === want : !this._pmremForHdri)) return;
 
     const renderer = sceneCore.renderer;
     if (!renderer) return;
-    this._envKey = key;
     this._activeHdri = want;
 
     if (!want) {                       // back to the built-in procedural studio
-      this._hdriCubeMap?.dispose?.();
-      this._hdriCubeMap = null;
       this._hdriEquirect = null;
       this._pmremEnvMap = null;
       this._initPmremEnvMap();         // rebuilds scene.environment + applyAll()
       return;
     }
 
-    // Only READ + DECODE the file when the HDRI itself changed; a blur change
-    // reuses the cached float equirect (user's design: re-blur the original).
+    // READ + DECODE the file only when the HDRI itself changed.
     if (this._hdriEquirect?.name !== want) {
       try {
         const { decodeRGBE } = await import('../../vendor/rgbe-decode.mjs');
@@ -764,95 +706,32 @@ class MaterialsSystem {
         this._hdriEquirect = { name: want, data: img.data, w: img.width, h: img.height };
       } catch (e) {
         console.warn('[materials] HDRI load failed — keeping current environment:', e?.message);
-        this._envKey = null; this._activeHdri = null;
+        this._activeHdri = null;
         return;
       }
     }
 
     try {
       const src = this._hdriEquirect;
-      // CPU BLUR (V0.3.2.55, user's approach): downsampling the equirect IS a
-      // low-pass blur, dodging the flaky float-cube-mipmap path entirely.
-      // GEOMETRIC resolution curve (512→12) so the softening feels EVEN across
-      // the slider — a linear px curve barely blurs until the very end because
-      // big studio softboxes survive moderate downsampling.
-      const tw = Math.max(12, Math.round(512 * Math.pow(12 / 512, blurQ)));
-      const th = Math.max(6, tw >> 1);
-      const ds = this._downsampleEquirect(src.data, src.w, src.h, tw, th);
-      // V0.3.4.166 — HALF-FLOAT + MIPMAPS. Since .55 this cube had NO mipmaps
-      // ("flaky float-cube mipmaps"), so the shader's textureLod(uEnvMap, R,
-      // roughness × 4) and its LOD-4 ambient both fell back to level 0: every
-      // material, however rough, mirrored the studio SHARP — the hard edge of a
-      // softbox panel drawn across a flat plate (his "environment box" line,
-      // 2026-09-30, studio_small_08). The flakiness was a 32-bit float cube:
-      // fromEquirectangularTexture copies the SOURCE's type and filters, so the
-      // HalfFloatType asked for below never applied. A half-float source gives a
-      // half-float cube, and those mipmaps work (verified on this machine).
-      const half = new Uint16Array(ds.length);
-      for (let i = 0; i < half.length; i++) half[i] = THREE.DataUtils.toHalfFloat(Math.min(ds[i], 65504));
-      const eqTex = new THREE.DataTexture(half, tw, th, THREE.RGBAFormat, THREE.HalfFloatType);
-      eqTex.mapping = THREE.EquirectangularReflectionMapping;
-      eqTex.minFilter = THREE.LinearMipmapLinearFilter; eqTex.magFilter = THREE.LinearFilter;
-      eqTex.generateMipmaps = true;
-      eqTex.needsUpdate = true;
-
-      // Cube for the SBS shader's samplerCube (type / filters / mipmaps come from
-      // eqTex — see above). The envBlur downsample still softens the whole thing.
-      const cubeRT = new THREE.WebGLCubeRenderTarget(256).fromEquirectangularTexture(renderer, eqTex);
-      const oldCube = this._hdriCubeMap;
-      this._hdriCubeMap = cubeRT.texture;
-
-      // PMREM for scene.environment (textured MeshStandardMaterial path) —
-      // full-res source, crisp roughness mips. Only rebuilt when the HDRI
-      // itself changes; a blur-only change reuses it (blur is a SBS-shader
-      // concern, textured materials keep the sharp env).
-      if (this._pmremForHdri !== want) {
-        const fullTex = new THREE.DataTexture(src.data, src.w, src.h, THREE.RGBAFormat, THREE.FloatType);
-        fullTex.mapping = THREE.EquirectangularReflectionMapping;
-        fullTex.needsUpdate = true;
-        const pmrem = new THREE.PMREMGenerator(renderer);
-        pmrem.compileEquirectangularShader();
-        const rt = pmrem.fromEquirectangular(fullTex);
-        pmrem.dispose();
-        fullTex.dispose();
-        this._pmremEnvMap = rt.texture;
-        this._pmremForHdri = want;
-        if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
-      }
-      eqTex.dispose();
-
+      const fullTex = new THREE.DataTexture(src.data, src.w, src.h, THREE.RGBAFormat, THREE.FloatType);
+      fullTex.mapping = THREE.EquirectangularReflectionMapping;
+      fullTex.needsUpdate = true;
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      pmrem.compileEquirectangularShader();
+      const rt = pmrem.fromEquirectangular(fullTex);
+      pmrem.dispose();
+      fullTex.dispose();
+      const old = this._pmremEnvMap;
+      this._pmremEnvMap = rt.texture;
+      this._pmremForHdri = want;
+      if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
       this.applyAll();                 // rebind uEnvMap everywhere
-      oldCube?.dispose?.();
-      console.log(`[materials] 🎬 HDRI "${want}" @ blur ${blurQ} → source ${tw}x${th}`);
+      old?.dispose?.();
+      console.log(`[materials] 🎬 HDRI "${want}" → PMREM`);
     } catch (e) {
-      console.warn('[materials] HDRI cube build failed:', e?.message);
-      this._envKey = null;
+      console.warn('[materials] HDRI PMREM build failed:', e?.message);
+      this._activeHdri = null;
     }
-  }
-
-  /** Area-average downsample of an RGBA float equirect (horizontal wrap, so
-   *  the 360° seam stays continuous). Cheap low-pass = the environment blur. */
-  _downsampleEquirect(src, sw, sh, tw, th) {
-    const out = new Float32Array(tw * th * 4);
-    const xScale = sw / tw, yScale = sh / th;
-    for (let ty = 0; ty < th; ty++) {
-      const y0 = Math.floor(ty * yScale), y1 = Math.max(y0 + 1, Math.floor((ty + 1) * yScale));
-      for (let tx = 0; tx < tw; tx++) {
-        const x0 = Math.floor(tx * xScale), x1 = Math.max(x0 + 1, Math.floor((tx + 1) * xScale));
-        let r = 0, g = 0, b = 0, n = 0;
-        for (let y = y0; y < y1 && y < sh; y++) {
-          for (let x = x0; x < x1; x++) {
-            const sx = ((x % sw) + sw) % sw;
-            const i = (y * sw + sx) * 4;
-            r += src[i]; g += src[i + 1]; b += src[i + 2]; n++;
-          }
-        }
-        const o = (ty * tw + tx) * 4;
-        const inv = n ? 1 / n : 0;
-        out[o] = r * inv; out[o + 1] = g * inv; out[o + 2] = b * inv; out[o + 3] = 1;
-      }
-    }
-    return out;
   }
 
 
@@ -1016,6 +895,12 @@ class MaterialsSystem {
       mat.stencilZPass = THREE.ReplaceStencilOp;
     }
 
+    // V0.3.4.167 — three reads material.envMap for ANY material when it builds the
+    // program: a PMREM here makes it emit the CUBEUV_* defines the shader's
+    // textureCubeUV needs (and recompile when the PMREM changes). uEnvMap above is
+    // the same texture, bound as the sampler.
+    mat.envMap = this.metalEnvMap;
+
     mat.userData.transitionFadeState = fadeState;
     mat.userData.isSbsShader         = true;
     mat.userData.isFalloffFront      = true;
@@ -1114,7 +999,11 @@ class MaterialsSystem {
     if (u.uMetalness)           u.uMetalness.value           = preset.metalness           ?? 0.05;
     if (u.uRoughness)           u.uRoughness.value           = preset.roughness           ?? 0.45;
     if (u.uReflectionIntensity) u.uReflectionIntensity.value = preset.reflectionIntensity ?? 0.5;
-    if (u.uEnvMap)              u.uEnvMap.value              = this.metalEnvMap;
+    if (u.uEnvMap) {
+      const env = this.metalEnvMap;
+      u.uEnvMap.value = env;
+      if (mat.envMap !== env) { mat.envMap = env; mat.needsUpdate = true; }   // the CUBEUV_* defines follow the PMREM
+    }
   }
 
   /**
