@@ -59,7 +59,7 @@ import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode, openCableTabForCable, clearActiveCable } from './ui/sidebar-left.js';
 import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
 import { promptString } from './ui/prompt.js';
-import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter } from './ui/tree.js';
+import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter, folderMenuItems } from './ui/tree.js';
 import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee, cancelOverlayPolyEdit, isEditing as isOverlayEditing, selectionCount as overlaySelectionCount } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray, toggleOverlaySnap } from './ui/overlay-toolbar.js';
@@ -4628,7 +4628,16 @@ canvas.addEventListener('contextmenu', e => {
   if (multiIds.size === 1 && node && !node.archived && node.type !== 'scene') {
     items.push(node.follow
       ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
-      : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
+      : { label: '🔗 Follow object…',  action: () => {
+          // V0.3.4.174 — a raw part has no transform of its own to ride along: wrap it first (as "Make transformable" does).
+          const id = node.type === 'mesh' ? (actions.makeTransformable(node.id) || node.id) : node.id;
+          startFollowPick(id);
+        } });
+    items.push({ label: '─', disabled: true });
+  }
+  // A folder's own rows — copy / paste transforms, delete (V0.3.4.174, parity with the tree).
+  if (multiIds.size === 1 && node && !node.archived && node.type === 'folder') {
+    for (const it of folderMenuItems(node)) items.push(it);
     items.push({ label: '─', disabled: true });
   }
   // 🖐 V0.3.4.132 — a hand: release / grip again at this step, align its grip, fine-tune.

@@ -218,6 +218,32 @@ export function hideContextMenu() {
 //   copy / paste, paste → steps) · 6 note + spotlight · 7 object clipboard ·
 //   8 the type's own tools (hardware, hand, shape) · 9 tree utilities · 10 delete ·
 //   11 cameras (orbit centre first, fit view last) · 12 archive, at the very bottom.
+/**
+ * V0.3.4.174 — the "👁 Visibility" row every object has (click = hide/show on this
+ * step; hover ▸ = across steps), for any node kind that only had a plain Hide/Show
+ * (notes, his ask: "hide on all previous steps / all following / show only here").
+ * `actions` is passed in (this module must not import actions.js).
+ */
+export function visibilityMenuItem(actions, ids, label, allVisible) {
+  return {
+    label: '👁 Visibility',
+    disabled: !!actions.hasIsolateSnapshot?.(),   // while isolated, the mask owns hide/show
+    action: () => actions.toggleVisibility(ids),
+    submenu: [
+      { label: allVisible ? `🚫 Hide ${label} — this step` : `👁 Show ${label} — this step`,
+        action: () => actions.toggleVisibility(ids) },
+      { separator: true },
+      { label: '◀ 👁 Show on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(ids, true,  'previous') },
+      { label: '◀ 🚫 Hide on all previous steps',  action: () => actions.setNodeVisibilityAcrossSteps(ids, false, 'previous') },
+      { separator: true },
+      { label: '▶ 👁 Show on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(ids, true,  'following') },
+      { label: '▶ 🚫 Hide on all following steps', action: () => actions.setNodeVisibilityAcrossSteps(ids, false, 'following') },
+      { separator: true },
+      { label: '⦿ 👁 Show ONLY on this step',      action: () => actions.setNodeVisibilityAcrossSteps(ids, true,  'only') },
+    ],
+  };
+}
+
 const _MENU_SECTIONS = [
   // [matcher(label), group] — first match wins; groups render in ascending order.
   [l => l.startsWith('⚠️'),                                          0],  // missing-asset header

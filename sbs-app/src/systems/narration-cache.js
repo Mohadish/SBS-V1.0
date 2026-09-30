@@ -335,6 +335,24 @@ export async function migrateInlineClipsToDisk(steps) {
  * is a runtime-only artefact — it gets stripped again on save (see
  * project.js#serialize).
  */
+/**
+ * V0.3.4.174 — write a synthesized clip onto the LIVE step. Every synth runs
+ * across awaits (the synth itself, then the disk save); the step object captured
+ * before them may have been REPLACED meanwhile — an edit of the step maps it to a
+ * fresh copy, an undo restores older copies — and the clip then landed on an
+ * orphan and was silently lost (his "real voice never appears" after an edit).
+ * Re-resolve by id at write time, synchronously; refuse when the step is gone or
+ * its text no longer matches what was synthesized. Returns the live step or null.
+ */
+export function stampNarration(stepId, text, clip, { markAltered = false } = {}) {
+  const live = (state.get('steps') || []).find(s => s.id === stepId);
+  if (!live) return null;
+  if ((live.narration?.text || '').trim() !== text) return null;
+  live.narration = { ...clip, text };
+  if (markAltered) live.altered = true;   // ★ narration length sets the hold → segment length
+  return live;
+}
+
 export async function ensurePlayable(step) {
   const n = step?.narration;
   if (!n) return null;

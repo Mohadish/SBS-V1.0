@@ -46,7 +46,7 @@ import { chooseFromButtons }    from './prompt.js';
 import { scanTransformStructure, pasteTransforms } from '../systems/paste-transforms.js';   // V0.3.4.124 — Paste Transforms: one step or many, plain cascade
 import * as handActions from '../systems/hand-actions.js';   // 🖐 V0.3.4.132 — the hand's r-click items
 import * as hands       from '../systems/hands.js';
-import { showContextMenu, hideContextMenu, showConfirmDialog, canonicalizeMenuOrder } from './context-menu.js';
+import { showContextMenu, hideContextMenu, showConfirmDialog, canonicalizeMenuOrder, visibilityMenuItem } from './context-menu.js';
 import { showColorForNode, editHardwareTemplate } from './sidebar-left.js';
 import * as folderAlignPicker   from '../systems/folder-align-picker.js';
 import * as folderAlign3ptPicker from '../systems/folder-align-3pt-picker.js';
@@ -1491,7 +1491,11 @@ function _buildContextMenuItems(node) {
   if (count === 1 && node && !node.archived && node.type !== 'scene') {
     items.push(node.follow
       ? { label: '🔗 Stop following…', action: () => promptStopFollowing(node.id) }
-      : { label: '🔗 Follow object…',  action: () => startFollowPick(node.id) });
+      : { label: '🔗 Follow object…',  action: () => {
+          // V0.3.4.174 — a raw part has no transform of its own to ride along: wrap it first (as "Make transformable" does).
+          const id = node.type === 'mesh' ? (actions.makeTransformable(node.id) || node.id) : node.id;
+          startFollowPick(id);
+        } });
   }
   // 🔦 Spotlight at this step (V0.3.4.82) — parity with the viewport menu.
   if (count === 1 && node && !node.archived && isTransformNode(node)) {
@@ -2082,6 +2086,27 @@ function _collapseSubtree(node) {
   }
   walk(node);
   renderTree();
+}
+
+/**
+ * V0.3.4.174 — the folder's own rows, for the VIEWPORT menu too (they were
+ * tree-only: "the viewport lacks folder copy / paste-transform + delete"). The
+ * clipboard is this module's, so both surfaces share one copied set.
+ */
+export function folderMenuItems(node) {
+  if (!node || node.type !== 'folder') return [];
+  const items = [];
+  items.push({ label: '📋 Copy Transforms', action: () => _copyFolderTransforms(node) });
+  const clip = _folderXfClipboard;
+  items.push({
+    label: clip ? `📌 Paste Transforms… (from "${(clip.rootName || '').slice(0, 24)}")` : '📌 Paste Transforms…',
+    disabled: !clip,
+    action: () => _pasteFolderTransforms(node),
+  });
+  const childCount = (node.children || []).length;
+  if (childCount === 0) items.push({ label: '🗑 Delete Empty Folder', action: () => _deleteEmptyFolder(node) });
+  else items.push({ label: `🗑 Delete Folder (contains ${childCount} item${childCount > 1 ? 's' : ''} — empty first)`, disabled: true });
+  return items;
 }
 
 function _deleteEmptyFolder(node) {
@@ -3665,10 +3690,7 @@ function _buildNoteContextMenuItems(node) {
     : { srcText: node.text, label: (node.text || '').replace(/\s+/g, ' ').trim() };
   const sizeDisabled = !!tpl;
   return [
-    {
-      label:  isVisible ? `🚫 Hide note` : `👁 Show note`,
-      action: () => actions.toggleVisibility([node.id]),
-    },
+    visibilityMenuItem(actions, [node.id], 'note', isVisible),   // V0.3.4.174 — across steps, like every object
     {
       label:  tpl ? `✏ Edit Template Text… (${tpl.name || 'template'})` : '✏ Edit Text…',
       action: () => _showInputDialog(

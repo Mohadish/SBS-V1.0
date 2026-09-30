@@ -3786,9 +3786,14 @@ export async function previewStepNarration(step, currentText) {
       stepName: step.name,
       stepId:   step.id,
     }).catch(() => null);
-    step.narration = { text, voiceId, speed, ...out };
-    step.altered = true;   // ★ narration length sets the hold → segment length
-    if (dataFile) step.narration.dataFile = dataFile;
+    // V0.3.4.174 — onto the LIVE step (re-resolved by id: an edit or undo during the
+    // synth replaced `step` with a fresh copy, and the clip used to land on the orphan).
+    const clip = { voiceId, speed, ...out };
+    if (dataFile) clip.dataFile = dataFile;
+    if (!narrationCache.stampNarration(step.id, text, clip, { markAltered: true })) {
+      console.log('[tts-flow] step changed during synth — clip not stamped');
+      return;
+    }
     state.markDirty();
     setStatus(`Real voice ready (${(out.durationMs / 1000).toFixed(1)}s) — click ▶ to hear it.`);
   }).catch(err => {

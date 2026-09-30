@@ -1340,8 +1340,10 @@ async function _synthesizeMissingClips(stepsToPlay, onProgress, signal) {
           stepId:   s.id,
         })
         .catch(() => null);
-      s.narration = { text, voiceId, speed, ...out };
-      if (dataFile) s.narration.dataFile = dataFile;
+      const clip = { voiceId, speed, ...out };
+      if (dataFile) clip.dataFile = dataFile;
+      s.narration = { ...clip, text };                                        // the export's own copy (the decode loop reads it)
+      narrationCache.stampNarration(s.id, text, clip);                      // V0.3.4.174 — and the LIVE step, by id
       console.log(`[export]   ✓ ${(out.durationMs / 1000).toFixed(2)}s${dataFile ? ` → ${dataFile}` : ''}`);
     } catch (err) {
       console.warn(`[export]   ✗ synth failed for "${s.name}":`, err?.message);

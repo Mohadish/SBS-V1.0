@@ -91,8 +91,10 @@ async function _runOnce(signal, reason) {
           stepId:   cur.id,
         })
         .catch(() => null);
-      cur.narration = { text, voiceId, speed, ...out };
-      if (dataFile) cur.narration.dataFile = dataFile;
+      // V0.3.4.174 — onto the LIVE step, re-resolved after the awaits (`cur` may be an orphan by now).
+      const clip = { voiceId, speed, ...out };
+      if (dataFile) clip.dataFile = dataFile;
+      if (!narrationCache.stampNarration(s.id, text, clip)) continue;
       // Don't markDirty — we DON'T want every cache to dirty the project.
       // The dataUrls / dataFile get written on next user-driven save.
     } catch (err) {

@@ -30,7 +30,7 @@ import { phrase }                   from '../core/ui-phrases.js';   // words dra
 import { sceneCore }                from '../core/scene.js';
 import { steps }                    from '../systems/steps.js';
 import { computeEffectiveVisibility } from '../core/nodes.js';
-import { showContextMenu, showConfirmDialog } from '../ui/context-menu.js';
+import { showContextMenu, showConfirmDialog, visibilityMenuItem } from '../ui/context-menu.js';
 import { computeSafeFrameRect, getCanonicalSize } from '../core/safe-frame.js';
 import * as clock                   from '../core/clock.js';
 
@@ -508,8 +508,7 @@ function _createEntry(note) {
       const pasteOk  = !!clip && selCount > 0;
 
       const items = [
-        { label:  isVisible ? '🚫 Hide note' : '👁 Show note',
-          action: () => actions.toggleVisibility([note.id]) },
+        visibilityMenuItem(actions, [note.id], 'note', isVisible),   // V0.3.4.174 — across steps, like every object
         { label:  '✏ Edit Text…',
           action: () => _enterEdit(note.id, div) },
         { label:  '↺ Reposition Note…',
