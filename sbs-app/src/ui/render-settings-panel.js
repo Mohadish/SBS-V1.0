@@ -28,6 +28,7 @@ const DEFAULTS = {
 // built-in procedural studio the app has always used.
 const HDRI_OPTIONS = [
   { value: '',                     label: 'Built-in studio (default)' },
+  { value: 'gradient',             label: 'Smooth gradient — no features' },
   { value: 'studio_small_08',      label: 'Studio — soft boxes' },
   { value: 'studio_small_09',      label: 'Studio — bright' },
   { value: 'photo_studio_01',      label: 'Photo studio — warm' },

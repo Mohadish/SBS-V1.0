@@ -314,10 +314,13 @@ void main() {
 
   // ── Environment map reflection (world space) ──────────────────────────
   vec3  R_w    = reflect(-Vw, Nw);
-  // The production env-blur slider (V0.3.4.167): a live roughness offset on the
-  // prefiltered environment — 0 = the material's own roughness, 1 = fully
-  // diffuse. Production only; the preview keeps the material roughness.
-  float envRough = mix(uRoughness, mix(uRoughness, 1.0, clamp(uEnvBlur, 0.0, 1.0)), uToneMapOn);
+  // The production env-blur slider: a live roughness offset on the prefiltered
+  // environment — 0 = the material's own roughness, 1 = roughness 0.6 (never
+  // 1.0: that integrates the whole hemisphere and a flat plate goes FLAT — his
+  // "no gradient at all" after .167; 0.6 keeps a broad, directional sweep like
+  // the old 12-px downsample did). Production only; the preview keeps the
+  // material roughness.
+  float envRough = mix(uRoughness, mix(uRoughness, max(uRoughness, 0.6), clamp(uEnvBlur, 0.0, 1.0)), uToneMapOn);
   vec3  envRGB = sbsEnv(R_w, envRough) * uEnvIntensity;
   vec3  envF0  = mix(vec3(0.04), albedo, uMetalness);   // Fresnel F0
   litColor    += envRGB * envF0 * uReflectionIntensity * 2.0;
@@ -650,6 +653,53 @@ class MaterialsSystem {
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
+   * V0.3.4.172 — "Smooth gradient" environment (his ask: "a sphere that is
+   * completely unified in its transition — no sharp lines"). A pure function of
+   * direction, continuous everywhere: bright above the horizon, dark below, one
+   * BROAD soft key lobe (pow 3, not a hotspot), a hint of cool above / warm below.
+   * On a flat plate it reads as a smooth sweep even at roughness 0 — nothing in it
+   * can draw an edge. Linear HDR, fed through the same PMREM as the HDRIs.
+   */
+  _gradientEquirect(W = 256, H = 128) {
+    const data = new Float32Array(W * H * 4);
+    const kx = 0.38, ky = 0.82, kz = 0.45, kl = Math.hypot(kx, ky, kz);
+    const sstep = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const phi   = (x / W) * Math.PI * 2;
+        const theta = (1 - y / H) * Math.PI - Math.PI / 2;
+        const dx = Math.cos(theta) * Math.cos(phi), dy = Math.sin(theta), dz = Math.cos(theta) * Math.sin(phi);
+        // vertical sweep, steepest AROUND THE HORIZON (a face-on plate reflects
+        // the band ±15° about it, so that is where the change must live):
+        // 0.12 well below → 1.3 well above, plus a gentle continuation to the poles.
+        const up = sstep(0, 1, dy), down = sstep(0, 1, -dy);
+        let v = 0.12 + 1.18 * sstep(-0.4, 0.4, dy) + up * 0.25 - down * 0.05;
+        // one broad, soft key lobe
+        const kd = Math.max(0, (dx * kx + dy * ky + dz * kz) / kl);
+        v += Math.pow(kd, 3) * 1.5;
+        // tint: a touch cool above, warm below
+        const r = v * (1 - up * 0.06 + down * 0.08), g = v, b = v * (1 + up * 0.10 - down * 0.10);
+        data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 1;
+      }
+    }
+    return { data, W, H };
+  }
+
+  /** PMREM from a float RGBA equirect (shared by the studio, the gradient and the HDRIs). */
+  _pmremFromEquirect(renderer, data, W, H) {
+    const tex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.FloatType);
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    tex.needsUpdate = true;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    const rt = pmrem.fromEquirectangular(tex);
+    pmrem.dispose();
+    tex.dispose();
+    return rt.texture;
+  }
+
+  /**
    * The environment every SBS material samples: the PMREM (V0.3.4.167) — the
    * HDRI's while Production has one, else the procedural studio's. One texture
    * for the SBS shader (uEnvMap + material.envMap, read with textureCubeUV) and
@@ -763,6 +813,22 @@ class MaterialsSystem {
       this._hdriEquirect = null;
       this._pmremEnvMap = null;
       this._initPmremEnvMap();         // rebuilds scene.environment + applyAll()
+      return;
+    }
+    if (want === 'gradient') {         // V0.3.4.172 — the built-in smooth gradient (no file)
+      try {
+        const { data, W, H } = this._gradientEquirect();
+        const old = this._pmremEnvMap;
+        this._pmremEnvMap = this._pmremFromEquirect(renderer, data, W, H);
+        this._pmremForHdri = want;
+        if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
+        this.applyAll();
+        old?.dispose?.();
+        console.log('[materials] 🎬 smooth gradient environment → PMREM');
+      } catch (e) {
+        console.warn('[materials] gradient environment failed:', e?.message);
+        this._activeHdri = null;
+      }
       return;
     }
 
