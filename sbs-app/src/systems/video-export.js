@@ -290,6 +290,7 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
   const groupKeys   = stepsToPlay.map(groupKeyOf);
   const narrDurs    = stepsToPlay.map(s => s.narration?.durationMs || 0);
   const animDurs    = stepsToPlay.map(_estimateAnimDur);
+  const animEff     = new Array(stepsToPlay.length);              // V0.3.4.184 — anim + clip window when the clip rides the overlay slot
   const narrOffsets = stepsToPlay.map(_narrationStartOffsetMs);   // audio starts at markers[i]+offset
   const markers     = new Array(stepsToPlay.length);
   markers[0] = 0;
@@ -307,7 +308,20 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
     const nextKey = nextI < stepsToPlay.length ? groupKeys[nextI] : null;
     const inSameGroupAsNext = myKey !== null && myKey === nextKey;
     const nextHasAudio = nextI < stepsToPlay.length && narrDurs[nextI] > 0;
-    const stepAnimEnd  = markers[i] + animDurs[i];
+    // 🎯 V0.3.4.184 — a clip on a step WITH an overlay slot stretches the
+    // transition: the phased engine holds the overlay block open for the whole
+    // window after the fade (steps.js: beginPlayback + _sleep(vMs)), so the
+    // step's animation really ends at anim + clip. Modelling it as anim alone
+    // paid the narration tail against a transition that had already consumed
+    // it — a frozen last frame after every video step. Mirrors
+    // narration-timeline's `animMs + videoMs` (the estimate and the encode agree
+    // again). The slot is detected BY TOKEN (stepHasOverlaySlot): the old regex
+    // never matched the default preset, see animHasOverlaySlot.
+    let _vMs = 0;
+    try { _vMs = videoOverlay.stepVideoWindowMs(step) || 0; } catch { /* no clip */ }
+    const _hasSlot = _vMs > 0 && stepHasOverlaySlot(step);
+    animEff[i] = animDurs[i] + (_hasSlot ? _vMs : 0);
+    const stepAnimEnd  = markers[i] + animEff[i];
     let hold, reason;
     if (inSameGroupAsNext && !nextHasAudio) {
       hold   = stepHoldMs;                       // overflow into next-step frames
@@ -334,31 +348,25 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
     // a chained video-step import ended "before the final position", and
     // differently per render (the hold tracked narration timing, not the
     // clip). The floor here covers BOTH modes at the duration model.
-    try {
-      const vMs = videoOverlay.stepVideoWindowMs(step);
-      // V0.3.2.246 — only when the string has NO overlay slot. With one, the
-      // phased engine already holds its overlay block open for the whole
-      // clip window (steps.js: beginPlayback + _sleep(vMs)), so flooring the
-      // hold too counted the clip twice — a frozen last frame as long as the
-      // clip after every video step under the default preset, and an export
-      // longer than the timeline estimate that counts the window once.
-      const _str = resolveAnimationString(step.transition || {}, _presets);
-      const _hasSlot = !!_str && /\boverlays?\s*\(/i.test(_str);
-      if (vMs > 0 && !_hasSlot && hold < vMs) {
-        if (_diagTiming) console.log(`  [${i}] video floor: hold ${hold} → ${vMs}`);
-        hold = vMs;
-        reason += ' +video-floor';
-      }
-    } catch { /* no clip — fine */ }
+    // V0.3.2.246 — only when the string has NO overlay slot. With one, the
+    // phased engine already holds its overlay block open for the whole clip
+    // window, so flooring the hold too counted the clip twice. (V0.3.4.184:
+    // the slot test moved to stepHasOverlaySlot — by token, not the regex that
+    // never matched the default preset and made this guard dead.)
+    if (_vMs > 0 && !_hasSlot && hold < _vMs) {
+      if (_diagTiming) console.log(`  [${i}] video floor: hold ${hold} → ${_vMs}`);
+      hold = _vMs;
+      reason += ' +video-floor';
+    }
     perStepHold[i] = hold;
     if (nextI < stepsToPlay.length) markers[nextI] = stepAnimEnd + hold;
     if (_diagTiming) {
       const keyShort = (myKey || '—').slice(0, 8).padEnd(8);
       const nm = (step.name || '').slice(0, 14).padEnd(14);
-      console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animDurs[i]).padStart(5)} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
+      console.log(`  [${String(i).padStart(2)}] ${keyShort} | ${nm} | anim=${String(animEff[i]).padStart(5)}${_hasSlot ? ` (+clip ${_vMs})` : ''} | narr=${String(narrDurs[i]).padStart(5)} | nOff=${String(narrOffsets[i]).padStart(4)} | mkr=${String(markers[i]).padStart(5)} | hold=${String(hold).padStart(5)} | ${reason}`);
     }
   }
-  const _totalEstMs = (markers[stepsToPlay.length - 1] || 0) + animDurs[animDurs.length - 1] + perStepHold[perStepHold.length - 1];
+  const _totalEstMs = (markers[stepsToPlay.length - 1] || 0) + animEff[animEff.length - 1] + perStepHold[perStepHold.length - 1];
   console.log(`[export] timing: ${stepsToPlay.length} step(s), ${_overflowCount} overflow(s), est total ${Math.round(_totalEstMs)}ms`);
   return perStepHold;
 }
@@ -426,6 +434,7 @@ export async function measureTimelineDurations({ fps, onProgress, signal } = {})
   await _hardResetToFirstStep(stepsToPlay);
   sceneCore.stopLoop();
   clock.setClockImpl(() => synthMs);
+  videoOverlay.reanchorAll(synthMs);   // 🎯 V0.3.4.184 — a first-step clip anchored under the wall clock never advanced
   setSleepImpl(_timingSleep);
   _setWaitImpl(_timingSleep);
   try {
@@ -932,9 +941,13 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       maskCompCtx.fillStyle = '#000';
       maskCompCtx.fillRect(0, 0, width, height);
       maskCompCtx.drawImage(mask3d, 0, 0);
-      _addAlphaAsWhite(rasterizeOverlay({ width, height }));
-      _addAlphaAsWhite(rasterizeNotesLayer({ width, height }));
-      _addAlphaAsWhite(rasterizeTagsLayer({ width, height }));
+      // V0.3.4.184 — the SAME rasters the beauty frame just used (each helper
+      // returns a fresh canvas and nothing moved in between): the mask pass
+      // rasterised the overlay, notes and tags a second time every frame —
+      // pure cost, pixel-identical.
+      _addAlphaAsWhite(ov);
+      _addAlphaAsWhite(nl);
+      _addAlphaAsWhite(tg);
       const mf = new VideoFrame(maskComp, { timestamp: nextFrameUs });
       try { maskEncoder.encode(mf, { keyFrame }); } catch (e) { mf.close(); throw e; }
       mf.close();
@@ -946,6 +959,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
   let unsubTick = () => {};
   let synthMs = 0;
   let offlineActive = false;
+  let _frameLock = null;   // 🎯 V0.3.4.184 — one synthetic frame in flight at a time (see _syntheticSleep)
 
   // Synthetic sleep — advances synthMs frame-by-frame, fires ticks,
   // renders, captures & encodes one frame per slot. Shared by the
@@ -988,29 +1002,45 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
     const target = synthMs + Math.max(0, wantMs);
     while (synthMs + frameIntervalMs <= target) {
       if (_encoderError) throw _encoderError;   // dead encoder → abort, don't spin
-      synthMs += frameIntervalMs;
-      sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
-      // 🎬 V0.3.2.82 — deterministic video: seek every live clip to THIS
-      // frame's synthetic timestamp and wait for the decoder before the
-      // capture below rasterises the overlay. No-op (no await, no cost)
-      // when the step has no video.
-      if (videoOverlay.hasActiveVideos()) await videoOverlay.seekAllToClock(synthMs);
-      if (!staticHold || renderThisHoldFrame) {
-        // 🅰 Mask BEFORE beauty: the flat override render dirties the live
-        // canvas; renderFrame() right after repaints it, so the main capture
-        // (and hold-reuse of the canvas on later frames) stays clean.
-        if (maskEncoder) _renderMask3d();
-        sceneCore.renderFrame(); _framesRendered++;
+      // 🎯 V0.3.4.184 — ONE frame at a time, whoever is sleeping. The phase
+      // engine runs several sleeps concurrently (the slot sleep, the overlay
+      // block's clip window, the export clock driver); they share synthMs by
+      // design, but their iterations used to INTERLEAVE at the seek await —
+      // two seeks in flight, Chromium coalesces them, slot N captured N+1's
+      // picture. Take the frame lock: advance → tick → seek → render → capture
+      // is atomic; a second sleeper waits its turn and re-checks its target.
+      while (_frameLock) await _frameLock;
+      if (synthMs + frameIntervalMs > target) break;   // another sleeper carried the clock past us
+      let _release;
+      _frameLock = new Promise((r) => { _release = r; });
+      try {
+        synthMs += frameIntervalMs;
+        sceneCore.fireSyntheticTick(synthMs, frameIntervalMs);
+        // 🎬 V0.3.2.82 — deterministic video: seek every live clip to THIS
+        // frame's synthetic timestamp and wait for the decoder before the
+        // capture below rasterises the overlay. No-op (no await, no cost)
+        // when the step has no video.
+        if (videoOverlay.hasActiveVideos()) await videoOverlay.seekAllToClock(synthMs);
+        if (!staticHold || renderThisHoldFrame) {
+          // 🅰 Mask BEFORE beauty: the flat override render dirties the live
+          // canvas; renderFrame() right after repaints it, so the main capture
+          // (and hold-reuse of the canvas on later frames) stays clean.
+          if (maskEncoder) _renderMask3d();
+          sceneCore.renderFrame(); _framesRendered++;
+        }
+        else                                     { _framesReused++; }
+        renderThisHoldFrame = false;
+        _captureAndEncode();
+      } finally {
+        _frameLock = null;
+        _release();
       }
-      else                                     { _framesReused++; }
-      renderThisHoldFrame = false;
-      _captureAndEncode();
       // Backpressure — let the encoder drain so we don't OOM with
       // a multi-thousand-frame queue on long timelines. Watchdog: if the queue
       // refuses to drain for ~30s (dead/stalled encoder), bail instead of
       // hanging the app — the finally will restore the live render loop.
       let _bpWaits = 0;
-      while (encoder.encodeQueueSize > 16) {
+      while (encoder.encodeQueueSize > 16 || (maskEncoder && maskEncoder.encodeQueueSize > 16)) {   // V0.3.4.184 — the mask encoder drains too (its queue had no bound)
         if (_encoderError) throw _encoderError;
         if (++_bpWaits > 6000) throw new Error('Export stalled: video encoder stopped draining (queue stuck for 30s). Try a lower fps or resolution.');
         await new Promise(resolve => setTimeout(resolve, 5));
@@ -1091,6 +1121,7 @@ async function _exportMp4({ fps = DEFAULT_FPS, bitrate = DEFAULT_BITRATE,
       // fight the synthetic clock.
       sceneCore.stopLoop();
       clock.setClockImpl(() => synthMs);
+      videoOverlay.reanchorAll(synthMs);   // 🎯 V0.3.4.184 — a first-step clip anchored under the wall clock never advanced
       setSleepImpl(_syntheticSleep);                                   // animation phases → render every frame
       _setWaitImpl((ms) => _syntheticSleep(ms, { staticHold: true })); // inter-step holds → static 3D, reuse the frame
       offlineActive = true;

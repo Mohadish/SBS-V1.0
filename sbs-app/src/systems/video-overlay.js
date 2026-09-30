@@ -565,7 +565,12 @@ export async function seekAllToClock(synthMs) {
     // frame (a duplicate, then a skip). One millisecond inside the frame
     // cannot reach the next one at any sane frame rate.
     const target = Math.min(wantMs + 1, Math.max(outMs, inMs)) / 1000;
-    if (Math.abs(video.currentTime - target) < 0.002) { _seekStats.skipped++; continue; }   // this frame was already asked for
+    // Skip only when the element has LANDED on this frame. While a seek is in
+    // flight the element already reports the requested time (V0.3.4.184: the
+    // unawaited trim-in seek at attach passed this test and the fade-in's first
+    // frames captured the file's frame 0 — the previous step of a multi-step
+    // segment); _seekTo then re-asks the same target and waits for 'seeked'.
+    if (!video.seeking && Math.abs(video.currentTime - target) < 0.002) { _seekStats.skipped++; continue; }
     waits.push(_seekTo(video, target, SEEK_CAP_MS, node.getAttr('videoRel') || node.getAttr('videoPath') || 'clip'));
   }
   if (waits.length) await Promise.all(waits);
@@ -720,6 +725,22 @@ export function beginPlayback() {
     if (!_isExporting()) {
       try { video.play().catch(() => {}); } catch { /* parked */ }
     }
+  }
+}
+
+/**
+ * 🎯 V0.3.4.184 — re-anchor every running clip to `nowMs` on the clock that is
+ * about to drive the export. The exporter resets to the first step in REAL
+ * time (deliberately: no encoded frames) and installs the synthetic clock
+ * afterwards — but if that first step holds a clip, beginPlayback had already
+ * stamped anchorMs = performance.now() (hundreds of thousands of ms); against
+ * a synthetic clock starting at 0 every seek clamped to trim-in and the clip
+ * stayed frozen for its whole hold. A far-past park (parkAtEnd) is kept.
+ */
+export function reanchorAll(nowMs) {
+  for (const p of _players.values()) {
+    if (p.anchorMs == null || p.anchorMs <= -1e11) continue;
+    p.anchorMs = nowMs;
   }
 }
 

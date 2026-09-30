@@ -1566,6 +1566,16 @@ class StepManager {
           let fadeDone = false;
           const doneP = new Promise(resolve => {
             const done = async () => {
+              // 🎯 V0.3.4.184 — the FADE is done here; say so BEFORE the clip
+              // window. The export clock driver below used to keep beating
+              // until the whole clip had played (fadeDone was set after the
+              // _sleep(vMs)), so TWO synthetic-sleep loops advanced the clock
+              // during every video window — their per-frame seeks interleaved
+              // (Chromium coalesces a seek issued over one in flight), so slot N
+              // captured the picture of N+1 and the next slot repeated it: the
+              // "not a clean replay" judder. The vMs sleep drives the clock by
+              // itself; the driver only has to survive the load + fade.
+              fadeDone = true;
               try {
                 const activeStep = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
                 const vMs = activeStep ? videoOverlay.stepVideoWindowMs(activeStep) : 0;
@@ -1574,7 +1584,6 @@ class StepManager {
                   await _sleep(vMs);
                 }
               } catch { /* video timing is additive — never break the transition */ }
-              fadeDone = true;
               resolve();
             };
             if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, done);

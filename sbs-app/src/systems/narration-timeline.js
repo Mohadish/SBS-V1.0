@@ -164,7 +164,25 @@ function _stepTimelineMs(step, stepHoldMs) {
 export function stepHasOverlaySlot(step) {
   const presets = state.get('animationPresets') || [];
   const str = resolveAnimationString(step?.transition || {}, presets) || DEFAULT_ANIMATION_STR;
-  return /\boverlays?\s*\(/i.test(str);
+  return animHasOverlaySlot(str);
+}
+
+/**
+ * 🎯 V0.3.4.184 — the slot test BY TOKEN, exactly as the phase engine decides
+ * it (steps.js: `types.includes('overlay') || types.includes('overlays')`).
+ * The old regex `/\boverlays?\s*\(/` only matched an overlay token standing
+ * right before the "(" — never the project's default preset
+ * `camera+visibility+obj+color+overlays+cable+…+hand(AL1)`, where "overlays"
+ * is followed by "+". So every video step under the default preset was
+ * modelled as "clip plays in the hold" while the engine played it inside the
+ * phase: the exporter's video floor added the clip's length a SECOND time and
+ * every imported video step ended on a frozen last frame as long as the clip
+ * (the user's "pause at the end"), and the timeline estimate disagreed with
+ * the encode.
+ */
+export function animHasOverlaySlot(str) {
+  const phases = parseAnimation(String(str || ''));
+  return !!phases && phases.some(p => p.types.includes('overlay') || p.types.includes('overlays'));
 }
 
 /**
