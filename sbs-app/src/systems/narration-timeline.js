@@ -18,7 +18,7 @@
  */
 import { state } from '../core/state.js';
 import { parseAnimation, resolveAnimationString, DEFAULT_ANIMATION_STR, hasInstantBlock } from './animation.js';
-import { stepVideoWindowMs } from './video-overlay.js';   // 🎬 V0.3.2.82 — video length drives step duration
+import { stepVideoWindowMs, stepVideoFadeInMs } from './video-overlay.js';   // 🎬 V0.3.2.82 — video length drives step duration · V0.3.4.187 per-clip fade-in
 
 const _groupKeyOf = (s) => (s?.groupHead ? s.id : (s?.groupId || null));
 
@@ -28,18 +28,53 @@ function _resolveAL(tk) {
   return 0;
 }
 
-/** { totalMs, narrOffsetMs } for a step from its animation string. */
+const _isOverlayPhase = (ph) => !!(ph.types?.includes('overlay') || ph.types?.includes('overlays'));
+
+/**
+ * 🎬 V0.3.4.187 — how much longer than its slot the FIRST overlay phase really
+ * runs when the step carries a clip: the engine holds that block open for
+ * fade + clip (steps.js overlay block), so the phase lasts max(slot, fade +
+ * clip). 0 without a clip. `fade` = the clip's own fade-in, else the slot.
+ */
+function _overlayPhaseExtensionMs(step, slotMs) {
+  const vMs = stepVideoWindowMs(step);
+  if (!(vMs > 0)) return 0;
+  const fadeMs = stepVideoFadeInMs(step) ?? slotMs;
+  return Math.max(0, fadeMs + vMs - slotMs);
+}
+
+/** { totalMs, narrOffsetMs } for a step from its animation string — the ENGINE's clock, overlay stretch included. */
 function _animTiming(step) {
   const presets = state.get('animationPresets') || [];
   const animStr = resolveAnimationString(step.transition || {}, presets);
   const phases  = animStr ? parseAnimation(animStr, _resolveAL) : null;
   if (!phases || !phases.length) return { totalMs: 0, narrOffsetMs: 0 };
-  let total = 0, narrOffset = 0, found = false;
+  let total = 0, narrOffset = 0, found = false, overlaySeen = false;
   for (const ph of phases) {
     if (!found && ph.types?.includes('narration')) { narrOffset = total; found = true; }
     total += ph.durationMs || 0;
+    // V0.3.4.187 — a narration block AFTER the overlay block starts when that
+    // block's clip has played (the engine awaits every promise of a phase).
+    if (!overlaySeen && _isOverlayPhase(ph)) { overlaySeen = true; total += _overlayPhaseExtensionMs(step, ph.durationMs || 0); }
   }
   return { totalMs: total, narrOffsetMs: found ? narrOffset : 0 };
+}
+
+/** The exporter's narration offset — ONE implementation (video-export delegates here). */
+export function narrationStartOffsetMs(step) { return _animTiming(step).narrOffsetMs; }
+
+/**
+ * The resolved length of the step's first overlay phase + how many phases the
+ * string has, or null when the string has no overlay slot. Lets the duration
+ * models size a video step the way the engine does (see _stepTimelineMs).
+ */
+export function stepOverlaySlotInfo(step) {
+  const presets = state.get('animationPresets') || [];
+  const animStr = resolveAnimationString(step?.transition || {}, presets) || DEFAULT_ANIMATION_STR;
+  const phases  = parseAnimation(animStr, _resolveAL);
+  if (!phases) return null;
+  const ph = phases.find(_isOverlayPhase);
+  return ph ? { slotMs: ph.durationMs || 0, phaseCount: phases.length } : null;
 }
 
 function _playableSteps() {
@@ -150,10 +185,31 @@ function _stepTimelineMs(step, stepHoldMs) {
   // into the next step either way. Mirrored exactly in the exporter's
   // perStepHold, so estimate and encode can't drift.
   const videoMs = stepVideoWindowMs(step);
-  if (videoMs > 0 && stepHasOverlaySlot(step)) {
-    return Math.max(animMs + videoMs, narrOffsetMs + narrMs) + stepHoldMs;
+  const slot = videoMs > 0 ? stepOverlaySlotInfo(step) : null;
+  if (slot) {
+    // 🎬 V0.3.4.187 — the engine holds the overlay block open for fade + clip,
+    // so that phase lasts max(slot, fade + clip). One-phase string: that IS the
+    // animation (exact). Several phases: the other phases keep the animMs
+    // model and the overlay phase adds its stretch beyond the slot.
+    const animEff = videoStepAnimMs(animMs, slot, stepVideoFadeInMs(step), videoMs);
+    return Math.max(animEff, narrOffsetMs + narrMs) + stepHoldMs;
   }
   return Math.max(animMs, narrOffsetMs + narrMs, videoMs) + stepHoldMs;
+}
+
+/**
+ * 🎬 V0.3.4.187 — a video step's animation length the way the ENGINE runs it,
+ * shared by the timeline estimate and the exporter's hold model so the two
+ * cannot drift: with `slot` = { slotMs, phaseCount } of the first overlay
+ * phase, `fadeMs` = the clip's own fade (null → the slot) and `videoMs` the
+ * clip window. One phase → max(slot, fade + clip) exactly; several phases →
+ * animMs (the other phases' model) + the overlay phase's stretch beyond its slot.
+ */
+export function videoStepAnimMs(animMs, slot, fadeMs, videoMs) {
+  const s = Math.max(0, slot?.slotMs || 0);
+  const fade = fadeMs ?? s;
+  if ((slot?.phaseCount || 1) <= 1) return Math.max(s, fade + videoMs);
+  return animMs + Math.max(0, fade + videoMs - s);
 }
 
 /**
@@ -199,8 +255,11 @@ export function videoAudioStartOffsetMs(step) {
   if (!phases || !phases.length) return 0;
   let total = 0;
   for (const ph of phases) {
+    if (ph.types?.includes('overlay') || ph.types?.includes('overlays')) {
+      // 🎬 V0.3.4.187 — playback starts when the clip's OWN fade-in completes
+      return total + (stepVideoFadeInMs(step) ?? (ph.durationMs || 0));
+    }
     total += ph.durationMs || 0;
-    if (ph.types?.includes('overlay') || ph.types?.includes('overlays')) return total;
   }
   return total;   // no overlay block → after the whole animation
 }

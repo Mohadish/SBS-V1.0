@@ -25,7 +25,7 @@ import * as clock    from '../core/clock.js';
 import { sceneCore } from '../core/scene.js';
 import { rasterizeOverlay, waitForOverlayStable, refreshAllTocBoxesData } from './overlay.js';
 import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.82 — seek-per-frame + step duration
-import { stepHasOverlaySlot } from './narration-timeline.js';   // 🎬 V0.3.2.84 — video-in-phase vs video-in-hold
+import { stepHasOverlaySlot, stepOverlaySlotInfo, videoStepAnimMs, narrationStartOffsetMs } from './narration-timeline.js';   // 🎬 V0.3.2.84 — video-in-phase vs video-in-hold · V0.3.4.187 one timing model
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { rasterizeNotesLayer }                        from './notes-render.js';
 import { rasterizeTagsLayer }                         from './hardware-insert-anim.js';
@@ -319,8 +319,12 @@ function _computePerStepHolds(stepsToPlay, stepHoldMs) {
     // never matched the default preset, see animHasOverlaySlot.
     let _vMs = 0;
     try { _vMs = videoOverlay.stepVideoWindowMs(step) || 0; } catch { /* no clip */ }
-    const _hasSlot = _vMs > 0 && stepHasOverlaySlot(step);
-    animEff[i] = animDurs[i] + (_hasSlot ? _vMs : 0);
+    const _slot = _vMs > 0 ? stepOverlaySlotInfo(step) : null;
+    const _hasSlot = !!_slot;
+    // 🎬 V0.3.4.187 — the clip's own fade-in (AL1 / AL2 / ms) replaces the slot's
+    // length for the overlay block: the phase lasts max(slot, fade + clip). The
+    // same helper as the timeline estimate, so the two cannot drift.
+    animEff[i] = _hasSlot ? videoStepAnimMs(animDurs[i], _slot, videoOverlay.stepVideoFadeInMs(step), _vMs) : animDurs[i];
     const stepAnimEnd  = markers[i] + animEff[i];
     let hold, reason;
     if (inSameGroupAsNext && !nextHasAudio) {
@@ -1457,24 +1461,10 @@ function _phasedTotalMs(animStr) {
 }
 
 function _narrationStartOffsetMs(step) {
-  const transition = step.transition || {};
-  const presets = state.get('animationPresets') || [];
-  const animStr = resolveAnimationString(transition, presets);
-  if (!animStr) return 0;
-  const resolveAL = (tk) => {
-    if (tk === 'AL1') return state.get('cameraAnimDurationMs') ?? 1500;
-    if (tk === 'AL2') return state.get('objectAnimDurationMs')  ?? 1500;
-    return 0;
-  };
-  const phases = parseAnimation(animStr, resolveAL);
-  if (!phases) return 0;
-  let offset = 0;
-  for (const phase of phases) {
-    if (phase.types.includes('narration')) return offset;
-    offset += phase.durationMs;
-  }
-  // No narration phase in this preset — legacy behavior: play at start.
-  return 0;
+  // 🎬 V0.3.4.187 — ONE implementation (narration-timeline._animTiming): the
+  // phases before the narration block, with the overlay block's clip stretch
+  // counted when that block comes first. Two copies had already drifted once.
+  try { return narrationStartOffsetMs(step); } catch { return 0; }
 }
 
 /**

@@ -35,6 +35,7 @@ export function openVideoTrimDialog(node) {
     let outMs    = Number(node.getAttr('trimOutMs') ?? 0) || durMs0;
     let muted    = node.getAttr('muted') !== false;
     let volume   = Number(node.getAttr('volume') ?? 1);
+    let fadeRaw  = videoOverlay.normalizeFadeRaw(node.getAttr('fadeInRaw')) ?? '';   // 🎬 V0.3.4.187 — '' = no value: the preset's own overlay slot
     let durMs    = durMs0;
 
     const dlg = document.createElement('dialog');
@@ -60,6 +61,12 @@ export function openVideoTrimDialog(node) {
           <label class="colorlab">End (seconds)
             <input type="number" id="vt-out" step="0.05" min="0" />
           </label>
+        </div>
+        <div class="grid2" style="margin-top:8px;">
+          <label class="colorlab" title="How long the clip's first frame fades in before it starts moving — the pause before the clip. AL1 / AL2 follow the Animation settings; a number is milliseconds. Empty = the animation's own overlay slot. Applies when the step's animation has an overlay block (the default). The pause after the clip is the next step's transition.">Fade in (AL1 / AL2 / ms)
+            <input type="text" id="vt-fade" spellcheck="false" placeholder="AL2" style="text-transform:uppercase;" />
+          </label>
+          <div class="small muted" id="vt-fade-info" style="align-self:end;padding-bottom:6px;"></div>
         </div>
 
         <div style="display:flex;align-items:center;gap:14px;margin-top:10px;flex-wrap:wrap;">
@@ -96,6 +103,16 @@ export function openVideoTrimDialog(node) {
     const mutedCb= $('#vt-muted');
     const volRng = $('#vt-vol');
     const info   = $('#vt-info');
+    const fadeIn = $('#vt-fade');
+    const fadeInfo = $('#vt-fade-info');
+    const paintFade = (hint = '') => {
+      fadeIn.value = fadeRaw;
+      const ms = videoOverlay.resolveFadeRaw(fadeRaw);
+      fadeInfo.textContent = hint || (ms == null
+        ? 'empty = the animation\'s own overlay slot (AL1 / AL2 / ms to set your own)'
+        : `= ${(Math.max(40, ms) / 1000).toFixed(2)} s before the clip moves`);
+      fadeInfo.style.color = hint ? '#f59e0b' : '';
+    };
 
     video.src    = videoOverlay.fileUrlFor(path);
     video.muted  = true;           // the dialog preview is always silent-safe
@@ -172,6 +189,17 @@ export function openVideoTrimDialog(node) {
     outNum.addEventListener('change', () => { outMs = Math.round((Number(outNum.value) || 0) * 1000); clampOrder(); try { video.currentTime = outMs / 1000; } catch {} paint(); });
     mutedCb.addEventListener('change', () => { muted = mutedCb.checked; paint(); });
     volRng.addEventListener('input',   () => { volume = Number(volRng.value); paint(); });
+    fadeIn.addEventListener('change',  () => {
+      // 'AL1' / 'AL2' / a number of ms (or '1.5s'); empty = the preset's slot;
+      // anything else keeps the previous value and says so
+      const s = String(fadeIn.value || '').trim();
+      if (s === '') { fadeRaw = ''; paintFade(); return; }
+      const norm = videoOverlay.normalizeFadeRaw(s);
+      if (norm == null) { paintFade('Not understood — AL1, AL2 or milliseconds (e.g. 800, or 1.5s)'); return; }
+      fadeRaw = norm;
+      paintFade();
+    });
+    fadeIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); fadeIn.blur(); } });
 
     $('#vt-preview-btn').addEventListener('click', () => {
       try { video.currentTime = inMs / 1000; video.play().catch(() => {}); } catch { /* ignore */ }
@@ -189,11 +217,12 @@ export function openVideoTrimDialog(node) {
     $('#vt-ok').addEventListener('click', () => {
       clampOrder();
       cleanup();
-      resolve({ trimInMs: inMs, trimOutMs: outMs, muted, volume });
+      resolve({ trimInMs: inMs, trimOutMs: outMs, muted, volume, fadeInRaw: fadeRaw || null });
     });
     dlg.addEventListener('cancel', (e) => { e.preventDefault(); cleanup(); resolve(null); });
 
     paint();
+    paintFade();
     dlg.showModal();
   });
 }

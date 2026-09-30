@@ -393,13 +393,88 @@ export async function refreshPoster(node) {
   } catch { return false; }
 }
 
-/** Apply a trim/mute patch to a node and re-sync the live element. */
+// ─── 🎬 Per-clip fade-in (V0.3.4.187) ──────────────────────────────────────
+//
+// The user's design: the pause BEFORE a clip is its fade-in over the frozen
+// first frame; the pause AFTER it is simply the next step's transition (which
+// fades the frozen last frame out) — so one field is enough. Stored on the
+// video node as `fadeInRaw`: 'AL1' | 'AL2' | a number of ms; missing = AL2.
+// It overrides the overlay slot's length for the step's crossfade (steps.js),
+// and every duration model reads it the same way (narration-timeline,
+// video-export perStepHold, the audio-mix offset), else the narration lands
+// 1.2 s off — the V0.3.4.184 lesson.
+export const FADE_IN_DEFAULT = 'AL2';   // what a NEW clip gets (insert / import); a clip with no value keeps the preset's slot
+export const FADE_MAX_MS = 99_999;      // the Animation tab's own cap on a typed duration
+
+/** 'AL1' | 'AL2' | { ms } from typed text ('800', '1.5s', 'al1'); null when unreadable or empty. */
+function _parseFadeText(raw) {
+  const s = String(raw ?? '').trim().toUpperCase();
+  if (s === '') return null;
+  if (s === 'AL1' || s === 'AL2') return { kind: s };
+  const m = /^(\d+(?:\.\d+)?)\s*(MS|S|SEC)?$/.exec(s);
+  if (!m) return null;
+  let n = Number(m[1]);
+  if (m[2] === 'S' || m[2] === 'SEC') n *= 1000;
+  if (!Number.isFinite(n) || n < 0) return null;
+  return { kind: 'ms', ms: Math.min(FADE_MAX_MS, Math.round(n)) };
+}
+
+/** What gets stored: 'AL1' | 'AL2' | '1234' — or null when the text is unreadable / empty. */
+export function normalizeFadeRaw(raw) {
+  const p = _parseFadeText(raw);
+  return p ? (p.kind === 'ms' ? String(p.ms) : p.kind) : null;
+}
+
+/** The fade-in in ms for a stored value (AL tokens read the project's live AL1/AL2), or null when unreadable. */
+export function resolveFadeRaw(raw) {
+  const p = _parseFadeText(raw);
+  if (!p) return null;
+  if (p.kind === 'AL1') return Math.max(0, Number(state.get('cameraAnimDurationMs') ?? 1500) || 0);
+  if (p.kind === 'AL2') return Math.max(0, Number(state.get('objectAnimDurationMs') ?? 1500) || 0);
+  return p.ms;
+}
+
+const _fadeMemo = new Map();   // stepId -> { ref: overlayString, raws }
+/**
+ * The step's clip fade-in in ms — the LONGEST among the video nodes that carry
+ * a readable value — or null when none does (callers then keep the slot's own
+ * length: a clip placed before this build behaves exactly as it did, so no
+ * cached segment changes under an unchanged key). Resolved live so an AL1/AL2
+ * edit in Animation settings applies at once. Never below one frame.
+ */
+export function stepVideoFadeInMs(step) {
+  const ov = step?.overlay;
+  if (typeof ov !== 'string' || !ov || ov.indexOf('"isVideo":true') === -1 || ov.indexOf('"fadeInRaw"') === -1) return null;
+  let raws;
+  const memo = _fadeMemo.get(step.id);
+  if (memo && memo.ref === ov) raws = memo.raws;
+  else {
+    raws = [];
+    try {
+      (function walk(n) {
+        if (!n) return;
+        if (n.attrs?.isVideo && n.attrs.fadeInRaw != null) raws.push(n.attrs.fadeInRaw);
+        (n.children || []).forEach(walk);
+      })(JSON.parse(ov));
+    } catch { /* unparseable overlay → no clips */ }
+    if (step.id) _fadeMemo.set(step.id, { ref: ov, raws });
+  }
+  let ms = null;
+  for (const r of raws) { const v = resolveFadeRaw(r); if (v != null && (ms === null || v > ms)) ms = v; }
+  return ms === null ? null : Math.max(40, ms);   // at least one frame: a 0 ms crossfade has no tick to complete on
+}
+
+/** Apply a trim/mute/fade patch to a node and re-sync the live element. */
 export function setVideoOptions(node, patch = {}) {
   if (!isVideoNode(node)) return;
   if (patch.trimInMs  !== undefined) node.setAttr('trimInMs',  Math.max(0, Math.round(patch.trimInMs)));
   if (patch.trimOutMs !== undefined) node.setAttr('trimOutMs', Math.max(0, Math.round(patch.trimOutMs)));
   if (patch.muted     !== undefined) node.setAttr('muted', !!patch.muted);
   if (patch.volume    !== undefined) node.setAttr('volume', Math.max(0, Math.min(1, Number(patch.volume))));
+  // 🎬 V0.3.4.187 — null / unreadable = no value: the attr is DROPPED (the clip
+  // follows the preset's slot again, and the overlay string is byte-identical
+  // to a clip that never had one — no needless segment re-key on undo).
+  if ('fadeInRaw' in patch) node.setAttr('fadeInRaw', patch.fadeInRaw == null ? undefined : (normalizeFadeRaw(patch.fadeInRaw) ?? undefined));
 
   // Keep in <= out with at least one frame of window.
   const dur = Number(node.getAttr('videoDurationMs') ?? 0);

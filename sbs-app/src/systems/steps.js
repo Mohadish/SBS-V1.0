@@ -1563,6 +1563,18 @@ class StepManager {
           // final still frame, exactly the "unique" semantics: video never
           // overflows, everything after it queues behind it. _sleep is the
           // export-overridable sleep, so live and encode agree to the frame.
+          //
+          // 🎬 V0.3.4.187 — a clip brings its OWN fade-in (Trim & audio ▸ Fade
+          // in: AL1 / AL2 / ms, default AL2): it replaces the slot's length for
+          // this crossfade, so the pause before the clip is the clip's setting,
+          // not the preset's. The slot sleep still runs beside it; the phase
+          // lasts max(slot, fade + clip) — the duration models say the same.
+          let fadeMs = durationMs;
+          try {
+            const incoming = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
+            const own = incoming ? videoOverlay.stepVideoFadeInMs(incoming) : null;
+            if (own != null) fadeMs = own;
+          } catch { /* no clip, or no step yet: the slot's own length */ }
           let fadeDone = false;
           const doneP = new Promise(resolve => {
             const done = async () => {
@@ -1586,8 +1598,8 @@ class StepManager {
               } catch { /* video timing is additive — never break the transition */ }
               resolve();
             };
-            if (sustained) overlaySystem.beginOverlaySustainedFade(durationMs, easeFn, done);
-            else           overlaySystem.beginOverlayCrossfade   (durationMs, easeFn, done);
+            if (sustained) overlaySystem.beginOverlaySustainedFade(fadeMs, easeFn, done);
+            else           overlaySystem.beginOverlayCrossfade   (fadeMs, easeFn, done);
           });
           // ⏱ V0.3.2.96 — EXPORT CLOCK DRIVER. Since .95 the crossfade arms
           // only after the incoming step LOADS (so fade frames never capture
@@ -1605,7 +1617,7 @@ class StepManager {
             // forever again: generous headroom for load + fade + a video
             // window, then bail loudly and let the export finish (one
             // rough transition beats a hung render).
-            const capMs = durationMs + 120_000;
+            const capMs = fadeMs + 120_000;   // V0.3.4.187 — the clip's own fade, not the slot
             let driven = 0;
             // V0.3.2.153 — minOneFrame is load-bearing, not a nicety.
             // The synthetic sleep only emits a frame when the requested ms

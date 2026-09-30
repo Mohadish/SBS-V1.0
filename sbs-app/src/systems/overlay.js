@@ -5248,6 +5248,7 @@ export async function addVideo(absPath) {
   node.setAttr('volume', 1);
   node.setAttr('trimInMs', 0);
   node.setAttr('trimOutMs', 0);       // 0 = "to the end", resolved once duration is known
+  node.setAttr('fadeInRaw', videoOverlay.FADE_IN_DEFAULT);   // 🎬 V0.3.4.187 — a new clip fades in over AL2 (Trim & audio… to change)
 
   // Load the element first so we know the real size + duration before placing.
   const video = await videoOverlay.attachVideoElement(node);
@@ -5290,6 +5291,7 @@ async function _openVideoTrim(node) {
     trimOutMs: Number(node.getAttr('trimOutMs') ?? 0),
     muted:     node.getAttr('muted') !== false,
     volume:    Number(node.getAttr('volume') ?? 1),
+    fadeInRaw: node.getAttr('fadeInRaw') ?? null,   // 🎬 V0.3.4.187 — raw: null = no value (undo drops the attr again)
   };
   const res = await openVideoTrimDialog(node);
   if (!res) return;
@@ -6015,6 +6017,7 @@ function _serializeNode(node) {
     // something to draw before the file loads (or if it's gone missing).
     'isVideo', 'videoId', 'videoPath', 'videoRel', 'videoDurationMs',
     'trimInMs', 'trimOutMs', 'muted', 'volume', 'posterSrc', 'posterAtMs',
+    'fadeInRaw',    // 🎬 V0.3.4.187 — the clip's own fade-in: 'AL1' | 'AL2' | ms (missing = AL2)
     'cropMask',     // 🎭 V0.3.2.217 — canvas-fixed crop rect (PRIVATE mask);
                     // without it a copied / duplicated / undo-restored image
                     // came back unmasked
