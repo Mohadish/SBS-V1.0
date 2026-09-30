@@ -403,7 +403,7 @@ export async function refreshPoster(node) {
 // and every duration model reads it the same way (narration-timeline,
 // video-export perStepHold, the audio-mix offset), else the narration lands
 // 1.2 s off — the V0.3.4.184 lesson.
-export const FADE_IN_DEFAULT = 'AL2';   // every clip without a value fades in over AL2 (V0.3.4.188 — the user's default)
+export const FADE_IN_DEFAULT = '400';   // every clip without a value fades in over 400 ms (V0.3.4.189 — a number, so a project's AL2 does not move it)
 export const FADE_MAX_MS = 99_999;      // the Animation tab's own cap on a typed duration
 
 /** 'AL1' | 'AL2' | { ms } from typed text ('800', '1.5s', 'al1'); null when unreadable or empty. */
@@ -440,8 +440,8 @@ const _fadeMemo = new Map();   // stepId -> { ref: overlayString, raws }
  * without a (readable) value counting as AL2 — or null when the step has no
  * clip (callers then keep the slot's own length). Resolved live so an AL1/AL2
  * edit in Animation settings applies at once. Never below one frame.
- * (V0.3.4.188 — the user's rule: the default is AL2 for every clip, old or
- * new; render-cache _videoTimingRev 4 re-renders the video segments once.)
+ * (V0.3.4.189 — the user's rule: the default is 400 ms for every clip, old or
+ * new; render-cache _videoTimingRev 5 re-renders the video segments once.)
  */
 export function stepVideoFadeInMs(step) {
   const ov = step?.overlay;

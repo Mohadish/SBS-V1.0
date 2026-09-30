@@ -35,7 +35,7 @@ export function openVideoTrimDialog(node) {
     let outMs    = Number(node.getAttr('trimOutMs') ?? 0) || durMs0;
     let muted    = node.getAttr('muted') !== false;
     let volume   = Number(node.getAttr('volume') ?? 1);
-    let fadeRaw  = videoOverlay.normalizeFadeRaw(node.getAttr('fadeInRaw')) ?? videoOverlay.FADE_IN_DEFAULT;   // 🎬 V0.3.4.188 — no value = AL2
+    let fadeRaw  = videoOverlay.normalizeFadeRaw(node.getAttr('fadeInRaw')) ?? videoOverlay.FADE_IN_DEFAULT;   // 🎬 V0.3.4.189 — no value = 400 ms
     let durMs    = durMs0;
 
     const dlg = document.createElement('dialog');
@@ -63,8 +63,8 @@ export function openVideoTrimDialog(node) {
           </label>
         </div>
         <div class="grid2" style="margin-top:8px;">
-          <label class="colorlab" title="How long the clip's first frame fades in before it starts moving — the pause before the clip. AL1 / AL2 follow the Animation settings (AL2 is the default); a number is milliseconds. Applies when the step's animation has an overlay block (every preset has one). The pause after the clip is the next step's transition.">Fade in (AL1 / AL2 / ms)
-            <input type="text" id="vt-fade" spellcheck="false" placeholder="AL2" style="text-transform:uppercase;" />
+          <label class="colorlab" title="How long the clip's first frame fades in before it starts moving — the pause before the clip. AL1 / AL2 follow the Animation settings; a number is milliseconds (400 is the default). Applies when the step's animation has an overlay block (every preset has one). The pause after the clip is the next step's transition.">Fade in (AL1 / AL2 / ms)
+            <input type="text" id="vt-fade" spellcheck="false" placeholder="400" style="text-transform:uppercase;" />
           </label>
           <div class="small muted" id="vt-fade-info" style="align-self:end;padding-bottom:6px;"></div>
         </div>
@@ -188,12 +188,12 @@ export function openVideoTrimDialog(node) {
     mutedCb.addEventListener('change', () => { muted = mutedCb.checked; paint(); });
     volRng.addEventListener('input',   () => { volume = Number(volRng.value); paint(); });
     fadeIn.addEventListener('change',  () => {
-      // 'AL1' / 'AL2' / a number of ms (or '1.5s'); empty = back to AL2;
+      // 'AL1' / 'AL2' / a number of ms (or '1.5s'); empty = back to the 400 ms default;
       // anything else keeps the previous value and says so
       const s = String(fadeIn.value || '').trim();
       if (s === '') { fadeRaw = videoOverlay.FADE_IN_DEFAULT; paintFade(); return; }
       const norm = videoOverlay.normalizeFadeRaw(s);
-      if (norm == null) { paintFade('Not understood — AL1, AL2 or milliseconds (e.g. 800, or 1.5s)'); return; }
+      if (norm == null) { paintFade('Not understood — AL1, AL2 or milliseconds (e.g. 400, or 1.5s)'); return; }
       fadeRaw = norm;
       paintFade();
     });

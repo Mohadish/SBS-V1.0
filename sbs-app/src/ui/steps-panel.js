@@ -2366,7 +2366,7 @@ function _videoStepOverlayJson(absPath, relPath, seg) {
     videoPath: absPath,
     videoRel:  relPath,
     muted: true, volume: 1,               // target narration wins
-    fadeInRaw: 'AL2',                     // 🎬 V0.3.4.187 — the clip's own fade-in (Trim & audio… to change)
+    fadeInRaw: '400',                     // 🎬 V0.3.4.189 — the clip's own fade-in, 400 ms (Trim & audio… to change)
     trimInMs:  Math.max(0, Math.round(seg.inMs)),
     trimOutMs: Math.max(0, Math.round(seg.outMs)),
     videoDurationMs: Math.round(seg.segDurationMs),
