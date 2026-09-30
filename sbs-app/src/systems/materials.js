@@ -779,20 +779,26 @@ class MaterialsSystem {
       const tw = Math.max(12, Math.round(512 * Math.pow(12 / 512, blurQ)));
       const th = Math.max(6, tw >> 1);
       const ds = this._downsampleEquirect(src.data, src.w, src.h, tw, th);
-      const eqTex = new THREE.DataTexture(ds, tw, th, THREE.RGBAFormat, THREE.FloatType);
+      // V0.3.4.166 — HALF-FLOAT + MIPMAPS. Since .55 this cube had NO mipmaps
+      // ("flaky float-cube mipmaps"), so the shader's textureLod(uEnvMap, R,
+      // roughness × 4) and its LOD-4 ambient both fell back to level 0: every
+      // material, however rough, mirrored the studio SHARP — the hard edge of a
+      // softbox panel drawn across a flat plate (his "environment box" line,
+      // 2026-09-30, studio_small_08). The flakiness was a 32-bit float cube:
+      // fromEquirectangularTexture copies the SOURCE's type and filters, so the
+      // HalfFloatType asked for below never applied. A half-float source gives a
+      // half-float cube, and those mipmaps work (verified on this machine).
+      const half = new Uint16Array(ds.length);
+      for (let i = 0; i < half.length; i++) half[i] = THREE.DataUtils.toHalfFloat(Math.min(ds[i], 65504));
+      const eqTex = new THREE.DataTexture(half, tw, th, THREE.RGBAFormat, THREE.HalfFloatType);
       eqTex.mapping = THREE.EquirectangularReflectionMapping;
-      eqTex.minFilter = THREE.LinearFilter; eqTex.magFilter = THREE.LinearFilter;
-      eqTex.generateMipmaps = false;
+      eqTex.minFilter = THREE.LinearMipmapLinearFilter; eqTex.magFilter = THREE.LinearFilter;
+      eqTex.generateMipmaps = true;
       eqTex.needsUpdate = true;
 
-      // Cube for the SBS shader's samplerCube. No mipmaps needed — blur is
-      // baked into the source, so linear filtering is enough and reliable.
-      const cubeRT = new THREE.WebGLCubeRenderTarget(256, {
-        generateMipmaps: false,
-        minFilter: THREE.LinearFilter,
-        magFilter: THREE.LinearFilter,
-        type: THREE.HalfFloatType,     // keep the HDR range for glints
-      }).fromEquirectangularTexture(renderer, eqTex);
+      // Cube for the SBS shader's samplerCube (type / filters / mipmaps come from
+      // eqTex — see above). The envBlur downsample still softens the whole thing.
+      const cubeRT = new THREE.WebGLCubeRenderTarget(256).fromEquirectangularTexture(renderer, eqTex);
       const oldCube = this._hdriCubeMap;
       this._hdriCubeMap = cubeRT.texture;
 
