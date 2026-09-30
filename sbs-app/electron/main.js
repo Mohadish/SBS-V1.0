@@ -1132,7 +1132,11 @@ ipcMain.handle('fs:exists', async (_, filePath) => {
 // V0.3.4.175 — make a folder (recursive). The export dialogs start in the
 // project's exports/ folder, which has to exist before a dialog can show it.
 ipcMain.handle('fs:mkdir', async (_, dirPath) => {
-  try { fs.mkdirSync(dirPath, { recursive: true }); return { ok: true }; }
+  // V0.3.4.185 — async: a project on an unreachable network share made the
+  // SYNC mkdir freeze the whole main process (menus, every IPC) for the 10–30 s
+  // Windows takes to give up — on every Export click.
+  if (typeof dirPath !== 'string' || !dirPath.trim()) return { ok: false, error: 'No folder given.' };
+  try { await fs.promises.mkdir(dirPath, { recursive: true }); return { ok: true }; }
   catch (e) { return { ok: false, error: String(e?.message || e) }; }
 });
 

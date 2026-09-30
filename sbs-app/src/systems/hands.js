@@ -1102,7 +1102,17 @@ function _rigExportData(scale = 190) {
     joints: new Uint16Array(J), weights: new Float32Array(W), inverseBindMatrices: ibm, bindMatrices: bind,
     color: [c.r, c.g, c.b],
   };
-  group.traverse(o => { o.geometry?.dispose?.(); });
+  // V0.3.4.185 — the throw-away rig leaves nothing behind: geometry, materials
+  // (ensureHandObject3D registered 'hand-export' as a coloured mesh, so a hand
+  // material with its depth/shell passes was built for it) and the registry entry.
+  group.traverse(o => {
+    o.geometry?.dispose?.();
+    if (!o.isMesh) return;
+    const m = o.material, hm = o.userData?.handMat;
+    if (m && !Array.isArray(m)) { try { m.dispose(); } catch {} }
+    if (hm && hm !== m) { try { hm.dispose(); } catch {} }
+  });
+  try { materials.unregisterMesh('hand-export'); } catch { /* never registered: fine */ }
   return data;
 }
 

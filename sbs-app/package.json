@@ -1,6 +1,6 @@
 {
   "name": "sbs-step-browser",
-  "version": "0.3.4-184",
+  "version": "0.3.4-185",
   "description": "SBS Step Browser — CAD Presentation Tool",
   "author": "SBS Step Browser",
   "main": "electron/main.js",
@@ -20,8 +20,10 @@
     "test:brand": "node tests/brand-core.test.mjs && node tests/document-look.test.mjs",
     "test:clip": "node tests/clip-fit.test.mjs",
     "test:normals": "node tests/normal-repair.test.mjs",
-    "build": "npm run test:license && npm run sync-version && npm run ensure-native-cad && npm run manual-pdf && npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder",
-    "build:he": "npm run test:license && npm run sync-version && npm run ensure-native-cad && npm run manual-pdf && npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder --config electron-builder-he.js",
+    "test": "npm run test:license && npm run test:clip && npm run test:normals && npm run test:brand",
+    "verify-build": "node scripts/verify-build.mjs",
+    "build": "npm run test && npm run sync-version && npm run ensure-native-cad && npm run manual-pdf && npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder && npm run verify-build",
+    "build:he": "npm run test && npm run sync-version && npm run ensure-native-cad && npm run manual-pdf && npm run ensure-models && npm run vendor-tts && npm run bytenode && npm run sanitize-sbom && electron-builder --config electron-builder-he.js",
     "fetch-models": "node scripts/fetch-kokoro.js"
   },
   "overrides": {

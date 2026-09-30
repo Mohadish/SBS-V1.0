@@ -79,7 +79,20 @@ function _detach(id) {
   if (!root) return;
   const n = state.get('nodeById')?.get(id);
   const obj = n?.object3d || steps.object3dById?.get(id);
-  if (obj) { if (obj.parent) obj.parent.remove(obj); obj.traverse?.(o => { o.geometry?.dispose?.(); }); }
+  if (obj) {
+    if (obj.parent) obj.parent.remove(obj);
+    // V0.3.4.185 — the materials go too: the hand material (its depth + shell
+    // passes hang off its 'dispose' event) and the skin's own material used to
+    // outlive every deleted hand. Textures are the template's — kept.
+    obj.traverse?.(o => {
+      o.geometry?.dispose?.();
+      if (!o.isMesh) return;
+      const m = o.material, hm = o.userData?.handMat;
+      if (m && !Array.isArray(m)) { try { m.dispose(); } catch {} }
+      if (hm && hm !== m) { try { hm.dispose(); } catch {} }
+      if (hm) o.userData.handMat = null;
+    });
+  }
   steps.object3dById.delete(id);
   try { materials.unregisterMesh(id); } catch {}
   (function splice(p) {
@@ -108,6 +121,7 @@ function _detach(id) {
   if (state.get('handPicking')?.nodeId === id) patch.handPicking = null;
   if (state.get('handFineTune') === id) patch.handFineTune = null;
   state.setState(patch);
+  state.markDirty();   // V0.3.4.185 — a REDO of "Delete hand" reaches here without the action's own markDirty
   state.emit('change:treeData', root);
   sceneCore.requestRender?.(200);
 }
@@ -269,7 +283,7 @@ export function startAlignHand(id) {
   placePicker.startMapNodeBy3Points(id, src, labels, () => {
     // landed: the ghost has done its job
     const cur = _clone(n.handParams || hands.defaultHandParams());
-    if (cur.ghost !== false) { cur.ghost = false; _applyParams(id, cur); }
+    if (cur.ghost !== false) { cur.ghost = false; _applyParams(id, cur); state.markDirty(); }   // V0.3.4.185 — the ghost flag is saved state too
     setStatus('Hand aligned to the part. Fine-tune with the gizmo; double-click the hand for the finger handles.', 'success', 6000);
   });
   return true;

@@ -157,7 +157,11 @@ export class PlanarMirror {
     vc.position.copy(view);
     vc.up.set(0, 1, 0).applyMatrix4(rot).reflect(normal);
     vc.lookAt(target);
-    vc.near = camera.near; vc.far = camera.far;
+    // V0.3.4.185 — the reflected camera sits up to twice the mirror's distance
+    // farther from the model than the real one: the real camera's fitted far
+    // plane cut the model's far side out of a mirror on the outer shell. The
+    // near plane is replaced by the mirror plane below, so precision is unaffected.
+    vc.near = camera.near; vc.far = camera.far * 2;
     vc.fov = camera.fov;   vc.aspect = camera.aspect;
     vc.updateMatrixWorld();
     vc.matrixWorldInverse.copy(vc.matrixWorld).invert();

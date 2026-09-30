@@ -5734,7 +5734,7 @@ let _lastPickDomain = 'scene';
 window.addEventListener('pointerdown', (e) => {
   const t = e.target;
   if (!t?.closest) return;
-  if (t.closest('#steps-panel')) _lastPickDomain = 'steps';
+  if (t.closest('#steps-panel') || t.closest('#step-nav-bar')) _lastPickDomain = 'steps';   // V0.3.4.185 — the nav strip picks steps too
   else if (t.closest('#viewport-surface') || t.closest('#tree-mount')) _lastPickDomain = 'scene';
 }, true);
 
@@ -5757,7 +5757,9 @@ async function _duplicateSceneSelection({ inPlace = false } = {}) {
     steps.flushSync();
     let made = [];
     try { made = actions.duplicateStepsAsBlock(picked); } catch (err) { console.warn('[duplicate] steps failed', err); }
-    setStatus(made.length === 1 ? `Duplicated "${made[0].name}".` : `Duplicated ${made.length} steps — together, after the last selected.`, made.length ? 'success' : 'warn', 4000);
+    // V0.3.4.185 — the base step is never duplicated; say so instead of "Duplicated 0 steps".
+    if (!made.length) { setStatus('Nothing to duplicate — the base step cannot be duplicated; pick a step card.', 'warn', 5000); return; }
+    setStatus(made.length === 1 ? `Duplicated "${made[0].name}".` : `Duplicated ${made.length} steps — together, after the last selected.`, 'success', 4000);
     return;
   }
   const hw = await import('./systems/hardware-actions.js');

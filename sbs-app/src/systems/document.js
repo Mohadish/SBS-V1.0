@@ -695,9 +695,10 @@ export async function exportPdf() {
   const over = await overflowingPages().catch(() => []);
   if (over.length && !confirm(`The text does not fit on page ${over.map(o => o.number).join(', ')} —the end of it would be cut off in the PDF.\n\nShorten the text, split the page, or pick a template with more room for text.\n\nExport anyway?`)) return null;
   const base = (doc.fields?.docNo ? `${doc.fields.docNo} ` : '') + (doc.fields?.title || projectDisplayName());
-  const dir = projectPaths.subDir?.('exports') || null;
   const safe = base.replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'document';
-  const defaultPath = dir ? `${dir}${dir.includes('\\') ? '\\' : '/'}${safe}.pdf` : `${safe}.pdf`;
+  // V0.3.4.185 — the same exports/ start folder as the video export dialogs
+  // (created on demand; a save dialog cannot open in a folder that is not there).
+  const defaultPath = projectPaths.exportDefaultPath ? await projectPaths.exportDefaultPath(`${safe}.pdf`) : `${safe}.pdf`;
   const out = await window.sbsNative.saveFile({ title: 'Export document as PDF', defaultPath, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
   if (!out) return null;
   const html = await documentHtml({ onProgress: (i, n) => setStatus(`Rendering step pictures… ${i}/${n}`, 'info', 0) });

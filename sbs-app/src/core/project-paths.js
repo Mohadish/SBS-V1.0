@@ -62,10 +62,22 @@ export function projectParts() {
   const pp = state.get('projectPath');
   if (!pp) return null;
   const sep = _sep(pp);
-  const i = pp.lastIndexOf(sep);
-  const dir  = i >= 0 ? pp.slice(0, i) : '.';
+  // V0.3.4.185 — split on the LAST separator of EITHER kind: a mixed path
+  // ('E:\Work/Foo/Foo.sbsproj', pasted from a URL or a config) used to split at
+  // the backslash after the drive, making dir = 'E:' — exports/ landed at the
+  // drive root.
+  const i = Math.max(pp.lastIndexOf('\\'), pp.lastIndexOf('/'));
+  let dir  = i >= 0 ? pp.slice(0, i) : '.';
   const file = i >= 0 ? pp.slice(i + 1) : pp;
-  const base = file.replace(/\.sbsproj$/i, '').replace(/(\.autosave\d*)+$/i, '');
+  const stem = file.replace(/\.sbsproj$/i, '');
+  const base = stem.replace(/(\.autosave\d*)+$/i, '');
+  // V0.3.4.185 — a project opened from backups/<name>.autosaveN.sbsproj belongs
+  // to the folder ABOVE backups/: its audio/ render/ exports/ live there, not
+  // inside the backups folder.
+  if (base !== stem) {
+    const j = Math.max(dir.lastIndexOf('\\'), dir.lastIndexOf('/'));
+    if (j >= 0 && dir.slice(j + 1).toLowerCase() === DIR.backups) dir = dir.slice(0, j);
+  }
   return { dir, base, sep };
 }
 

@@ -1719,6 +1719,10 @@ export class SceneCore extends Emitter {
   _updateClipPlanes(force = false) {
     const cam = this.camera;
     if (!cam) return;
+    // V0.3.4.185 — a FORCED fit runs synchronously after a snap (thumbnail after
+    // snapCurrentToFinal, the mask pass): the boxes read matrixWorld, which no
+    // render has refreshed yet, so the planes fitted the pre-snap poses.
+    if (force) { this.scene?.updateMatrixWorld(true); cam.updateMatrixWorld(true); }
     const now = performance.now();
     const throttleMs = (this._loopRunning && !force) ? 200 : 0;
     // Tunable via window.sbsClipPlanes. enabled=false → legacy fixed planes (A/B test).

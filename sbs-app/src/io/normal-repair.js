@@ -99,7 +99,7 @@ export function repairNormalsIfBad(geometry, { creaseDeg = 30, tiltDeg = 30, bad
   // V0.3.4.181 — on INDEXED geometry a vertex shared across a crease would take
   // whichever corner wrote it last (order-dependent). Such a vertex gets the plain
   // welded average instead (no crease) — smooth there, deterministic everywhere.
-  const cosCrease = Math.cos(creaseDeg * Math.PI / 180);
+  const cosCrease = Math.cos(creaseDeg * Math.PI / 180) - 1e-4;   // V0.3.4.185 — float slack: facets EXACTLY creaseDeg apart (12-sided cylinders) weld on every corner, never per-corner by rounding
   const out = new Float32Array(pos.count * 3);
   const written = new Uint8Array(pos.count);
   const conflict = idx ? new Uint8Array(pos.count) : null;
@@ -138,11 +138,21 @@ export function repairNormalsIfBad(geometry, { creaseDeg = 30, tiltDeg = 30, bad
       out[v * 3] = acc.x; out[v * 3 + 1] = acc.y; out[v * 3 + 2] = acc.z;
     }
   }
-  // Vertices no triangle references keep a harmless up vector.
-  for (let v = 0; v < pos.count; v++) if (!written[v]) { out[v * 3] = 0; out[v * 3 + 1] = 1; out[v * 3 + 2] = 0; }
-
+  // Vertices no triangle references: keep what they had (V0.3.4.185 — a
+  // normal attribute can be SHARED between primitives that index it
+  // differently, e.g. a multi-material GLB; stamping an up vector there
+  // corrupted the sibling's vertices), else a harmless up vector.
   const attr = geometry.attributes.normal;
-  if (attr && attr.array.length === out.length && !attr.isInterleavedBufferAttribute) {
+  for (let v = 0; v < pos.count; v++) {
+    if (written[v]) continue;
+    if (attr) { out[v * 3] = attr.getX(v); out[v * 3 + 1] = attr.getY(v); out[v * 3 + 2] = attr.getZ(v); }
+    else { out[v * 3] = 0; out[v * 3 + 1] = 1; out[v * 3 + 2] = 0; }
+  }
+
+  // Write in place only into a plain float attribute (V0.3.4.185 — a
+  // quantized/normalized Int8 or Int16 normal, KHR_mesh_quantization, would
+  // have truncated the floats to 0/±1); anything else gets a fresh attribute.
+  if (attr && attr.array instanceof Float32Array && !attr.normalized && attr.array.length === out.length && !attr.isInterleavedBufferAttribute) {
     attr.array.set(out);
     attr.needsUpdate = true;
   } else {

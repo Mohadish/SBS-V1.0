@@ -87,3 +87,6 @@ sbs-app/dist-he/
 
 # python bytecode from the licence round-trip test
 sbs-app/tests/__pycache__/
+
+# User test projects living beside the repo (never shipped, never committed)
+robot/
