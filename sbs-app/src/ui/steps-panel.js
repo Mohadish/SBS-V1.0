@@ -22,6 +22,7 @@ import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSn
 import { serializeModelTree, flatten as flattenTree } from '../core/nodes.js';   // 📥 V0.3.2.191 — reverse backfill of TARGET scene into imported steps
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';     // 📥 Phase 2 — procedural hardware, no file needed
 import { setStatus } from './status.js';
+import * as projectPaths from '../core/project-paths.js';   // V0.3.4.175 — export dialogs start in exports/
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
 import { fileUrlFor } from '../systems/video-overlay.js';   // ▶ import-dialog step preview
@@ -34,7 +35,7 @@ async function _askExportPath(title, defaultName, ext) {
   if (!window.sbsNative?.saveFile) return undefined;
   const p = await window.sbsNative.saveFile({
     title,
-    defaultPath: defaultName,
+    defaultPath: await projectPaths.exportDefaultPath(defaultName),   // V0.3.4.175 — starts in <project>/exports/
     filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
   });
   if (!p) return null;

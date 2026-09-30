@@ -79,6 +79,29 @@ export function subDir(which) {
   return p ? joinPath(p.dir, name) : null;
 }
 
+/**
+ * V0.3.4.175 — where an export dialog should START: the project's exports/
+ * folder, created on demand (a save dialog cannot open in a folder that is not
+ * there yet). Falls back to the project folder before a full restart (no mkdir
+ * bridge), and to null with no project (the dialog then opens where it likes).
+ */
+export async function exportsDirForDialog() {
+  const dir = subDir('exports');
+  if (!dir) return null;
+  const nat = globalThis.window?.sbsNative;
+  try {
+    if (nat?.mkdir) { const r = await nat.mkdir(dir); if (r?.ok) return dir; }
+    else if (nat?.fileExists && await nat.fileExists(dir)) return dir;
+  } catch {}
+  return projectDir();
+}
+
+/** `<exports dir>/<name>` for a save dialog's defaultPath — or just the name. */
+export async function exportDefaultPath(name) {
+  const dir = await exportsDirForDialog();
+  return dir ? joinPath(dir, name) : name;
+}
+
 /** The language the project's generated assets currently belong to. */
 export function activeLangCode() {
   return state.get('activeLang') || state.get('sourceLang') || 'en';

@@ -1129,6 +1129,13 @@ ipcMain.handle('fs:exists', async (_, filePath) => {
   return fs.existsSync(filePath);
 });
 
+// V0.3.4.175 — make a folder (recursive). The export dialogs start in the
+// project's exports/ folder, which has to exist before a dialog can show it.
+ipcMain.handle('fs:mkdir', async (_, dirPath) => {
+  try { fs.mkdirSync(dirPath, { recursive: true }); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e?.message || e) }; }
+});
+
 // Stat a file — returns { size, mtimeMs } or null
 ipcMain.handle('fs:stat', async (_, filePath) => {
   try {

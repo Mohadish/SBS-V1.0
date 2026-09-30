@@ -25,6 +25,7 @@ import {
 import { exportEnvironment, environmentFromProject, normalizeEnvPayload, ENV_STATE_KEYS } from '../io/environment.js';   // 🌍 Env tab
 import { initTree, renderTree, expandPathToNode, collapseAll, toggleFilter, getFilter } from './tree.js';
 import { setStatus }       from './status.js';
+import * as projectPaths   from '../core/project-paths.js';   // V0.3.4.175 — export dialog starts in exports/
 import {
   createCameraView, generateId, APP_VERSION, APP_RELEASED,
   createAnimationPreset, DEFAULT_ANIMATION_PRESET_STRING, pickCameraView,
@@ -5107,7 +5108,7 @@ async function _onExportTabStart() {
   if (window.sbsNative?.saveFile) {
     outPath = await window.sbsNative.saveFile({
       title: 'Export Video',
-      defaultPath: `${fileBase}-${stamp}.${vidExt}`,
+      defaultPath: await projectPaths.exportDefaultPath(`${fileBase}-${stamp}.${vidExt}`),   // V0.3.4.175 — starts in <project>/exports/
       filters: [{ name: vidExt.toUpperCase(), extensions: [vidExt] }],
     });
     if (!outPath) return;   // cancelled
