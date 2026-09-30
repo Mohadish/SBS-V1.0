@@ -22,6 +22,7 @@ import { applyNodeSourceTransformToObject3D, isTransformNode, captureTransformSn
 import { serializeModelTree, flatten as flattenTree } from '../core/nodes.js';   // 📥 V0.3.2.191 — reverse backfill of TARGET scene into imported steps
 import { regenerateHardwareAsset } from '../systems/hardware-actions.js';     // 📥 Phase 2 — procedural hardware, no file needed
 import { setStatus } from './status.js';
+import { openProgressBanner, fmtDuration } from './progress-banner.js';   // 📣 V0.3.4.182 — the transparent-clip import is minutes, not seconds
 import * as projectPaths from '../core/project-paths.js';   // V0.3.4.175 — export dialogs start in exports/
 import { showContextMenu } from './context-menu.js';
 import { exportTimelineVideo, exportTimelineSbsProc, downloadBlob, saveBlobToPath } from '../systems/video-export.js';
@@ -2190,6 +2191,84 @@ function _visibleNodeIdsInStep(step) {
 // segment is copied ONCE and each step gets its own trimIn/trimOut window on
 // the video node (playback and export both honour trims since V0.3.2.75).
 
+// ── 🅰📣 V0.3.4.182 — the transparent import's alpha encode, with LIVE progress ──
+// libvpx-vp9 with an alpha plane is minutes per clip. Three things changed:
+//  · ffmpeg writes its own progress to a sidecar file (-progress <file>): the
+//    renderer polls it (readFile IPC — no main-process change, no restart) and
+//    the banner shows a real bar, elapsed and ETA instead of one grey sentence.
+//  · the encode is multithreaded (-row-mt, -threads, tiles, cpu-used 2): the
+//    default libvpx settings crawl on one core. Same look, several times faster.
+//  · the rate it measured (encode ms per clip ms) is remembered, so the NEXT
+//    import dialog can say "≈ 4 min" before the user commits.
+const ALPHA_RATE_KEY = 'sbs.alphaEncodeRate';
+function _alphaEncodeRate() {
+  try { const v = parseFloat(localStorage.getItem(ALPHA_RATE_KEY)); return Number.isFinite(v) && v > 0 ? v : 0; } catch { return 0; }
+}
+function _rememberAlphaEncodeRate(encodeMs, clipMs) {
+  if (!(encodeMs > 0) || !(clipMs > 500)) return;
+  const fresh = encodeMs / clipMs;
+  const prev = _alphaEncodeRate();
+  const blended = prev ? prev * 0.5 + fresh * 0.5 : fresh;   // half-life smoothing: one odd run does not own the estimate
+  try { localStorage.setItem(ALPHA_RATE_KEY, String(blended)); } catch { /* a private window: no memory, still works */ }
+}
+
+/** Last value of `key=` in an ffmpeg -progress file (blocks append; the last block is the freshest). */
+function _progressField(text, key) {
+  const t = `\n${text}`, tag = `\n${key}=`;
+  const at = t.lastIndexOf(tag);
+  if (at < 0) return null;
+  const end = t.indexOf('\n', at + 1);
+  return t.slice(at + tag.length, end < 0 ? undefined : end).trim();
+}
+
+/**
+ * colour mp4 + mask mp4 → WebM VP9 with a real alpha channel, reporting progress.
+ * @param {object} seg           { file, alphaFile, segDurationMs }
+ * @param {string} abs           output path (its folder must exist)
+ * @param {(fracOfClip:number, speed:number|null) => void} onProgress
+ * @param {() => boolean} [isCancelled]  polled; a cancel cannot kill ffmpeg (no such IPC) — the caller discards the result
+ */
+async function _encodeAlphaWebm(seg, abs, onProgress, isCancelled = () => false) {
+  const progressFile = `${abs}.progress`;
+  const threads = Math.max(2, Math.min(16, Number(navigator.hardwareConcurrency) || 4));
+  const durMs = Math.max(1, Number(seg.segDurationMs) || 0);
+  let stopPoll = false;
+  const poll = (async () => {
+    let lastFrac = 0;
+    while (!stopPoll) {
+      await new Promise(r => setTimeout(r, 400));
+      if (stopPoll) break;
+      try {
+        const rd = await window.sbsNative.readFile(progressFile, 'utf-8');
+        if (!rd?.ok || !rd.data) continue;
+        // out_time_us is microseconds; the older out_time_ms is ALSO microseconds (ffmpeg quirk).
+        const us = parseFloat(_progressField(rd.data, 'out_time_us') ?? _progressField(rd.data, 'out_time_ms'));
+        const speedRaw = _progressField(rd.data, 'speed');
+        const speed = speedRaw ? parseFloat(speedRaw) : null;
+        if (Number.isFinite(us) && us >= 0) {
+          const frac = Math.min(1, (us / 1000) / durMs);
+          if (frac >= lastFrac) { lastFrac = frac; onProgress(frac, Number.isFinite(speed) ? speed : null); }
+        }
+      } catch { /* a half-written block, a file not there yet: next tick */ }
+      if (isCancelled()) onProgress(lastFrac, null);
+    }
+  })();
+  try {
+    return await window.sbsNative.ffmpeg([
+      '-y', '-nostdin', '-i', seg.file, '-i', seg.alphaFile,
+      '-filter_complex', '[1:v]format=gray[a];[0:v][a]alphamerge[v]',
+      '-map', '[v]', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
+      '-b:v', '6M', '-deadline', 'good', '-cpu-used', '2',
+      '-row-mt', '1', '-threads', String(threads), '-tile-columns', '2',
+      '-an', '-progress', progressFile, '-stats_period', '0.5', abs,
+    ]);
+  } finally {
+    stopPoll = true;
+    await poll.catch(() => {});
+    try { await window.sbsNative.deletePath?.(progressFile); } catch { /* a stray .progress text file is harmless */ }
+  }
+}
+
 /**
  * Scan the SOURCE project's render cache → Map stepId → segment window.
  *
@@ -2655,6 +2734,23 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
   const refresh = () => {
     cntEl.textContent = `${checked.size} of ${srcSteps.length} selected`;
     goBtn.textContent = checked.size ? `Import ${checked.size} step(s)` : 'Import';
+    // 📣 V0.3.4.182 — say UP FRONT that a transparent import is a long encode,
+    // with the estimate the last run taught us (seconds of encode per second
+    // of clip); before any run it can only say "minutes".
+    {
+      const segs = new Map();   // unique segment → duration (several steps can share one)
+      for (const id of checked) {
+        if (!videoChecked.has(id) || !videoAlphaChecked.has(id)) continue;
+        const seg = videoBySrcId.get(id);
+        if (seg?.alphaFile) segs.set(seg.file, seg.segDurationMs || 0);
+      }
+      if (segs.size) {
+        const clipMs = [...segs.values()].reduce((a, b) => a + b, 0);
+        const rate = _alphaEncodeRate();
+        const est = rate ? `≈ ${fmtDuration(clipMs * rate)}` : 'a few minutes';
+        cntEl.textContent += ` · ⬚ ${segs.size} transparent clip(s) → one-time alpha encode, ${est}`;
+      }
+    }
 
     // Missing models across the CURRENT step selection, with the visibility
     // verdict: "needed" = at least one of its parts is effectively visible
@@ -3039,6 +3135,19 @@ function _showImportStepsDialog(project, srcSteps, srcName, targetStepId, srcPro
 }
 
 async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetPlan = [], videoPlan = new Map()) {
+  // 📣 V0.3.4.182 — one try around the whole import: a throw anywhere used to
+  // leave a silent half-import, and would now leave the banner spinning forever.
+  const ctx = { banner: null };
+  try {
+    await _doImportStepsInner(project, srcStepIds, srcName, targetStepId, assetPlan, videoPlan, ctx);
+  } catch (err) {
+    console.error('[import] failed:', err);
+    ctx.banner?.fail(`Import from "${srcName}" failed: ${err?.message || err}`);
+    setStatus(`Import failed: ${err?.message || err}`, 'danger', 9000);
+  }
+}
+
+async function _doImportStepsInner(project, srcStepIds, srcName, targetStepId, assetPlan, videoPlan, ctx) {
   const chosen = (project.steps?.items || []).filter(s => srcStepIds.includes(s.id));
   if (!chosen.length) return;
   // 🎬 Partition: video-marked steps import a rendered CLIP, everything else
@@ -3052,20 +3161,60 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
   // the steps themselves join the single undo entry below.
   const videoSteps  = new Map();   // srcStepId → new step
   const videoFailed = [];
+  const startProjectPath = state.get('projectPath') || '';
   if (videoSrc.length) {
-    const tgtDir = (state.get('projectPath') || '').replace(/[\\/][^\\/]*$/, '');
+    const tgtDir = startProjectPath.replace(/[\\/][^\\/]*$/, '');
     const copied = new Map();      // source mp4 path → { abs, rel }
+    // 📣 V0.3.4.182 — the work plan behind the banner: each UNIQUE segment is
+    // converted or copied once (several steps can share one). A transparent
+    // segment costs its clip length (the alpha encode); a solid copy, a token
+    // second. Progress = clip-milliseconds done over clip-milliseconds planned,
+    // the current encode's own fraction read live from ffmpeg.
+    const jobs = new Map();        // copyKey → { ms, transparent }
     for (const s of videoSrc) {
+      const seg = videoPlan.get(s.id);
+      const copyKey = `${seg.file}::${seg.transparent ? 'alpha' : 'solid'}`;
+      if (!jobs.has(copyKey)) jobs.set(copyKey, { ms: seg.transparent ? Math.max(1000, Number(seg.segDurationMs) || 0) : 1000, transparent: !!seg.transparent });
+    }
+    const alphaJobs   = [...jobs.values()].filter(j => j.transparent);
+    const totalMs     = [...jobs.values()].reduce((a, j) => a + j.ms, 0);
+    const alphaClipMs = alphaJobs.reduce((a, j) => a + j.ms, 0);
+    const rate0 = _alphaEncodeRate();
+    const t0 = performance.now();
+    let doneMs = 0, curMs = 0, curFrac = 0;
+    const banner = ctx.banner = openProgressBanner({
+      title: `Importing ${chosen.length} step(s) from "${srcName}"`,
+      note: alphaJobs.length
+        ? `${alphaJobs.length} transparent clip(s): each is converted ONCE to WebM-with-alpha — a slow encode, minutes per clip. You can keep working in this project meanwhile; the steps land when it finishes, as one undo entry.`
+        : 'Copying rendered clips into the project folder. You can keep working meanwhile.',
+      onCancel: () => {},   // the loop polls banner.cancelled; ffmpeg finishes the clip in progress (no kill IPC)
+    });
+    const paint = (headline, detail, speed = null) => {
+      const worked  = doneMs + curMs * curFrac;
+      const elapsed = performance.now() - t0;
+      const frac    = totalMs ? worked / totalMs : null;
+      let eta = null;
+      if (worked > 0 && elapsed > 2500 && frac > 0.02) eta = elapsed * (totalMs - worked) / worked;   // measured this run
+      else if (rate0 && alphaJobs.length) eta = Math.max(0, alphaClipMs * rate0 - elapsed);           // remembered from the last run
+      if (banner.cancelled) banner.update({ headline: 'Stopping after the current clip… (the one in progress has to finish)', detail: '', frac, elapsedMs: elapsed, etaMs: undefined });
+      else banner.update({ headline, detail: detail + (speed ? ` · ${speed.toFixed(2)}× realtime` : ''), frac, elapsedMs: elapsed, etaMs: eta });
+    };
+    let jobNo = 0;
+    for (const s of videoSrc) {
+      if (banner.cancelled) break;
       const seg = videoPlan.get(s.id);
       setStatus(`Importing rendered clip for "${s.name}"${seg.transparent ? ' (transparent — encoding WebM alpha…)' : '…'}`, 'info', 0);
       try {
         const copyKey = `${seg.file}::${seg.transparent ? 'alpha' : 'solid'}`;
         let dest = copied.get(copyKey);
         if (!dest) {
+          jobNo++;
+          curMs = jobs.get(copyKey).ms; curFrac = 0;
+          const label = `Clip ${jobNo} of ${jobs.size} — "${s.name}"`;
           if (seg.transparent) {
             // 🅰 one-time alphamerge: colour + mask → WebM VP9 with a real
             // alpha channel (Chromium's <video> renders it transparent).
-            // Slow-ish encode (libvpx) but paid ONCE per imported segment.
+            // Slow encode (libvpx) but paid ONCE per imported segment.
             const rel = `media/imported-seg-${seg.key}.webm`;
             const abs = `${tgtDir}/${rel}`;
             // 📁 V0.3.4.94 — ffmpeg does not create folders: in a project that had no
@@ -3074,18 +3223,20 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
             // exists, ffmpeg's -y overwrites the empty file.
             const touch = await window.sbsNative.writeFile(abs, '', 'utf-8');
             if (!touch?.ok) throw new Error(touch?.error || 'could not create the media folder');
-            const ff = await window.sbsNative.ffmpeg([
-              '-y', '-i', seg.file, '-i', seg.alphaFile,
-              '-filter_complex', '[1:v]format=gray[a];[0:v][a]alphamerge[v]',
-              '-map', '[v]', '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p',
-              '-b:v', '6M', '-an', abs,
-            ]);
+            paint(label, `Encoding alpha WebM (${fmtDuration(seg.segDurationMs || 0)} of video) — starting…`);
+            const tEnc = performance.now();
+            const ff = await _encodeAlphaWebm(seg, abs, (f, speed) => {
+              curFrac = f;
+              paint(label, `Encoding alpha WebM — ${Math.round(f * 100)}% of this clip`, speed);
+            }, () => banner.cancelled);
             if (!ff?.ok) {
               try { await window.sbsNative.deletePath?.(abs); } catch { /* the empty file is harmless */ }
               throw new Error(`alpha encode failed (ffmpeg ${ff?.code}): ${ff?.stderrTail?.slice(-200) || 'unknown'}`);
             }
+            _rememberAlphaEncodeRate(performance.now() - tEnc, Number(seg.segDurationMs) || 0);
             dest = { abs, rel };
           } else {
+            paint(label, 'Copying the rendered clip…');
             const rd = await window.sbsNative.readFile(seg.file, 'buffer');
             if (!rd?.ok) throw new Error(rd?.error || 'segment read failed');
             const rel = `media/imported-seg-${seg.key}.mp4`;
@@ -3095,16 +3246,35 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
             dest = { abs, rel };
           }
           copied.set(copyKey, dest);
+          doneMs += curMs; curMs = 0; curFrac = 0;
         }
         videoSteps.set(s.id, _buildVideoStep(s, seg, dest.abs, dest.rel));
       } catch (err) {
         console.error(`[import] video step "${s.name}" failed:`, err);
         videoFailed.push(s.name || s.id);
+        doneMs += curMs; curMs = 0; curFrac = 0;   // a failed job is still consumed work
       }
     }
+    if (banner.cancelled) {
+      // ⏹ Stopped: a clean abort — nothing lands, this run's converted files go.
+      for (const d of copied.values()) { try { await window.sbsNative.deletePath?.(d.abs); } catch { /* best effort */ } }
+      banner.finish('Import stopped — nothing was added.', 'warn', 8000);
+      setStatus('Import stopped — nothing was added.', 'warn', 6000);
+      return;
+    }
+    if ((state.get('projectPath') || '') !== startProjectPath) {
+      // The user kept working (as invited) — in ANOTHER project. The clips sit in
+      // the original project's media/; the steps must not land here.
+      banner.fail('The project changed while the clips were converting — nothing was added. Open the original project and import again.');
+      setStatus('Import abandoned: the project changed meanwhile.', 'warn', 8000);
+      return;
+    }
+    banner.update({ headline: 'Placing the steps…', detail: 'missing models, colours, snapshots', frac: null, etaMs: 0 });
   }
   if (!srcSteps.length && !videoSteps.size) {
-    setStatus(videoFailed.length ? `Video import failed: ${videoFailed.join(', ')}.` : 'Nothing to import.', 'warn', 6000);
+    const msg = videoFailed.length ? `Video import failed: ${videoFailed.join(', ')}.` : 'Nothing to import.';
+    setStatus(msg, 'warn', 6000);
+    ctx.banner?.fail(msg);
     return;
   }
   const srcCams   = project.cameras?.items || [];
@@ -3533,7 +3703,8 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     } catch (err) { console.warn('[import] archived re-apply failed:', err); }
   }
 
-  setStatus(`Imported ${ordered.length} step(s) from "${srcName}"`
+  const summaryLevel = (failedModels.length || videoFailed.length || unprunedModels.length) ? 'warn' : 'success';
+  const summary = `Imported ${ordered.length} step(s) from "${srcName}"`
     + (videoSteps.size ? ` (${videoSteps.size} as rendered video)` : '')
     + (videoFailed.length ? ` — ⚠ video FAILED: ${videoFailed.join(', ')}` : '')
     + (loadedModels.length ? ` + ${loadedModels.length} model(s)` : '')
@@ -3544,7 +3715,9 @@ async function _doImportSteps(project, srcStepIds, srcName, targetStepId, assetP
     + (maskAdds.length ? ` (+${maskAdds.length} crop mask(s))` : '')
     + (unprunedModels.length ? ` — ⚠ imported WHOLE (the source's visibility data did not match this geometry): ${unprunedModels.join(', ')}` : '')
     + (failedModels.length ? ` — ⚠ model import FAILED: ${failedModels.join(', ')}` : '')
-    + '.', (failedModels.length || videoFailed.length || unprunedModels.length) ? 'warn' : 'success', 9000);
+    + '.';
+  setStatus(summary, summaryLevel, 9000);
+  ctx.banner?.finish(summary, summaryLevel, 12000);   // 📣 the big notice closes on the same words
 }
 
 /** Clone a BLOCK of steps for pasting, remapping group identity (V0.3.2.44).
