@@ -21,7 +21,7 @@
  */
 
 import state from '../core/state.js';
-import { createColorPreset } from '../core/schema.js';
+import { createColorPreset, APP_VERSION } from '../core/schema.js';
 import { sceneCore } from '../core/scene.js';
 import * as clock from '../core/clock.js';
 import { ssrPrepassHook } from '../../vendor/three-addons/SSRReflectPass.js';
@@ -473,6 +473,28 @@ class MaterialsSystem {
     // scene.environment stayed empty and the SBS shader kept the six-canvas box
     // (why .163 changed nothing on screen). Build it now if the renderer is up.
     if (sceneCore.renderer) this._initPmremEnvMap();
+
+    // V0.3.4.165 — console: sbsEnvDiag() → which cube the shader samples right now.
+    if (typeof window !== 'undefined') window.sbsEnvDiag = () => {
+      const cube = this.metalEnvMap;
+      const which = cube === this._hdriCubeMap ? 'HDRI' : cube === this._studioCubeMap ? 'studio' : 'canvas (six faces)';
+      let sampled = 0, studio = 0, hdri = 0, canvas = 0, standard = 0;
+      for (const [, mesh] of this.meshById) {
+        const ms = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const m of ms) {
+          const t = m?.uniforms?.uEnvMap?.value ?? m?.envMap;
+          if (!t) continue;
+          sampled++;
+          if (t === this._studioCubeMap) studio++; else if (t === this._hdriCubeMap) hdri++; else if (t === this._canvasEnvMap) canvas++;
+          if (m?.isMeshStandardMaterial) standard++;
+        }
+      }
+      const out = { version: APP_VERSION, shaderCubeNow: which, studioBuilt: !!this._studioCubeMap,
+        studioError: this._studioCubeError || null, pmremBuilt: !!this._pmremEnvMap, hdriActive: this._activeHdri || null,
+        materials: { total: sampled, studio, hdri, canvas, textured: standard } };
+      console.log('[sbsEnvDiag]', JSON.stringify(out));
+      return out;
+    };
   }
 
 
@@ -688,8 +710,8 @@ class MaterialsSystem {
     this._pmremEnvMap = rt.texture;
 
     // The same studio for the SBS shader's samplerCube (V0.3.4.163, see _buildStudioCube).
-    try { this._buildStudioCube(renderer, data, W, H); }
-    catch (e) { console.warn('[materials] studio cube failed — keeping the canvas cube:', e?.message || e); }
+    try { this._buildStudioCube(renderer, data, W, H); this._studioCubeError = null; }
+    catch (e) { this._studioCubeError = String(e?.message || e); console.warn('[materials] studio cube failed — keeping the canvas cube:', this._studioCubeError); }
 
     // Apply to scene so MeshStandardMaterial meshes also benefit
     if (sceneCore.scene) sceneCore.scene.environment = this._pmremEnvMap;
