@@ -1162,10 +1162,19 @@ export async function setHandSkinFile(path, { setting } = {}) {
 // (the user: "don't call them by their original file name"). The FBX still
 // names its own map by the artist's file, and a machine may have the old name
 // saved as its texture choice — both are redirected here.
-const _TEX_ALIAS = { 'M4JeremyRRLimbsM.jpg': 'skin.jpg', 'M4JeremyRR-latex-Blue.jpg': 'blue.jpg', 'M4JeremyRR-latex-white.jpg': 'white.jpg' };
+/** An old texture name (any case, any of the artist's variants) → the bundled file it is now; else the name itself. */
+function _aliasTexture(name) {
+  const k = String(name || '').toLowerCase();
+  if (/m4jeremy/.test(k)) {
+    if (/blue/.test(k)) return 'blue.jpg';
+    if (/white/.test(k)) return 'white.jpg';
+    if (/limbs|skin/.test(k)) return 'skin.jpg';
+  }
+  return String(name || '');
+}
 function _skinLoadingManager() {
   const mgr = new (T().LoadingManager)();
-  mgr.setURLModifier(url => url.replace(/M4JeremyRRLimbsM\.jpg$/i, 'skin.jpg'));
+  mgr.setURLModifier(url => url.replace(/M4JeremyRR[^/\\]*\.jpg$/i, (m) => _aliasTexture(m)));
   return mgr;
 }
 
@@ -1185,7 +1194,14 @@ async function _imagesNextTo(dir) {
  */
 export async function setHandSkinTexture(name, { persist = true } = {}) {
   const tpl = _skin.template;
-  const want = _TEX_ALIAS[String(name || '')] || String(name || '');   // V0.3.4.190 — an old saved name still works
+  let want = _aliasTexture(name);   // V0.3.4.190 — an old saved name still works
+  // V0.3.4.191 — a name that is not beside the file (a stale machine setting) never
+  // reaches the loader: fall back to the file's own texture, quietly.
+  if (want && _skin.textures.length && !_skin.textures.includes(want)) {
+    const ci = _skin.textures.find(t => t.toLowerCase() === want.toLowerCase());
+    if (ci) want = ci;
+    else { console.warn('[hands] texture not beside the skin file, using its own:', want); want = ''; }
+  }
   if (tpl?.mats?.length) {
     const Th = T();
     if (!want) {
