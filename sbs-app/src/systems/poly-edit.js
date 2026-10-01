@@ -19,7 +19,8 @@ import { state } from '../core/state.js';
 import { sceneCore } from '../core/scene.js';
 import * as actions from './actions.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
-import { isPoly, makeBoxPoly, clonePoly, polyToArrays, polyEdges, extrudeFaces, loopCut, moveVertices, averageNormal, verticesOfFaces } from './poly-core.js';
+import { isPoly, makeBoxPoly, clonePoly, polyToArrays, polyEdges, extrudeFaces, loopCut, moveVertices, averageNormal, verticesOfFaces, extrusionPrism, facesOnCap, polyExtent } from './poly-core.js';
+import { booleanPoly, warmBooleanLib } from './poly-csg.js';   // ⬚ V0.3.5.11 — the Boolean on release
 import { staticMeshGlb } from '../io/glb-write.js';
 
 const T = () => window.THREE;
@@ -37,7 +38,11 @@ export function enterPolyEdit(nodeId) {
   if (_ed) exitPolyEdit();
   const mesh = node.object3d;
   if (!mesh || !sceneCore.renderer) { setStatus('That poly has no mesh on screen yet.', 'warn', 4000); return false; }
-  state.setState({ selectedId: nodeId, multiSelectedIds: new Set([nodeId]), polyEditing: nodeId });
+  // V0.3.5.11 — the node is NOT left selected: the gizmo would take the pointer
+  // over the mesh, and a dozen listeners react to a selection change. The mode
+  // holds its own reference; a click that misses the poly ends it (and goes on
+  // to select whatever it hit).
+  state.setState({ selectedId: null, multiSelectedIds: new Set(), polyEditing: nodeId });
   _ed = { nodeId, node, mesh, poly: _polyOf(node), faceOfTri: null, mode: 'face', selFaces: new Set(), selVerts: new Set(), hoverFace: -1, hoverVert: -1, helpers: null, drag: null, before: null };
   _ed.faceOfTri = polyToArrays(_ed.poly).faceOfTri;
   _buildHelpers();
@@ -47,7 +52,6 @@ export function enterPolyEdit(nodeId) {
     move: (e) => _onMove(e),
     up:   (e) => _onUp(e),
     key:  (e) => _onKey(e),
-    sel:  () => { if (_ed && state.get('selectedId') !== _ed.nodeId) exitPolyEdit(); },
     step: () => exitPolyEdit(),
     exp:  () => { if (state.get('_exporting')) exitPolyEdit(); },
     tree: () => { if (_ed && !_nodeOf(_ed.nodeId)) exitPolyEdit(); },
@@ -56,11 +60,11 @@ export function enterPolyEdit(nodeId) {
   dom.addEventListener('pointermove', L.move, true);
   window.addEventListener('pointerup', L.up, true);
   window.addEventListener('keydown', L.key, true);
-  state.on('change:selectedId', L.sel);
   state.on('change:activeStepId', L.step);
   state.on('change:_exporting', L.exp);
   state.on('change:treeData', L.tree);
   _hint();
+  warmBooleanLib().catch(() => {});                     // the wasm is ready by the first release
   sceneCore.requestRender?.(200);
   return true;
 }
@@ -75,7 +79,6 @@ export function exitPolyEdit() {
     dom?.removeEventListener('pointermove', L.move, true);
     window.removeEventListener('pointerup', L.up, true);
     window.removeEventListener('keydown', L.key, true);
-    state.off?.('change:selectedId', L.sel);
     state.off?.('change:activeStepId', L.step);
     state.off?.('change:_exporting', L.exp);
     state.off?.('change:treeData', L.tree);
@@ -239,11 +242,12 @@ const _typing = () => { const el = document.activeElement, tag = el?.tagName; re
 
 function _onDown(e) {
   if (!_ed || e.button !== 0) return;
+  if (_ed.drag?.finishing) { e.preventDefault(); e.stopImmediatePropagation(); return; }   // the Boolean of the last release is still running
   const node = _nodeOf(_ed.nodeId);
   if (!node) { exitPolyEdit(); return; }
   if (_ed.mode === 'vertex') {
     const vi = _nearestVertex(e);
-    if (vi < 0) return;                                            // off the dots: the click goes on (deselect → done)
+    if (vi < 0) { exitPolyEdit(); return; }                        // off the dots: done — the click goes on to whatever it hit
     e.preventDefault(); e.stopImmediatePropagation();
     if (e.ctrlKey) { if (_ed.selVerts.has(vi)) _ed.selVerts.delete(vi); else _ed.selVerts.add(vi); _refreshHelpers(); return; }
     if (!_ed.selVerts.has(vi)) _ed.selVerts = new Set([vi]);
@@ -254,7 +258,7 @@ function _onDown(e) {
     return;
   }
   const { hit, face } = _hitFace(e);
-  if (!hit || face < 0) return;                                    // not on this poly: the click goes on
+  if (!hit || face < 0) { exitPolyEdit(); return; }                // not on this poly: done — the click goes on to whatever it hit
   e.preventDefault(); e.stopImmediatePropagation();
   if (e.altKey) {                                                  // ✂ loop cut through the strip at the nearest edge
     const { k, t } = _nearestEdge(e, face);
@@ -276,7 +280,7 @@ function _onDown(e) {
   if (e.shiftKey) {                                                // ⬆ extrude: build the ring now, the drag stretches it
     const ex = extrudeFaces(_ed.poly, ids);
     _ed.poly = ex.poly; _ed.selFaces = new Set(ex.capIds);
-    _ed.drag = { kind: 'extrude', ids: ex.capVertexIds, normalLocal: averageNormal(ex.poly, ex.capIds), x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(ex.poly), preGesture: pre };
+    _ed.drag = { kind: 'extrude', ids: ex.capVertexIds, capIds: ids.slice(), sides: ex.sideIds.length, normalLocal: averageNormal(ex.poly, ex.capIds), x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(ex.poly), preGesture: pre };
     _applyLive();
   } else {
     _ed.drag = { kind: 'faces', ids: verticesOfFaces(_ed.poly, ids), x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(_ed.poly), preGesture: pre };
@@ -289,6 +293,7 @@ function _onMove(e) {
   const d = _ed.drag;
   if (d) {
     e.preventDefault(); e.stopImmediatePropagation();
+    if (d.finishing) return;
     const dx = e.clientX - d.x, dy = e.clientY - d.y;
     if (!d.moved && Math.hypot(dx, dy) < 3) return;
     d.moved = true;
@@ -319,7 +324,7 @@ function _onMove(e) {
 }
 
 function _onUp(e) {
-  if (!_ed?.drag) return;
+  if (!_ed?.drag || _ed.drag.finishing) return;
   const d = _ed.drag; _ed.drag = null;
   clearStickyStatus('polyGesture');
   if (!d.moved) {                                                  // a click: selection only; an unmoved extrude is undone
@@ -329,7 +334,44 @@ function _onUp(e) {
     return;
   }
   e.preventDefault?.(); e.stopImmediatePropagation?.();
+  if (d.kind === 'extrude' && d.sides > 0 && Math.abs(d.dist || 0) > 1e-6) { _finishExtrude(d); return; }
   _commit(d.kind === 'extrude' ? 'Extrude faces' : d.kind === 'vertex' ? 'Move vertex' : 'Move faces');
+}
+
+/**
+ * ⬚ V0.3.5.11 — the Boolean on release ("smart extrude", 3ds Max 2021.1+):
+ * pulled out, the swept prism is UNITED with the body (an extrusion that runs
+ * into another part of the mesh becomes one solid); pushed in, it is CUT away
+ * (a pocket; a through-hole when it reaches the far side). The gesture stays
+ * "in flight" until the kernel answers (ms) so Esc / a click cannot race it;
+ * if the kernel fails the plain extrude of Phase 1 is kept, with a warning.
+ */
+async function _finishExtrude(d) {
+  d.finishing = true; _ed.drag = d;
+  setStickyStatus(d.dist > 0 ? '⬆ joining…' : '⬇ cutting…', 'info', 'polyGesture');
+  const pre = d.preGesture, post = _ed.poly;
+  let label = 'Extrude faces', warn = null;
+  try {
+    const prism = extrusionPrism(pre, post, d.capIds, d.normalLocal, d.dist, 0);
+    const res = await booleanPoly(pre, prism, d.dist > 0 ? 'union' : 'subtract');
+    if (!_ed || _ed.drag !== d) return;                                   // the mode ended meanwhile (exit restored the pre-gesture poly)
+    if (res) {
+      _ed.poly = res;
+      _ed.selFaces = new Set(facesOnCap(res, pre, d.capIds, d.normalLocal, d.dist, polyExtent(pre) * 1e-4));
+      _ed.hoverFace = -1;
+      _applyLive();
+      label = d.dist > 0 ? 'Extrude (join)' : 'Extrude (cut)';
+    } else warn = 'The cut would remove everything — plain extrude kept.';
+  } catch (err) {
+    console.warn('[poly] Boolean failed, plain extrude kept:', err);
+    if (!_ed || _ed.drag !== d) return;
+    warn = `Join failed (${err?.message || err}) — plain extrude kept.`;
+  } finally {
+    if (_ed && _ed.drag === d) _ed.drag = null;
+    clearStickyStatus('polyGesture');
+  }
+  _commit(label);
+  if (warn) setStatus(warn, 'warn', 6000);
 }
 
 function _onKey(e) {
@@ -346,7 +388,7 @@ function _onKey(e) {
 function _hint() {
   if (!_ed) return;
   setStickyStatus(_ed.mode === 'face'
-    ? '⬚ Edit poly · FACES: click selects (Ctrl adds) · drag moves · Shift+drag = extrude (push in = pocket) · Alt+click an edge = loop cut · 1 = vertices · Esc = done'
+    ? '⬚ Edit poly · FACES: click selects (Ctrl adds) · drag moves · Shift+drag = extrude (out = joins what it meets · in = cuts a pocket / a hole) · Alt+click an edge = loop cut · 1 = vertices · Esc = done'
     : '⬚ Edit poly · VERTICES: drag a dot (Ctrl adds more) · 4 = faces · Esc = done',
   'info', 'polyEdit');
 }

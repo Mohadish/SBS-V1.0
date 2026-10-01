@@ -30,7 +30,7 @@ ok(!list.some(p => /sbs_license|sbs_private|\.key$|issued/i.test(p)), 'no key ma
 ok(!list.some(p => p.startsWith('/tests/') || p.startsWith('/tools/') || p.startsWith('/robot/') || p.startsWith('/saves/')), 'no tests/ tools/ robot/ saves/ in the asar');
 
 // assets that features depend on at runtime
-const need = ['/assets/hands/sbs-hand.fbx', '/vendor/three-addons/N8AO.js', '/vendor/three.min.js', '/src/main.js', '/electron/preload.js'];
+const need = ['/assets/hands/sbs-hand.fbx', '/vendor/three-addons/N8AO.js', '/vendor/three.min.js', '/vendor/manifold/manifold.wasm', '/vendor/manifold/manifold.js', '/src/main.js', '/electron/preload.js'];
 for (const p of need) ok(list.includes(p), `asar has ${p}`);
 ok(list.some(p => p.startsWith('/assets/hdri/') && p.endsWith('.hdr')), 'asar has assets/hdri/*.hdr');
 
