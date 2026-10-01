@@ -2006,6 +2006,9 @@ function _syncGizmoToSelection() {
   // duration of the edit session — it'll come back when the editor exits
   // (the editor emits `change:shapeDrawing` on tear-down, see below).
   if (state.get('shapeDrawing')) { gizmo.hide(); return; }
+  // ⬚ V0.3.5.12 — the editable-poly mode owns the gizmo (it shows it at the
+  // selected faces / vertices through a target); selection is empty meanwhile.
+  if (state.get('polyEditing')) return;
   // E2: socket selection takes the highest precedence — the actions
   // make the three selection states mutually exclusive, but order
   // here defensively in case a future caller sets two at once.
@@ -4427,6 +4430,7 @@ canvas.addEventListener('contextmenu', e => {
     }
     if (node.primKind === 'poly') {
       items.push({ label: '✎ Edit poly…', action: () => import('./systems/poly-edit.js').then(m => m.enterPolyEdit(node.id)) });
+      items.push({ label: '⬚ Clean edges (merge coplanar faces)', action: () => import('./systems/poly-edit.js').then(m => m.cleanPolyEdges(node.id)) });
       items.push({ label: '⬇ Export poly as .glb…', action: () => import('./systems/poly-edit.js').then(m => m.exportPolyGlb(node.id)) });
     }
     // Per-step pose clipboard (V0.3.0.94) — same as flatShape / hardware.
@@ -5576,6 +5580,9 @@ window.addEventListener('keydown', async e => {
   // ── Selection ────────────────────────────────────────────────────────────
   if (key === 'Escape') {
     if (gizmo.isDragging) { gizmo.onPointerUp(); return; }
+    // ⬚ V0.3.5.12 — the editable-poly mode owns Esc (cancel the gesture, else leave the
+    // mode) and its gizmo; the clears below would drop the step selection and hide it.
+    if (state.get('polyEditing')) return;
     // Replace-Model viewport pick — Esc cancels the one-shot pick mode
     // armed from the add-to-replace dialog's "🎯 Pick from viewport…"
     // button. Runs BEFORE shape editor / placement / etc. so the user

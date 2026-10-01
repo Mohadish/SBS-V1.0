@@ -1333,6 +1333,7 @@ function _buildContextMenuItems(node) {
     }
     if (node.primKind === 'poly') {
       items.push({ label: '✎ Edit poly…', action: () => import('../systems/poly-edit.js').then(m => m.enterPolyEdit(node.id)) });
+      items.push({ label: '⬚ Clean edges (merge coplanar faces)', action: () => import('../systems/poly-edit.js').then(m => m.cleanPolyEdges(node.id)) });
       items.push({ label: '⬇ Export poly as .glb…', action: () => import('../systems/poly-edit.js').then(m => m.exportPolyGlb(node.id)) });
     }
     // Per-step pose clipboard (V0.3.0.94) — same as flatShape / hardware. Copy

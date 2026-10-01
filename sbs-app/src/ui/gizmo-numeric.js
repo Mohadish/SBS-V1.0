@@ -141,6 +141,7 @@ function _onKey(e) {
     if (!_frozen) return;            // not in numeric mode → ignore
     e.preventDefault();
     _gizmo.setNumericLock(false);
+    _gizmo._dragMoved = true;        // V0.3.5.12 — a click-armed handle (no mouse motion) commits on Enter too
     _gizmo.onPointerUp();
     return;
   }
@@ -153,6 +154,7 @@ function _onKey(e) {
     e.preventDefault();
     _gizmo.revertToDragStart();
     _exitNumericReleaseLock();
+    _gizmo._dragMoved = true;        // V0.3.5.12 — … and lets go of a click-armed handle
     _gizmo.onPointerUp();            // closes drag — transform == start ⇒ no undo entry
     return;
   }

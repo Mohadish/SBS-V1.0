@@ -191,11 +191,28 @@ export function polyEdges(p) {
   return new Float32Array(out);
 }
 
-/** Indexed triangles (welded vertices) — for the .glb export. */
+/** Indexed triangles (welded vertices) — for the .glb export and the Boolean kernel; faceOfTri = polygon per triangle. */
 export function polyToIndexed(p) {
-  const indices = [];
-  for (let fi = 0; fi < p.f.length; fi++) for (const t of triangulateFace(p, fi)) indices.push(t[0], t[1], t[2]);
-  return { positions: new Float32Array(p.v), indices: new Uint32Array(indices) };
+  const indices = [], faceOfTri = [];
+  for (let fi = 0; fi < p.f.length; fi++) for (const t of triangulateFace(p, fi)) { indices.push(t[0], t[1], t[2]); faceOfTri.push(fi); }
+  return { positions: new Float32Array(p.v), indices: new Uint32Array(indices), faceOfTri: new Uint32Array(faceOfTri) };
+}
+
+/** True when vertex b lies on the straight segment a→c (within eps), i.e. the boundary does not turn at b. */
+function _straight(V, a, b, c, eps) {
+  const ex = V[c * 3] - V[a * 3], ey = V[c * 3 + 1] - V[a * 3 + 1], ez = V[c * 3 + 2] - V[a * 3 + 2];
+  const len2 = ex * ex + ey * ey + ez * ez; if (len2 < eps * eps) return false;
+  const wx = V[b * 3] - V[a * 3], wy = V[b * 3 + 1] - V[a * 3 + 1], wz = V[b * 3 + 2] - V[a * 3 + 2];
+  const t = (wx * ex + wy * ey + wz * ez) / len2; if (t <= 0 || t >= 1) return false;
+  const px = wx - ex * t, py = wy - ey * t, pz = wz - ez * t;
+  return px * px + py * py + pz * pz <= eps * eps;
+}
+
+/** Positions k in face fi where the boundary really turns (a healed T-junction or a loop-cut midpoint on a neighbour is not a corner). */
+export function faceCorners(p, fi, eps = null) {
+  const f = p.f[fi], e = eps ?? polyExtent(p) * 1e-5, out = [];
+  for (let k = 0; k < f.length; k++) if (!_straight(p.v, f[(k + f.length - 1) % f.length], f[k], f[(k + 1) % f.length], e)) out.push(k);
+  return out;
 }
 
 // ── V0.3.5.11 — triangles → polygons (the way back from a Boolean) ───────────
@@ -251,6 +268,8 @@ function _mergeCoplanar(polys) {
  */
 export function trianglesToPoly(positions, opts = {}) {
   const nT = Math.floor(positions.length / 9);
+  const groupOf = opts.groupOf || null;                 // per input triangle: triangles of different groups never merge (edges kept) …
+  const across = opts.mergeCoplanar ?? !groupOf;        // … unless asked to merge coplanar neighbours across groups (cleanEdges)
   let mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < nT * 9; i += 3) for (let c = 0; c < 3; c++) { const x = positions[i + c]; if (x < mn[c]) mn[c] = x; if (x > mx[c]) mx[c] = x; }
   const extent = Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2], 1e-6);
@@ -268,7 +287,7 @@ export function trianglesToPoly(positions, opts = {}) {
     const key = `${cx},${cy},${cz}`; if (!cell.has(key)) cell.set(key, []); cell.get(key).push(i);
     return i;
   };
-  const tris = [], planes = [];
+  const tris = [], planes = [], groups = [];
   for (let t = 0; t < nT; t++) {
     const o = t * 9;
     const a = findOrAdd(positions[o], positions[o + 1], positions[o + 2]);
@@ -283,6 +302,7 @@ export function trianglesToPoly(positions, opts = {}) {
     nx /= l; ny /= l; nz /= l;
     tris.push([a, b, c]);
     planes.push([nx, ny, nz, nx * v[a * 3] + ny * v[a * 3 + 1] + nz * v[a * 3 + 2]]);
+    groups.push(groupOf ? groupOf[t] : 0);
   }
   // 2. coplanar groups across shared edges (union-find)
   const parent = tris.map((_, i) => i);
@@ -291,13 +311,15 @@ export function trianglesToPoly(positions, opts = {}) {
   tris.forEach((t, i) => { for (let k = 0; k < 3; k++) { const a = t[k], b = t[(k + 1) % 3], key = a < b ? `${a}-${b}` : `${b}-${a}`; if (!byEdge.has(key)) byEdge.set(key, []); byEdge.get(key).push(i); } });
   for (const list of byEdge.values()) for (let x = 0; x < list.length; x++) for (let y = x + 1; y < list.length; y++) {
     const A = planes[list[x]], B = planes[list[y]];
-    if (A[0] * B[0] + A[1] * B[1] + A[2] * B[2] > 1 - 1e-5 && Math.abs(A[3] - B[3]) < onEps) parent[find(list[x])] = find(list[y]);
+    const same = groupOf && groups[list[x]] === groups[list[y]];              // one input polygon: merge even if it is slightly bent
+    if (!same && !across) continue;
+    if (same || (A[0] * B[0] + A[1] * B[1] + A[2] * B[2] > 1 - 1e-5 && Math.abs(A[3] - B[3]) < onEps)) parent[find(list[x])] = find(list[y]);
   }
-  const groups = new Map();
-  tris.forEach((t, i) => { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(t.slice()); });
-  // 3. merge inside each group
+  const sets = new Map();
+  tris.forEach((t, i) => { const r = find(i); if (!sets.has(r)) sets.set(r, []); sets.get(r).push(t.slice()); });
+  // 3. merge inside each set
   let f = [];
-  for (const g of groups.values()) f.push(..._mergeCoplanar(g));
+  for (const g of sets.values()) f.push(..._mergeCoplanar(g));
   // 4. heal T-junctions: a vertex lying on a face's edge (not its endpoint) joins that edge
   const nV = v.length / 3;
   f = f.map(face => {
@@ -350,6 +372,13 @@ export function trianglesToPoly(positions, opts = {}) {
   const remap = new Map(), nv = [];
   for (const face of f) for (const i of face) if (!remap.has(i)) { remap.set(i, nv.length / 3); nv.push(v[i * 3], v[i * 3 + 1], v[i * 3 + 2]); }
   return { v: nv, f: f.map(face => face.map(i => remap.get(i))) };
+}
+
+/** "Clean edges": coplanar neighbours merged into one polygon, straight-through vertices dropped — the loop cuts and Boolean seams that no longer bend the surface go away. */
+export function cleanEdges(p) {
+  const { positions, faceOfTri } = polyToArrays(p);
+  const out = trianglesToPoly(positions, { groupOf: faceOfTri, mergeCoplanar: true });   // a bent quad stays one quad; coplanar neighbours merge
+  return out.f.length >= 4 ? out : clonePoly(p);
 }
 
 /**
@@ -406,6 +435,18 @@ function _inPoly2(pt, poly) {
  * centroid inside that region face's footprint) so the selection survives and
  * the next Shift-drag continues from there — as Max keeps it.
  */
+/** A point surely INSIDE the face (the centroid of its biggest ear) — the vertex mean of an L or a C lies in the notch. */
+function _interiorPoint(p, fi) {
+  let best = null, bestA = -1;
+  for (const [a, b, c] of triangulateFace(p, fi)) {
+    const ux = p.v[b * 3] - p.v[a * 3], uy = p.v[b * 3 + 1] - p.v[a * 3 + 1], uz = p.v[b * 3 + 2] - p.v[a * 3 + 2];
+    const wx = p.v[c * 3] - p.v[a * 3], wy = p.v[c * 3 + 1] - p.v[a * 3 + 1], wz = p.v[c * 3 + 2] - p.v[a * 3 + 2];
+    const area = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx);
+    if (area > bestA) { bestA = area; best = [(p.v[a * 3] + p.v[b * 3] + p.v[c * 3]) / 3, (p.v[a * 3 + 1] + p.v[b * 3 + 1] + p.v[c * 3 + 1]) / 3, (p.v[a * 3 + 2] + p.v[b * 3 + 2] + p.v[c * 3 + 2]) / 3]; }
+  }
+  return best || faceCentroid(p, fi);
+}
+
 export function facesOnCap(poly, pre, capIds, n, dist, eps) {
   const out = [];
   const regions = capIds.map(fi => {
@@ -415,7 +456,7 @@ export function facesOnCap(poly, pre, capIds, n, dist, eps) {
     return { nf, u, v, D, pts: pre.f[fi].map(i => _proj(pre, i, u, v)) };
   });
   for (let g = 0; g < poly.f.length; g++) {
-    const ng = faceNormal(poly, g), c = faceCentroid(poly, g);
+    const ng = faceNormal(poly, g), c = _interiorPoint(poly, g);
     for (const r of regions) {
       if (ng[0] * r.nf[0] + ng[1] * r.nf[1] + ng[2] * r.nf[2] < 0.999) continue;
       if (Math.abs(r.nf[0] * c[0] + r.nf[1] * c[1] + r.nf[2] * c[2] - r.D) > eps) continue;
@@ -476,74 +517,113 @@ export function extrudeFaces(p, faceIds) {
 }
 
 /**
- * LOOP CUT through the strip of quads starting at edge `ei` of face `fi`:
- * every quad in the strip is split in two at parameter `t` along the cut edge
- * (consistently oriented along the strip), the neighbours that merely touch a
- * cut edge get the new vertex inserted (they become n-gons — still planar and
- * convex). Stops at a non-quad, at an open boundary, or when the loop closes.
+ * LOOP CUT starting at parameter `t` along edge `ei` of face `fi` (V0.3.5.12
+ * — any face, not only quads). Each face on the way is split by a chord from
+ * the point where the loop enters to the point where it leaves:
+ *   · a face with FOUR real corners (a quad, even one carrying extra
+ *     straight-through vertices from a neighbour's cut or a healed seam)
+ *     leaves on the opposite side at the same fraction — the classic strip;
+ *   · any other face leaves where the in-plane perpendicular from the entry
+ *     point first meets the boundary (so the loop keeps going through the
+ *     n-gons a Boolean leaves behind instead of dying at them).
+ * Neighbours that merely share a cut edge get the new vertex inserted. Stops
+ * at an open boundary, at a corner vertex, at a face already cut, or when the
+ * loop closes. Returns the new poly, the loop's vertices in order (for the
+ * preview polyline) and whether it closed — or null when no face could be cut.
  */
 export function loopCut(p, fi, ei, t = 0.5) {
   const out = clonePoly(p);
-  const key = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
-  const facesOfEdge = new Map();
-  out.f.forEach((f, i) => { for (let k = 0; k < f.length; k++) { const kk = key(f[k], f[(k + 1) % f.length]); if (!facesOfEdge.has(kk)) facesOfEdge.set(kk, []); facesOfEdge.get(kk).push(i); } });
-  const cuts = [];                       // { face, e1:[from,to], e2:[from,to] } oriented so from↔from across the strip
-  const visited = new Set();
-  let face = fi, entry = [out.f[fi][ei], out.f[fi][(ei + 1) % out.f[fi].length]];
-  const startKey = key(entry[0], entry[1]);
+  const V = out.v, eps = polyExtent(p) * 1e-5;
+  const at = (i) => [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]];
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const addVertex = (q) => { V.push(q[0], q[1], q[2]); return V.length / 3 - 1; };
+  const insertOnEdge = (a, b, m) => {
+    for (const f of out.f) for (let k = 0; k < f.length; k++) {
+      const x = f[k], y = f[(k + 1) % f.length];
+      if ((x === a && y === b) || (x === b && y === a)) { f.splice(k + 1, 0, m); break; }
+    }
+  };
+  const f0 = out.f[fi];
+  if (!f0 || f0.length < 3) return null;
+  const a0 = f0[ei], b0 = f0[(ei + 1) % f0.length], A0 = at(a0), B0 = at(b0);
+  const m0 = addVertex([A0[0] + (B0[0] - A0[0]) * t, A0[1] + (B0[1] - A0[1]) * t, A0[2] + (B0[2] - A0[2]) * t]);
+  insertOnEdge(a0, b0, m0);
+  const cuts = [], visited = new Set(), loop = [m0];
+  let face = fi, vin = m0, closed = false;
   for (let guard = 0; guard < 100000 && face != null && !visited.has(face); guard++) {
-    const f = out.f[face];
-    if (f.length !== 4) break;
-    let k = f.findIndex((v, i) => v === entry[0] && f[(i + 1) % 4] === entry[1]);
-    let flipped = false;
-    if (k < 0) { k = f.findIndex((v, i) => v === entry[1] && f[(i + 1) % 4] === entry[0]); flipped = true; }
-    if (k < 0) break;
-    // quad [a,b,c,d] with the entry edge at k: a=f[k], b=f[k+1]; opposite = (d, c) with d adjacent to a
-    const a = f[k], b = f[(k + 1) % 4], c = f[(k + 2) % 4], d = f[(k + 3) % 4];
-    const e1 = flipped ? [b, a] : [a, b];               // oriented like `entry`
-    const e2 = flipped ? [c, d] : [d, c];               // the vertex across from e1[0] first
+    const f = out.f[face], m = f.length, kin = f.indexOf(vin);
+    if (kin < 0 || m < 4) break;
+    const corners = faceCorners(out, face, eps);
+    let exit = null;                                     // { vertex } | { a, b, point }
+    const onSegment = (ia, ib, s) => {                   // a point at fraction s of edge ia→ib, snapping to the ends
+      const A = at(ia), B = at(ib), L = dist(A, B);
+      if (s * L <= eps) return { vertex: ia };
+      if ((1 - s) * L <= eps) return { vertex: ib };
+      return { a: ia, b: ib, point: [A[0] + (B[0] - A[0]) * s, A[1] + (B[1] - A[1]) * s, A[2] + (B[2] - A[2]) * s] };
+    };
+    if (corners.length === 4 && !corners.includes(kin)) {
+      const fwd = (from, to) => { const ks = []; for (let k = from; ; k = (k + 1) % m) { ks.push(k); if (k === to) break; } return ks; };
+      const s = corners.findIndex((ck, i) => fwd(ck, corners[(i + 1) % 4]).includes(kin));
+      const P = corners[s], Q = corners[(s + 1) % 4], R = corners[(s + 2) % 4], S = corners[(s + 3) % 4];
+      const chainLen = (ks) => { let l = 0; for (let i = 0; i + 1 < ks.length; i++) l += dist(at(f[ks[i]]), at(f[ks[i + 1]])); return l; };
+      const cPQ = fwd(P, Q), cSR = fwd(R, S).reverse();          // entry side P→Q, opposite side walked S→R (S across from P)
+      const u = chainLen(cPQ.slice(0, cPQ.indexOf(kin) + 1)) / (chainLen(cPQ) || 1);
+      const target = u * chainLen(cSR); let acc = 0;
+      for (let i = 0; i + 1 < cSR.length; i++) {
+        const L = dist(at(f[cSR[i]]), at(f[cSR[i + 1]]));
+        if (acc + L >= target - eps || i + 2 === cSR.length) { exit = onSegment(f[cSR[i]], f[cSR[i + 1]], L > eps ? Math.max(0, Math.min(1, (target - acc) / L)) : 0); break; }
+        acc += L;
+      }
+    } else {
+      const n = faceNormal(out, face); const { u, v } = _basis(n);
+      const P2 = (i) => _proj(out, i, u, v);
+      const O = P2(vin), prev = P2(f[(kin + m - 1) % m]), next = P2(f[(kin + 1) % m]);
+      let dx = next[0] - prev[0], dy = next[1] - prev[1]; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+      const D = [-dy, dx];                                   // the interior is to the left of the boundary direction
+      let best = null;
+      for (let k = 0; k < m; k++) {
+        if (k === kin || (k + 1) % m === kin) continue;    // the two edges meeting at the entry vertex
+        const A = P2(f[k]), B = P2(f[(k + 1) % m]);
+        const ex = B[0] - A[0], ey = B[1] - A[1];
+        const den = D[0] * ey - D[1] * ex; if (Math.abs(den) < 1e-12) continue;
+        const sx = A[0] - O[0], sy = A[1] - O[1];
+        const sRay = (sx * ey - sy * ex) / den, r = (sx * D[1] - sy * D[0]) / den;
+        if (sRay <= eps || r < -1e-9 || r > 1 + 1e-9) continue;
+        if (!best || sRay < best.sRay) best = { sRay, k, r: Math.max(0, Math.min(1, r)) };
+      }
+      if (best) exit = onSegment(f[best.k], f[(best.k + 1) % m], best.r);
+    }
+    if (!exit) break;
     visited.add(face);
-    cuts.push({ face, e1, e2, a, b, c, d, flipped });
-    if (key(e2[0], e2[1]) === startKey) break;          // the loop closed
-    const next = (facesOfEdge.get(key(e2[0], e2[1])) || []).find(x => x !== face);
+    let vout, next = null;
+    if (exit.vertex != null) {
+      vout = exit.vertex;
+      if (vout === vin) break;
+      cuts.push({ face, vin, vout });
+      if (vout === m0) { closed = true; break; }
+      const others = out.f.map((ff, i) => i).filter(i => i !== face && out.f[i].includes(vout) && !faceCorners(out, i, eps).includes(out.f[i].indexOf(vout)));
+      next = others.length === 1 ? others[0] : null;   // a real corner: the loop ends there
+    } else {
+      vout = addVertex(exit.point);
+      insertOnEdge(exit.a, exit.b, vout);
+      cuts.push({ face, vin, vout });
+      next = out.f.findIndex((ff, i) => i !== face && ff.includes(vout));
+      if (next < 0) next = null;                       // an open boundary
+    }
+    loop.push(vout);
     if (next == null) break;
-    entry = e2; face = next;
+    face = next; vin = vout;
   }
   if (!cuts.length) return null;
-  // one midpoint per cut edge, t measured from the ORIENTED from-vertex (consistent along the strip)
-  const mid = new Map();
-  const midOf = (from, to) => {
-    const kk = key(from, to);
-    if (mid.has(kk)) return mid.get(kk);
-    const n = out.v.length / 3;
-    for (let c = 0; c < 3; c++) out.v.push(out.v[from * 3 + c] + (out.v[to * 3 + c] - out.v[from * 3 + c]) * t);
-    mid.set(kk, n);
-    return n;
-  };
-  const cutKeys = new Set();
-  for (const cu of cuts) { cutKeys.add(key(cu.e1[0], cu.e1[1])); cutKeys.add(key(cu.e2[0], cu.e2[1])); }
-  // split the strip quads: [a,b,c,d] → [a, m1, m2, d] + [m1, b, c, m2]
-  const stripFaces = new Set(cuts.map(cu => cu.face));
-  for (const cu of cuts) {
-    const m1 = midOf(cu.e1[0], cu.e1[1]);
-    const m2 = midOf(cu.e2[0], cu.e2[1]);
-    // m1 sits on (a,b), m2 on (d,c) in the quad's own order
-    out.f[cu.face] = [cu.a, m1, m2, cu.d];
-    out.f.push([m1, cu.b, cu.c, m2]);
+  for (const cu of cuts) {                             // split each cut face along its chord
+    const f = out.f[cu.face], m = f.length, i = f.indexOf(cu.vin), j = f.indexOf(cu.vout);
+    if (i < 0 || j < 0 || i === j || (i + 1) % m === j || (j + 1) % m === i) continue;
+    const one = [], two = [];
+    for (let k = i; ; k = (k + 1) % m) { one.push(f[k]); if (k === j) break; }
+    for (let k = j; ; k = (k + 1) % m) { two.push(f[k]); if (k === i) break; }
+    out.f[cu.face] = one; out.f.push(two);
   }
-  // neighbours touching a cut edge but not in the strip: insert the midpoint between the two vertices
-  for (let i = 0; i < out.f.length; i++) {
-    if (stripFaces.has(i) || i >= p.f.length) continue;
-    const f = out.f[i];
-    for (let k = 0; k < f.length; k++) {
-      const a = f[k], b = f[(k + 1) % f.length];
-      const kk = key(a, b);
-      if (!cutKeys.has(kk) || !mid.has(kk)) continue;
-      f.splice(k + 1, 0, mid.get(kk));
-      k++;
-    }
-  }
-  return { poly: out, newVertexIds: [...mid.values()] };
+  return { poly: out, newVertexIds: loop, closed };
 }
 
 /** True when every edge is shared by exactly two faces in opposite directions (a closed, consistently wound mesh). */

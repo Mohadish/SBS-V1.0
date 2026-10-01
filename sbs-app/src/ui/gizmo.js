@@ -267,7 +267,18 @@ class GizmoController {
    * Restore the pre-drag transform. Used by Esc in numeric input mode.
    */
   revertToDragStart() {
-    if (!this._dragging || !this._obj3d || !this._node) return;
+    if (!this._dragging || !this._obj3d) return;
+    // V0.3.5.12 — targets (cable points, hand controls, poly faces) revert too:
+    // their apply-from-start contract makes "amount 0" the pre-drag pose.
+    if (this._cableTarget) {
+      const t = this._dragEl?.type, T = window.THREE;
+      if (t === 'rotate' && this._cableTarget.applyRotateAroundAxis) this._cableTarget.applyRotateAroundAxis(this._axisVec(this._dragEl.axis), 0);
+      else if (T) this._cableTarget.applyCumulativeDelta(new T.Vector3());
+      this._lastAmount = 0;
+      this._tick();
+      return;
+    }
+    if (!this._node) return;
     if (this._dragEl?.type === 'plane') {
       // Plane: applyNumericAmount(0) is a no-op for planes; we restore
       // the snapshot manually here.
@@ -571,8 +582,10 @@ class GizmoController {
     // V0.3.0.115 — cable POINTS default to WORLD axes (node positioning felt weird
     // in the surface frame). V0.3.0.132 — SOCKETS ('all' mode) default to LOCAL so
     // fine-adjusting the connection point slides along the surface (X/Y) + in/out
-    // (Z). The LOCAL/WORLD toggle (L) still works either way.
-    this._spaceMode = (mode === 'all') ? 'local' : 'world';
+    // (Z). The LOCAL/WORLD toggle (L) still works either way. V0.3.5.12 — a target
+    // may name its own default (target.defaultSpace) and its own cycle
+    // (target.spaces, e.g. the poly editor's face / world / parent).
+    this._spaceMode = target.defaultSpace || ((mode === 'all') ? 'local' : 'world');
     this._applyMode();
     this._tick();
     if (this._spaceLabelEl) this._spaceLabelEl.style.display = '';
@@ -588,6 +601,13 @@ class GizmoController {
 
   hide() {
     if (!this._group) return;
+    // V0.3.5.12 — hidden mid-gesture (a mode change under a target drag): tell the
+    // numeric bridge the drag is over and drop its lock, or every later key
+    // would still be typed into a drag that no longer exists.
+    if (this._dragging) {
+      this._numericLock = false;
+      if (this._onDragEvent && this._dragEl) this._onDragEvent('end', { type: this._dragEl.type, axis: this._dragEl.axis, node: this._node });
+    }
     if (this._hovered) {
       this._setElColor(this._hovered, this._hovered.baseColor);
       this._setElScale(this._hovered, 1.0);
@@ -615,6 +635,9 @@ class GizmoController {
 
   get spaceMode() { return this._spaceMode; }
 
+  /** V0.3.5.12 — the target object the gizmo is showing for (null when hidden or on a tree node). */
+  get activeTarget() { return this._visible ? this._cableTarget : null; }
+
   setMode(mode) {
     this._mode = mode;
     if (this._visible) this._applyMode();
@@ -626,6 +649,7 @@ class GizmoController {
    */
   setSpace(mode) {
     this._spaceMode = mode;
+    if (this._cableTarget?.onSpaceChange) this._cableTarget.onSpaceChange(mode);   // V0.3.5.12 — a target may remember the choice
     if (this._visible) {
       this._tick();
       this._updateSpaceLabel();
@@ -638,17 +662,28 @@ class GizmoController {
    * Toggle between 'local' and 'world' space modes.
    */
   toggleSpace() {
+    // V0.3.5.12 — a target with its own list of spaces cycles through them
+    // (the poly editor: face → world → parent); everything else: local ⇄ world.
+    const list = this._cableTarget?.spaces;
+    if (Array.isArray(list) && list.length) {
+      const i = list.indexOf(this._spaceMode);
+      this.setSpace(list[(i + 1) % list.length]);
+      return;
+    }
     this.setSpace(this._spaceMode === 'local' ? 'world' : 'local');
   }
 
   _updateSpaceLabel() {
     if (!this._spaceLabelEl) return;
     const mode = this._spaceMode;
-    this._spaceLabelEl.textContent = (mode === 'local' ? 'LOCAL'
+    const own = this._cableTarget?.spaceLabel?.(mode);
+    this._spaceLabelEl.textContent = (own || (mode === 'local' ? 'LOCAL'
                                    : mode === 'world' ? 'WORLD'
-                                                       : 'PIVOT') + ' ⇄';
+                                   : mode === 'parent' ? 'PARENT'
+                                                       : 'PIVOT')) + ' ⇄';
     this._spaceLabelEl.style.color = mode === 'local' ? '#60a5fa'
                                    : mode === 'pivot' ? '#fb923c'
+                                   : mode === 'parent' ? '#c084fc'
                                                        : '#94a3b8';
   }
 
@@ -714,7 +749,7 @@ class GizmoController {
         // restores the surface frame.
         const q = this._spaceMode === 'world'
           ? null
-          : (this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null);
+          : (this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat(this._spaceMode) : null);
         if (q) {
           this._group.quaternion.copy(q);
           this._cableStandIn.quaternion.copy(q);
@@ -1190,20 +1225,27 @@ class GizmoController {
     // angular delta around the gizmo axis. The cumulative-from-start
     // pattern keeps everything idempotent across drag frames.
     if (this._cableTarget) {
+      // V0.3.5.12 — the live readout (status bar) fires for targets too, so a
+      // poly-face drag reads "X: +12.50 mm" like a node drag does.
       if (el.type === 'translate') {
         const delta  = curr.clone().sub(this._startWorld);
         const axVec  = this._axisVec(el.axis);
         const amount = delta.dot(axVec);
         const worldD = axVec.clone().multiplyScalar(amount);
         this._cableTarget.applyCumulativeDelta(worldD);
+        this._lastAmount = amount;
+        if (this._onDragEvent) this._onDragEvent('move', { type: 'translate', axis: el.axis, value: amount, node: null, source: 'mouse' });
       } else if (el.type === 'plane') {
         const delta   = curr.clone().sub(this._startWorld);
         const [a, b]  = el.axis.split('');
         const axA     = this._axisVec(a);
         const axB     = this._axisVec(b);
-        const worldD  = axA.clone().multiplyScalar(delta.dot(axA))
-                          .add(axB.clone().multiplyScalar(delta.dot(axB)));
+        const amA = delta.dot(axA), amB = delta.dot(axB);
+        const worldD  = axA.clone().multiplyScalar(amA)
+                          .add(axB.clone().multiplyScalar(amB));
         this._cableTarget.applyCumulativeDelta(worldD);
+        this._lastAmount = { a: amA, b: amB };
+        if (this._onDragEvent) this._onDragEvent('move', { type: 'plane', axis: el.axis, value: { axisA: a, axisB: b, a: amA, b: amB }, node: null, source: 'mouse' });
       } else if (el.type === 'rotate' && this._cableTarget.applyRotateAroundAxis) {
         const center = new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
         const rel = curr.clone().sub(center);
@@ -1212,6 +1254,8 @@ class GizmoController {
         const angle     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
         const worldAxis = this._axisVec(el.axis);
         this._cableTarget.applyRotateAroundAxis(worldAxis, angle);
+        this._lastAmount = rawDelta * 180 / Math.PI;
+        if (this._onDragEvent) this._onDragEvent('move', { type: 'rotate', axis: el.axis, value: rawDelta * 180 / Math.PI, node: null, source: 'mouse' });
       }
       return;
     }
@@ -1492,7 +1536,7 @@ class GizmoController {
     if (this._cableTarget) {
       const T = window.THREE;
       if (this._spaceMode === 'world') return T ? new T.Quaternion() : null;
-      const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat() : null;
+      const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat(this._spaceMode) : null;
       return q || null;
     }
     if (!this._node || !this._obj3d) return this._parentWorldQuat();
