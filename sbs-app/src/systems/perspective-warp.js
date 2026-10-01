@@ -106,7 +106,6 @@ export function outputFrame(H, imgW, imgH, rectW, rectH, { margin = 1, maxDim = 
 
 const VERT = `varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 const FRAG = `
-precision highp float;
 uniform sampler2D uTex; uniform mat3 uHinv; uniform vec2 uOrigin; uniform vec2 uOut; uniform vec2 uSrc; uniform vec4 uFill;
 varying vec2 vUv;
 void main() {
@@ -131,8 +130,14 @@ export function warpImage(img, quad, rectW, rectH, { margin = 1, maxDim = 4096, 
   const imgW = img.naturalWidth || img.width, imgH = img.naturalHeight || img.height;
   const H = homographyFromPoints(quad, [{ x: 0, y: 0 }, { x: rectW, y: 0 }, { x: rectW, y: rectH }, { x: 0, y: rectH }]);
   if (!H) throw new Error('those four corners do not make a usable quadrilateral');
-  const Hinv = invert3(H);
+  let Hinv = invert3(H);
   if (!Hinv) throw new Error('the perspective is degenerate');
+  // V0.3.5.2 — a homography is the same up to a scale, so its inverse can come
+  // out NEGATED (w < 0 everywhere that is valid). The shader's "behind the
+  // horizon" test reads the sign of w, so pin it: w > 0 at the rectangle's
+  // centre. (Every pixel came out as the fill colour — the user's blue screen.)
+  const wc = Hinv[6] * (rectW / 2) + Hinv[7] * (rectH / 2) + Hinv[8];
+  if (wc < 0) Hinv = Hinv.map(v => -v);
   const frame = outputFrame(H, imgW, imgH, rectW, rectH, { margin, maxDim });
 
   const canvas = document.createElement('canvas');
@@ -159,13 +164,20 @@ export function warpImage(img, quad, rectW, rectH, { margin = 1, maxDim = 4096, 
     },
   });
   const scene = new T.Scene();
-  scene.add(new T.Mesh(new T.PlaneGeometry(2, 2), mat));
-  const cam = new T.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const quadMesh = new T.Mesh(new T.PlaneGeometry(2, 2), mat);
+  quadMesh.frustumCulled = false;   // V0.3.5.2 — the plane sits ON the camera's near plane; culled, it drew nothing (the blue screen)
+  scene.add(quadMesh);
+  const cam = new T.OrthographicCamera(-1, 1, 1, -1, -1, 1);
   try {
-    renderer.outputColorSpace = T.NoColorSpace || renderer.outputColorSpace;   // no gamma pass on a copy
+    if (T.LinearSRGBColorSpace) renderer.outputColorSpace = T.LinearSRGBColorSpace;   // no gamma pass on a copy
     renderer.render(scene, cam);
+    // did anything land? the rectangle's centre must be a source pixel
+    const gl = renderer.getContext();
+    const px = new Uint8Array(4);
+    gl.readPixels(Math.round(-frame.x + rectW / 2), Math.round(frame.h - (-frame.y + rectH / 2)), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    if (px[3] === 0) throw new Error('the warp produced no pixels (WebGL) — see the console');
   } finally {
-    try { mat.dispose(); tex.dispose(); scene.children[0].geometry.dispose(); renderer.dispose(); } catch { /* best effort */ }
+    try { mat.dispose(); tex.dispose(); quadMesh.geometry.dispose(); renderer.dispose(); } catch { /* best effort */ }
     try { renderer.forceContextLoss?.(); } catch { /* a context too many is the only cost */ }
   }
   return { canvas, rect: { x: -frame.x, y: -frame.y, w: rectW, h: rectH }, width: frame.w, height: frame.h };
