@@ -2101,7 +2101,7 @@ export function beginSquareUp(node) {
   window.addEventListener('resize', place);
   _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel, loupe, drags };
   redraw();
-  setStatus('Drag the four corners onto the screen or panel (a loupe shows the exact pixel), pick its proportion, then Apply (Enter).', 'info', 7000);
+  setStickyStatus('⌗ Drag a corner onto the screen / panel: move slowly = pixel by pixel under the loupe, sweep fast = across the picture · pick the proportion · Enter applies, Esc cancels', 'info', 'squareUp');
   return true;
 }
 
@@ -2109,6 +2109,7 @@ function _teardownSquareUp() {
   if (!_squareEdit) return;
   const { dots, outline, bar, onKey, place, loupe, drags } = _squareEdit;
   _squareEdit = null;
+  clearStickyStatus('squareUp');
   try { for (const g of (drags || [])) g.stop(); } catch { /* already gone */ }
   try { loupe?.destroy(); } catch { /* already gone */ }
   try { for (const d of dots) d.destroy(); outline.destroy(); } catch { /* already gone */ }
@@ -8541,6 +8542,37 @@ function _setSelection(node, additive = false) {
   _setSelectionNodes(nodes);
 }
 
+/**
+ * ⌨ V0.3.5.7 — the modifier keys, always in view. The user: "a tooltip at the
+ * bottom when an image is selected — Shift keeps proportion, Ctrl moves it
+ * independent of the mask…". A sticky status line (keyed 'overlayKeys'), one
+ * wording per kind of selection; a gesture's own hint stacks on top of it and
+ * this one comes back when the gesture ends (the .58 keyed stack).
+ */
+function _updateKeysHint(nodes) {
+  if (!_editing || !nodes?.length) { clearStickyStatus('overlayKeys'); return; }
+  let text;
+  if (nodes.length > 1) {
+    text = `⌨ ${nodes.length} items · Shift-click adds, Ctrl-click toggles · drag on empty space = rubber band (Shift adds, Alt removes) · Shift while resizing = keep proportion · Alt while dragging = no magnet · arrows nudge (Shift ×10) · PageUp / PageDown = layer order`;
+  } else {
+    const n = nodes[0];
+    const masked = !!(n.getAttr('cropMask') || n.getAttr('cropMaskId'));
+    const isVid = videoOverlay.isVideoNode(n);
+    const isPic = _isPlainImageOrVideo(n) && !isVid;
+    const isPoly = (n.name?.() === 'userShape') && (n.getClassName?.() === 'Line' || n.getClassName?.() === 'Arrow');
+    const isText = !!n.getAttr('textHtml');
+    if (isPoly) {
+      text = '⌨ line: double-click = edit its points (drag a dot: Shift = one axis, Alt = no magnet · double-click the line = new point · a dot = delete) · Shift while dragging = one axis · ↻ knob: Shift = 15° steps, click it and type an angle';
+    } else {
+      const what = isVid ? '🎬 clip' : isPic ? '🖼 picture' : isText ? '🔤 text' : '⌨ item';
+      text = `${what}: Shift while resizing = keep proportion · Shift while dragging = one axis · Alt while dragging = no magnet · ↻ knob: Shift = 15° steps, click it and type an angle · arrows nudge (Shift ×10) · PageUp / PageDown = layer order`;
+      if (masked) text += ' · 🎭 Ctrl while moving / resizing / turning = the mask stays put';
+      else if (isPic || isVid) text += ' · right-click: mask, square up, replace';
+    }
+  }
+  setStickyStatus(text, 'info', 'overlayKeys');
+}
+
 /** Select exactly these nodes — everything a selection change entails, for any set (the rubber-band's). */
 function _setSelectionNodes(nodes) {
   nodes = nodes || [];
@@ -8555,6 +8587,7 @@ function _setSelectionNodes(nodes) {
   // (a pending reposition stays open until Set / Reset / step change).
   _refreshPinBadges();
   if (_pinUI?.mode === 'idle' && !nodes.includes(_pinUI.node)) _pinTeardown();
+  _updateKeysHint(nodes);   // ⌨ V0.3.5.7 — what Shift / Ctrl / Alt do for THIS selection, in the status bar
 
   // Multi-textbox toolbar: when ≥1 text box is selected and we're not
   // already inside the in-place editor, surface the style toolbar in
