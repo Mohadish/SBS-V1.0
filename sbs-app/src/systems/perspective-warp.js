@@ -146,7 +146,14 @@ export function warpImage(img, quad, rectW, rectH, { margin = 1, maxDim = 4096, 
   renderer.setPixelRatio(1);
   renderer.setSize(frame.w, frame.h, false);
   renderer.setClearColor(0x000000, 0);
-  const tex = new T.Texture(img);
+  // V0.3.5.3 — upload through a pixel-exact canvas. three r152 sizes the GPU
+  // texture from image.width/height, which for an <img> is its LAYOUT size:
+  // a picture shown smaller than its pixels failed the upload (GL_INVALID_VALUE)
+  // and the shader sampled nothing — the blue screen, measured in the pane.
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = imgW; srcCanvas.height = imgH;
+  srcCanvas.getContext('2d').drawImage(img, 0, 0, imgW, imgH);
+  const tex = new T.CanvasTexture(srcCanvas);
   tex.flipY = false;                       // row 0 = the top of the picture, like the maths
   tex.minFilter = T.LinearFilter; tex.magFilter = T.LinearFilter;
   tex.wrapS = T.ClampToEdgeWrapping; tex.wrapT = T.ClampToEdgeWrapping;
@@ -163,6 +170,7 @@ export function warpImage(img, quad, rectW, rectH, { margin = 1, maxDim = 4096, 
       uSrc: { value: new T.Vector2(imgW, imgH) }, uFill: { value: new T.Vector4(...fill) },
     },
   });
+  let out2d = null;
   const scene = new T.Scene();
   const quadMesh = new T.Mesh(new T.PlaneGeometry(2, 2), mat);
   quadMesh.frustumCulled = false;   // V0.3.5.2 — the plane sits ON the camera's near plane; culled, it drew nothing (the blue screen)
@@ -176,9 +184,15 @@ export function warpImage(img, quad, rectW, rectH, { margin = 1, maxDim = 4096, 
     const px = new Uint8Array(4);
     gl.readPixels(Math.round(-frame.x + rectW / 2), Math.round(frame.h - (-frame.y + rectH / 2)), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     if (px[3] === 0) throw new Error('the warp produced no pixels (WebGL) — see the console');
+    // V0.3.5.3 — copy the result OUT of the GL canvas before the context is
+    // released below: forceContextLoss wipes the drawing buffer, and the
+    // caller's toDataURL on the GL canvas then returned a blank picture.
+    out2d = document.createElement('canvas');
+    out2d.width = frame.w; out2d.height = frame.h;
+    out2d.getContext('2d').drawImage(canvas, 0, 0);
   } finally {
     try { mat.dispose(); tex.dispose(); quadMesh.geometry.dispose(); renderer.dispose(); } catch { /* best effort */ }
     try { renderer.forceContextLoss?.(); } catch { /* a context too many is the only cost */ }
   }
-  return { canvas, rect: { x: -frame.x, y: -frame.y, w: rectW, h: rectH }, width: frame.w, height: frame.h };
+  return { canvas: out2d, rect: { x: -frame.x, y: -frame.y, w: rectW, h: rectH }, width: frame.w, height: frame.h };
 }
