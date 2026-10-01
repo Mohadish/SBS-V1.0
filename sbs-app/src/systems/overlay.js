@@ -21,6 +21,7 @@ import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fad
 import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.75 — disk-referenced video clips
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
+import { warpImage, rectifiedSize } from './perspective-warp.js';   // ⌗ V0.3.5.1 — Square up (perspective correction)
 import { showContextMenu } from '../ui/context-menu.js';
 import * as clipPool from './clip-pool.js';   // 📋 V0.3.4.90 — copy here, paste in another SBS window
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
@@ -365,6 +366,7 @@ function _rescaleOnCanonicalChange() {
   // resolution change mid-edit would leave it pointing at the old frame
   // while its geometry is read against the new one.
   if (_maskEdit) _cancelMaskEdit();
+  if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.1 — the four corner dots live on the UI layer too
   const c = getCanonicalSize();
   if (!_prevCanonical || !_layer) {
     _prevCanonical = c;
@@ -1789,6 +1791,7 @@ function _maskRotKnobs(rect, onChange) {
 export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {}) {
   if (!_isPlainImageOrVideo(node)) { setStatus('Masks work on plain images and video clips.', 'warn', 4000); return false; }
   if (_maskEdit) _cancelMaskEdit();
+  if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.1 — the four corner dots live on the UI layer too
   _cancelBand();
   const c = getCanonicalSize();
   const def  = defId ? _cropMaskDefById(defId) : null;
@@ -1901,6 +1904,225 @@ function _cancelMaskEdit() {
 
 /** Public: true while the handle rect is up (callers can avoid clashing). */
 export function isMaskEditing() { return !!_maskEdit; }
+
+// ── ⌗ Square up — perspective correction (V0.3.5.1) ─────────────────────────
+// A phone photo of a screen / panel is never square. Four corner dots on the
+// UI layer; Apply warps the WHOLE picture (perspective-warp.js) so the quad
+// becomes a rectangle, then a private crop mask shows just that rectangle —
+// the surroundings stay under it (scale the picture down to see them). One
+// undo entry. The original file's path stays on the node for "Back to the
+// original file".
+let _squareEdit = null;   // { node, dots, outline, bar, onKey, place, aspectSel }
+const SQUARE_ASPECTS = [['auto', 'Auto (from the corners)'], ['1.7778', '16 : 9'], ['1.6', '16 : 10'], ['1.3333', '4 : 3'], ['1.5', '3 : 2'], ['1', '1 : 1']];
+
+export function beginSquareUp(node) {
+  if (!_isPlainImageOrVideo(node) || videoOverlay.isVideoNode(node)) { setStatus('Square up works on plain pictures.', 'warn', 4000); return false; }
+  if (_squareEdit) _cancelSquareUp();
+  if (_maskEdit) _cancelMaskEdit();
+  _cancelBand();
+  // the starting quad: the picture's own box, inset 15 %
+  const b = _shapeBox(node);
+  const ix = b.width * 0.15, iy = b.height * 0.15;
+  const pts = [{ x: b.x + ix, y: b.y + iy }, { x: b.x + b.width - ix, y: b.y + iy }, { x: b.x + b.width - ix, y: b.y + b.height - iy }, { x: b.x + ix, y: b.y + b.height - iy }];
+  const outline = new Konva.Line({ points: pts.flatMap(p => [p.x, p.y]), closed: true, stroke: '#38bdf8', strokeWidth: 2, dash: [8, 5], fill: 'rgba(56,189,248,0.06)', listening: false, strokeScaleEnabled: false });
+  _uiLayer.add(outline);
+  const redraw = () => { _uiLayer?.batchDraw(); _squareEdit?.place?.(); };
+  const dots = pts.map((p) => {
+    const d = new Konva.Circle({ x: p.x, y: p.y, radius: 7, fill: '#fff', stroke: '#38bdf8', strokeWidth: 2, draggable: true, name: 'sbs-square-dot', strokeScaleEnabled: false });
+    d.on('dragmove', () => { outline.points(dots.flatMap(q => [q.x(), q.y()])); redraw(); });
+    d.on('mouseenter', () => { if (_stage) _stage.container().style.cursor = 'move'; });
+    d.on('mouseleave', () => { if (_stage) _stage.container().style.cursor = ''; });
+    _uiLayer.add(d);
+    return d;
+  });
+  _setSelection(null);
+  const { bar, apply, cancel, place } = _maskEditBar('⌗ Square up — drag the four corners onto what should be a rectangle');
+  const aspectSel = document.createElement('select');
+  aspectSel.style.cssText = 'height:24px;font-size:12px;';
+  aspectSel.title = 'The rectangle\'s width : height. A screen has a known one; Auto guesses from the corners.';
+  for (const [v, l] of SQUARE_ASPECTS) { const o = document.createElement('option'); o.value = v; o.textContent = l; aspectSel.appendChild(o); }
+  bar.insertBefore(aspectSel, apply);
+  const hint = bar.querySelector('.small.muted');
+  if (hint) hint.textContent = 'the rest of the picture stays behind a crop mask — scale the picture down under it for context';
+  const onKey = (e) => {
+    if (e.key !== 'Enter' && e.key !== 'Escape') return;
+    const el = document.activeElement, tag = el?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Enter') _commitSquareUp(); else _cancelSquareUp();
+  };
+  apply.addEventListener('click', () => _commitSquareUp());
+  cancel.addEventListener('click', () => _cancelSquareUp());
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', place);
+  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel };
+  redraw();
+  setStatus('Drag the four corners onto the screen or panel, pick its proportion, then Apply (Enter).', 'info', 7000);
+  return true;
+}
+
+function _teardownSquareUp() {
+  if (!_squareEdit) return;
+  const { dots, outline, bar, onKey, place } = _squareEdit;
+  _squareEdit = null;
+  try { for (const d of dots) d.destroy(); outline.destroy(); } catch { /* already gone */ }
+  try { bar.remove(); } catch { /* already gone */ }
+  window.removeEventListener('keydown', onKey, true);
+  window.removeEventListener('resize', place);
+  if (_stage) _stage.container().style.cursor = '';
+  _uiLayer?.batchDraw();
+}
+
+function _cancelSquareUp() {
+  if (!_squareEdit) return;
+  _teardownSquareUp();
+  setStatus('Square up cancelled.', 'info', 2500);
+}
+
+/** Public: true while the four corner dots are up. */
+export function isSquaringUp() { return !!_squareEdit; }
+
+/** A canvas with transparency → JPEG over a neutral dark ground (a JPEG has no alpha). */
+function _flattenToJpeg(canvas) {
+  const c = document.createElement('canvas');
+  c.width = canvas.width; c.height = canvas.height;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#1f2937';
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(canvas, 0, 0);
+  return c.toDataURL('image/jpeg', 0.9);
+}
+
+async function _commitSquareUp() {
+  if (!_squareEdit) return;
+  const { node, dots, aspectSel } = _squareEdit;
+  const aspect = aspectSel.value === 'auto' ? null : Number(aspectSel.value);
+  const layerPts = dots.map(d => ({ x: d.x(), y: d.y() }));
+  _teardownSquareUp();
+  if (!_isLiveNode(node)) { setStatus('That picture is no longer on the canvas.', 'warn', 5000); return; }
+  const img = node.image?.();
+  const natW = Number(node.getAttr('naturalW')) || img?.naturalWidth || img?.width || 0;
+  const natH = Number(node.getAttr('naturalH')) || img?.naturalHeight || img?.height || 0;
+  if (!img || !natW || !natH) { setStatus('The picture has not loaded yet.', 'warn', 4000); return; }
+  // layer → node-local → image pixels (a zoom crop shifts the window)
+  const xf = node.getTransform().copy();
+  const inv = xf.copy().invert();
+  const crop = node.crop?.();
+  const cw = crop?.width ? crop.width : natW, ch = crop?.height ? crop.height : natH;
+  const cx0 = crop?.width ? crop.x : 0, cy0 = crop?.width ? crop.y : 0;
+  const nw = node.width() || 1, nh = node.height() || 1;
+  const local = layerPts.map(p => inv.point(p));
+  const quad = local.map(l => ({ x: cx0 + (l.x / nw) * cw, y: cy0 + (l.y / nh) * ch }));
+  const { w: rectW, h: rectH } = rectifiedSize(quad, aspect);
+  setStatus('Squaring up…', 'info', 0);
+  let out;
+  try { out = warpImage(img, quad, rectW, rectH, { margin: 1, maxDim: 4096 }); }
+  catch (e) { console.warn('[overlay] square up:', e); setStatus(`Square up failed: ${e?.message || e}`, 'warn', 6000); return; }
+  const wasJpeg = /^data:image\/jpe?g/i.test(String(node.getAttr('src') || ''));
+  const dataUrl = wasJpeg ? _flattenToJpeg(out.canvas) : out.canvas.toDataURL('image/png');
+  let newImg;
+  try { newImg = await _loadImage(dataUrl); } catch (e) { setStatus(`Square up failed: ${e?.message || e}`, 'warn', 6000); return; }
+  if (!_isLiveNode(node)) return;
+
+  // the rectified rectangle takes the quad's place on the canvas, at the same scale
+  const kx = nw / cw, ky = nh / ch;                      // layer units per image pixel
+  const quadCentreLocal = { x: local.reduce((s, p) => s + p.x, 0) / 4, y: local.reduce((s, p) => s + p.y, 0) / 4 };
+  const quadCentreLayer = xf.point(quadCentreLocal);
+  const rectCentreLocal = { x: (out.rect.x + rectW / 2) * kx, y: (out.rect.y + rectH / 2) * ky };
+  const rectCentreLayer = xf.point(rectCentreLocal);   // the transform does not depend on width/height
+  const c = getCanonicalSize();
+  const tl = xf.point({ x: out.rect.x * kx, y: out.rect.y * ky });
+  const tr = xf.point({ x: (out.rect.x + rectW) * kx, y: out.rect.y * ky });
+  const bl = xf.point({ x: out.rect.x * kx, y: (out.rect.y + rectH) * ky });
+  const dx = quadCentreLayer.x - rectCentreLayer.x, dy = quadCentreLayer.y - rectCentreLayer.y;
+  const mask = { kind: 'rect', x: (tl.x + dx) / c.width, y: (tl.y + dy) / c.height, w: Math.hypot(tr.x - tl.x, tr.y - tl.y) / c.width, h: Math.hypot(bl.x - tl.x, bl.y - tl.y) / c.height, rot: node.rotation() || 0 };
+
+  const before = {
+    src: node.getAttr('src'), image: img, naturalW: natW, naturalH: natH, crop: crop?.width ? { ...crop } : null,
+    x: node.x(), y: node.y(), width: nw, height: nh,
+    cropMask: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, cropMaskId: node.getAttr('cropMaskId') || null,
+    squaredUp: node.getAttr('squaredUp') || null,
+  };
+  const after = {
+    src: dataUrl, image: newImg, naturalW: out.width, naturalH: out.height, crop: null,
+    x: node.x() + dx, y: node.y() + dy, width: out.width * kx, height: out.height * ky,
+    cropMask: mask, cropMaskId: null,
+    squaredUp: { rect: { ...out.rect }, aspect: aspect || 'auto' },
+  };
+  const write = (s) => {
+    if (!_isLiveNode(node)) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; }
+    node.setAttr('src', s.src);
+    node.setAttr('naturalW', s.naturalW); node.setAttr('naturalH', s.naturalH);
+    if (s.image) node.image(s.image);
+    if (s.crop) node.crop(s.crop); else node.setAttr('crop', undefined);
+    node.position({ x: s.x, y: s.y }); node.width(s.width); node.height(s.height);
+    node.setAttr('cropMask', s.cropMask); node.setAttr('cropMaskId', s.cropMaskId);
+    node.setAttr('squaredUp', s.squaredUp || undefined);
+    _installMaskDraw(node);
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  undoManager.push('Square up picture', () => write(before), () => write(after));
+  setStatus(`Squared up (${rectW} × ${rectH}). Right-click: mask options · Back to the original file · Save to interface library.`, 'success', 8000);
+}
+
+/** The picture as it was on disk (srcPath), undoing every edit on the pixels. */
+async function _revertToOriginalFile(node) {
+  const path = node?.getAttr?.('srcPath');
+  if (!path || !window.sbsNative?.readFile) return;
+  let dataUrl, img;
+  try {
+    const r = await window.sbsNative.readFile(path, 'base64');
+    if (!r?.ok || !r.data) throw new Error(r?.error || 'the file could not be read');
+    const ext = String(path).split('.').pop().toLowerCase();
+    const mime = ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : (ext === 'webp' ? 'webp' : (ext === 'gif' ? 'gif' : 'png'));
+    dataUrl = `data:image/${mime};base64,${r.data}`;
+    img = await _loadImage(dataUrl);
+  } catch (e) {
+    setStatus(`The original file is not there any more (${String(path).split(/[\\/]/).pop()}).`, 'warn', 6000);
+    return;
+  }
+  const before = {
+    src: node.getAttr('src'), image: node.image?.(), naturalW: node.getAttr('naturalW'), naturalH: node.getAttr('naturalH'),
+    cropMask: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, cropMaskId: node.getAttr('cropMaskId') || null,
+    squaredUp: node.getAttr('squaredUp') || null, width: node.width(), height: node.height(),
+  };
+  const k = (node.width() || 1) / (Number(node.getAttr('naturalW')) || img.width);   // keep the on-screen scale
+  const after = { src: dataUrl, image: img, naturalW: img.width, naturalH: img.height, cropMask: null, cropMaskId: null, squaredUp: null, width: img.width * k, height: img.height * k };
+  const write = (s) => {
+    if (!_isLiveNode(node)) return;
+    node.setAttr('src', s.src); node.setAttr('naturalW', s.naturalW); node.setAttr('naturalH', s.naturalH);
+    if (s.image) node.image(s.image);
+    node.setAttr('crop', undefined);
+    node.width(s.width); node.height(s.height);
+    node.setAttr('cropMask', s.cropMask); node.setAttr('cropMaskId', s.cropMaskId); node.setAttr('squaredUp', s.squaredUp || undefined);
+    _installMaskDraw(node);
+    _layer?.batchDraw();
+    _scheduleSave();
+  };
+  write(after);
+  undoManager.push('Back to the original picture', () => write(before), () => write(after));
+  setStatus('Back to the original file.', 'success', 4000);
+}
+
+/** The picture (as it is now) written into the interface library folder, so Add interface… offers it. */
+async function _saveToInterfaceLibrary(node) {
+  const src = String(node?.getAttr?.('src') || '');
+  const m = /^data:image\/(png|jpe?g|webp|gif|bmp);base64,(.+)$/i.exec(src);
+  if (!m) { setStatus('Only a picture can go to the interface library.', 'warn', 4000); return; }
+  const ifc = await import('./interfaces.js');
+  const folder = await ifc.ensureLibraryFolder();
+  if (!folder) { setStatus('No interface library folder chosen.', 'warn', 4000); return; }
+  const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+  const stem = (String(node.getAttr('srcPath') || '').split(/[\\/]/).pop() || '').replace(/\.[^.]+$/, '') || 'panel';
+  let name = `${stem}.${ext}`;
+  for (let n = 2; await window.sbsNative?.fileExists?.(`${folder}/${name}`); n++) name = `${stem}-${n}.${ext}`;
+  const r = await window.sbsNative.writeFile(`${folder}/${name}`, m[2], 'base64');
+  if (!r?.ok) { setStatus(`Could not write to the library: ${r?.error || 'unknown error'}`, 'warn', 6000); return; }
+  setStatus(`Saved to the interface library as ${name} — Add interface… lists it now.`, 'success', 7000);
+}
 
 // ── 👓 Overlay X-ray (V0.3.2.229) ──────────────────────────────────────────
 // An authoring aid: ghost the 2D overlay so the 3D scene underneath is
@@ -4820,6 +5042,14 @@ export async function addImage(src, opts = {}) {
   });
   // Store the data URL so toJSON round-trips (Konva doesn't serialize HTMLImageElement).
   node.setAttr('src', dataUrl);
+  // V0.3.5.1 — where the picture came from, when it came from a file: "Back
+  // to the original file" after a Square up reads it again from disk (the
+  // original pixels are NOT kept inline — every inline copy is heap).
+  if (typeof src !== 'string' && src) {
+    let abs = '';
+    try { abs = (typeof src.path === 'string' && src.path) ? src.path : (window.sbsNative?.pathForFile?.(src) || ''); } catch { abs = ''; }
+    if (abs) node.setAttr('srcPath', abs);
+  } else if (opts.srcPath) node.setAttr('srcPath', opts.srcPath);
   // Native pixel dimensions — used by right-click → Reset to restore the
   // image to its raw size (1:1 with the source file). The fitted w/h above
   // is just the on-create placement, not the "original" the user sees as canonical.
@@ -5982,6 +6212,7 @@ function _serializeNode(node) {
   // Inline payload — only the fields _recreateNode looks at.
   for (const k of [
     'src', 'textHtml', 'textWidth', 'naturalW', 'naturalH', 'fillColor', 'styleId',
+    'srcPath', 'squaredUp',   // ⌗ V0.3.5.1 — the file a picture came from + its square-up record
     'isTable', 'tableData', 'tableWidth', 'tableHeight',   // ▦ V0.3.4.45 (tableData is deep-copied below)
     'constId',   // 📌 V0.3.2.98 — membership in a constant-text-box definition
     // Shape primitives — Konva.Rect / Circle / Ellipse / Path / etc.
@@ -7046,6 +7277,9 @@ function _showOverlayContextMenu(node, x, y) {
   // A plain image had no way back to its own size: same command as a clip's.
   const plainImageItems = (_isPlainImageOrVideo(node) && !videoOverlay.isVideoNode(node))
     ? [{ label: '🖼 Replace picture…', action: () => { _replaceImageSource(node); } },
+       { label: '⌗ Square up (perspective)…', action: () => { beginSquareUp(node); } },   // V0.3.5.1
+       ...(node.getAttr('srcPath') && node.getAttr('squaredUp') ? [{ label: '↶ Back to the original file', action: () => { _revertToOriginalFile(node); } }] : []),
+       { label: '🖥 Save to interface library…', action: () => { _saveToInterfaceLibrary(node); } },
        { label: '↔ Restore proportion (stay put, stay this big)', action: () => { _restoreProportion(node); } },
        { label: Number(node.getAttr('naturalW') || 0) ? '↩ Reset to natural size, centred' : '⊹ Centre in the frame',
          action: () => { _resetNaturalCentred(node); } }, { separator: true }]
@@ -9345,6 +9579,7 @@ async function _loadFromActiveStep() {
   _exitPolyEdit();
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
+  if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.1 — the four corner dots live on the UI layer too
   if (_angleEntry) _endAngleEntry(false);
   // 📌 A pin reposition left hanging: snap home + rewrite the LEAVING step
   // while its nodes still exist (the definition was never touched).
