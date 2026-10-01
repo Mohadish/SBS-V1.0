@@ -1327,6 +1327,14 @@ function _buildContextMenuItems(node) {
   // ── Parametric primitive — copy / paste / paste-instance / delete (V0.2.22.94) ──
   if (node.type === 'primitive') {
     items.push({ separator: true });
+    // ⬚ V0.3.5.9 — editable poly: a box converts; a poly opens the editor / exports
+    if (node.primKind === 'box') {
+      items.push({ label: '⬚ Convert to editable poly', action: () => actions.convertPrimitiveToPoly(node.id) });
+    }
+    if (node.primKind === 'poly') {
+      items.push({ label: '✎ Edit poly…', action: () => import('../systems/poly-edit.js').then(m => m.enterPolyEdit(node.id)) });
+      items.push({ label: '⬇ Export poly as .glb…', action: () => import('../systems/poly-edit.js').then(m => m.exportPolyGlb(node.id)) });
+    }
     // Per-step pose clipboard (V0.3.0.94) — same as flatShape / hardware. Copy
     // captures the ACTIVE step's transform + visibility; paste applies it to
     // the selected steps (≥2) or just the active step. Distinct from the

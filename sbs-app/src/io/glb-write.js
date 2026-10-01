@@ -121,3 +121,55 @@ export function skinnedMeshGlb({ bones, positions, normals, indices, joints, wei
   o += binPad;   // zero already
   return out;
 }
+
+/**
+ * ⬚ V0.3.5.9 — ONE static mesh as a .glb (the editable poly's export): POSITION /
+ * NORMAL, u32 indices, a flat-colour PBR material, `extras` on the asset (the
+ * poly topology rides there so a later build can re-open the file for editing).
+ * Same container code as the skinned writer; no skin, no textures (Phase 3).
+ */
+export function staticMeshGlb({ positions, normals, indices, color = [0.75, 0.79, 0.83], name = 'mesh', extras = null }) {
+  const nV = positions.length / 3;
+  if (normals.length !== positions.length) throw new Error('glb: normals/positions mismatch');
+  const views = [], accessors = [], parts = [];
+  let byteLength = 0;
+  const pushView = (typed, target) => {
+    const pad = (4 - (byteLength % 4)) % 4;
+    if (pad) { parts.push(new Uint8Array(pad)); byteLength += pad; }
+    const bytes = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength);
+    views.push({ buffer: 0, byteOffset: byteLength, byteLength: bytes.byteLength, ...(target ? { target } : {}) });
+    parts.push(bytes); byteLength += bytes.byteLength;
+    return views.length - 1;
+  };
+  const pushAccessor = (viewIdx, componentType, count, type, extra = {}) => { accessors.push({ bufferView: viewIdx, componentType, count, type, ...extra }); return accessors.length - 1; };
+  const pos = positions instanceof Float32Array ? positions : new Float32Array(positions);
+  const nor = normals instanceof Float32Array ? normals : new Float32Array(normals);
+  const idx = new Uint32Array(indices);
+  const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) { const v = pos[i + k]; if (v < min[k]) min[k] = v; if (v > max[k]) max[k] = v; }
+  const accPos = pushAccessor(pushView(pos, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC3', { min, max });
+  const accNor = pushAccessor(pushView(nor, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC3');
+  const accIdx = pushAccessor(pushView(idx, GL_ELEMENT_ARRAY_BUFFER), GL_UNSIGNED_INT, idx.length, 'SCALAR');
+  const json = {
+    asset: { version: '2.0', generator: 'SBS Step Browser', ...(extras ? { extras } : {}) },
+    scene: 0,
+    scenes: [{ name, nodes: [0] }],
+    nodes: [{ name, mesh: 0 }],
+    meshes: [{ name, primitives: [{ attributes: { POSITION: accPos, NORMAL: accNor }, indices: accIdx, material: 0, mode: 4 }] }],
+    materials: [{ name: `${name}_material`, pbrMetallicRoughness: { baseColorFactor: [color[0], color[1], color[2], 1], metallicFactor: 0, roughnessFactor: 0.6 } }],
+    accessors, bufferViews: views, buffers: [{ byteLength }],
+  };
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4, binPad = (4 - (byteLength % 4)) % 4;
+  const total = 12 + 8 + jsonBytes.length + jsonPad + 8 + byteLength + binPad;
+  const out = new ArrayBuffer(total);
+  const dv = new DataView(out), u8 = new Uint8Array(out);
+  let o = 0;
+  dv.setUint32(o, 0x46546C67, true); o += 4; dv.setUint32(o, 2, true); o += 4; dv.setUint32(o, total, true); o += 4;
+  dv.setUint32(o, jsonBytes.length + jsonPad, true); o += 4; dv.setUint32(o, 0x4E4F534A, true); o += 4;
+  u8.set(jsonBytes, o); o += jsonBytes.length;
+  for (let i = 0; i < jsonPad; i++) u8[o++] = 0x20;
+  dv.setUint32(o, byteLength + binPad, true); o += 4; dv.setUint32(o, 0x004E4942, true); o += 4;
+  for (const p of parts) { u8.set(p, o); o += p.byteLength; }
+  return out;
+}

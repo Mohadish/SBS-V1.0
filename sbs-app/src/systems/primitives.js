@@ -12,6 +12,7 @@
  * primitives get smooth vertex normals so they look smooth even at mid quality.
  */
 import { materials } from './materials.js';
+import { isPoly, makeBoxPoly, polyToArrays } from './poly-core.js';   // ⬚ V0.3.5.9 — the editable poly kind
 
 const T = () => window.THREE;
 
@@ -118,6 +119,25 @@ export const PRIMITIVE_DEFS = {
     params: [{ key: 'radius', label: 'Radius', def: 10, min: 0.1, step: 1 }],
     build: (p, q) => new (T().IcosahedronGeometry)(p.radius, [0, 1, 2, 3, 4][Math.max(1, Math.min(5, q || 3)) - 1]),
   },
+  // ⬚ V0.3.5.9 — EDITABLE POLY: a box you model (right-click ▸ Edit poly…). Its
+  // parameters ARE the topology ({ v, f }, poly-core.js), so every primitive
+  // mechanism — per-step persistence, undo, the definition registry, colours,
+  // duplicate, follow — carries the modelled shape for free. No sliders.
+  poly: {
+    label: 'Poly box', icon: '⬚', quality: false,
+    params: [],
+    build: (p) => {
+      const Th = T();
+      const data = isPoly(p) ? p : makeBoxPoly(20, 20, 20, true);
+      const { positions, normals, faceOfTri } = polyToArrays(data);
+      const g = new Th.BufferGeometry();
+      g.setAttribute('position', new Th.BufferAttribute(positions, 3));
+      g.setAttribute('normal', new Th.BufferAttribute(normals, 3));
+      g.userData.faceOfTri = faceOfTri;   // triangle → polygon, for picking in the editor
+      g.userData.isPoly = true;
+      return g;
+    },
+  },
 };
 
 export const PRIMITIVE_KINDS = Object.keys(PRIMITIVE_DEFS);
@@ -164,7 +184,7 @@ export function buildPrimitiveGeometry(kind, params, quality, baseAtOrigin = fal
     const geom = def.build(p, q);
     if (baseAtOrigin) _applyBaseFace(geom, kind, p);   // base-face origin (new primitives)
     geom.computeBoundingBox?.();
-    geom.computeVertexNormals?.();   // smooth shading on curved surfaces
+    if (!geom.userData?.isPoly) geom.computeVertexNormals?.();   // smooth shading on curved surfaces (a poly brings its own flat normals)
     return geom;
   } catch (e) {
     console.warn('[primitive] build failed', kind, e);

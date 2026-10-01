@@ -42,6 +42,7 @@ import {
   defaultPrimitiveParams,
   PRIMITIVE_DEFS,
 } from './primitives.js';     // V0.2.22.90: parametric primitives
+import { makeBoxPoly } from './poly-core.js';   // ⬚ V0.3.5.9 — a box → an editable poly
 import {
   applyAllVisibility,
   captureTransformSnapshot,
@@ -10876,6 +10877,41 @@ function _setPrimParamsRaw(nodeId, params) {
   // ★ V0.3.2.253 — a primitive's size is a DEFINITION: every step that shows
   // it renders differently, not just the one being edited.
   starStepsWhereNodesVisible(targets.map(t => t.id), 'primitive resized');
+}
+
+/**
+ * ⬚ V0.3.5.9 — a box becomes an EDITABLE POLY of the same size (kind 'poly',
+ * params = its topology). One undo entry (kind + params back). Other kinds
+ * are not converted in Phase 1 (their tessellation is not a clean quad mesh).
+ */
+export function convertPrimitiveToPoly(nodeId) {
+  const node = state.get('nodeById')?.get(nodeId);
+  if (!node || node.type !== 'primitive' || node.primKind === 'poly') return false;
+  if (node.primKind !== 'box') { setStatus('Only a box converts to an editable poly in this version.', 'warn', 5000); return false; }
+  const p = node.primParams || {};
+  const poly = makeBoxPoly(Number(p.width) || 20, Number(p.height) || 20, Number(p.depth) || 20, !!node.baseAtOrigin);
+  const before = { kind: node.primKind, params: { ...(node.primParams || {}) } };
+  const after  = { kind: 'poly', params: poly };
+  _setPrimKindParamsRaw(nodeId, after.kind, after.params);
+  state.markDirty();
+  undoManager.push('Convert to editable poly',
+    () => _setPrimKindParamsRaw(nodeId, before.kind, before.params),
+    () => _setPrimKindParamsRaw(nodeId, after.kind, after.params));
+  return true;
+}
+function _setPrimKindParamsRaw(nodeId, kind, params) {
+  const n = state.get('nodeById')?.get(nodeId);
+  if (!n) return;
+  const group = n.primLinkId ? _primitivesInLink(n.primLinkId) : [];
+  for (const t of (group.length ? group : [n])) {
+    t.primKind = kind;
+    t.primParams = JSON.parse(JSON.stringify(params));
+    t._paramsUserEdited = true;
+    notePrimitiveDef(t);
+    rebuildPrimitive(t);
+  }
+  state.emit('change:treeData', state.get('treeData'));
+  starStepsWhereNodesVisible((group.length ? group : [n]).map(t => t.id), 'primitive remodelled');
 }
 
 /** Live-update a primitive's tessellation quality (1-5) + rebuild geometry. */
