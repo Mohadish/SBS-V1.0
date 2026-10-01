@@ -4421,6 +4421,14 @@ canvas.addEventListener('contextmenu', e => {
 
   // ── Parametric primitive (V0.2.22.94) — copy / paste / paste-instance / delete ──
   if (node?.type === 'primitive') {
+    // ⬚ V0.3.5.10 — editable poly (the viewport menu is built here, not in tree.js)
+    if (node.primKind === 'box') {
+      items.push({ label: '⬚ Convert to editable poly', action: () => actions.convertPrimitiveToPoly(node.id) });
+    }
+    if (node.primKind === 'poly') {
+      items.push({ label: '✎ Edit poly…', action: () => import('./systems/poly-edit.js').then(m => m.enterPolyEdit(node.id)) });
+      items.push({ label: '⬇ Export poly as .glb…', action: () => import('./systems/poly-edit.js').then(m => m.exportPolyGlb(node.id)) });
+    }
     // Per-step pose clipboard (V0.3.0.94) — same as flatShape / hardware.
     items.push({
       label: '📋 Copy Transforms',
