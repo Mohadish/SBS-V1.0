@@ -555,6 +555,8 @@ export function setEditingMode(on) {
   if (_tableEditor) _exitTableEdit();  // ▦ same story: its HTML is not a Konva node
   _maskFollow = null; _maskFollowDone();    // 🎭 no gesture survives a mode flip, nor its hint
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
+  if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.8 — the four corner dots live on the UI layer too (this site was missed in .1)
+  clearStickyStatus('overlayKeys');     // ⌨ the keys line belongs to overlay editing
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
   _cancelBand();                            // ⬚ a rubber-band in progress dies with the mode
   _snapEnd();                               // 🧲 …and so do the magnet's guides
