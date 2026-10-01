@@ -1973,15 +1973,18 @@ function _squareLoupe(node) {
     ctx.restore();
     tag.textContent = `×${zoom} · ${Math.round(p.x)}, ${Math.round(p.y)} px`;
   };
-  // V0.3.5.5 — centred ON the pointer (the user: "right on top of the cursor"),
-  // showing the pixels under the DOT, which the precision drag lets fall behind
-  // the mouse. The system cursor is hidden while the loupe is up so the cross is clear.
-  const place = (ev) => {
-    el.style.left = `${Math.round(ev.clientX - SIZE / 2)}px`; el.style.top = `${Math.round(ev.clientY - SIZE / 2)}px`;
+  // V0.3.5.6 — centred ON THE VERTEX (the user: "the cross is always on the
+  // vertex you are moving — the cursor just disappears"): the loupe's centre is
+  // the dot itself, however fast the hidden mouse runs ahead of it.
+  const place = (dot) => {
+    const cr = _stage?.container()?.getBoundingClientRect();
+    if (!cr) return;
+    const a = dot.getAbsolutePosition();         // stage (canvas) pixels
+    el.style.left = `${Math.round(cr.left + a.x - SIZE / 2)}px`; el.style.top = `${Math.round(cr.top + a.y - SIZE / 2)}px`;
   };
   return {
-    show(dot, ev) { el.style.display = 'block'; place(ev); draw(dot); },
-    move(dot, ev) { place(ev); draw(dot); },
+    show(dot) { el.style.display = 'block'; place(dot); draw(dot); },
+    move(dot) { place(dot); draw(dot); },
     hide() { el.style.display = 'none'; },
     zoom() { return zoom; },
     setZoom(z) { zoom = Math.max(2, Number(z) || 10); },
@@ -2015,7 +2018,7 @@ function _squareDotDrag(d, { stageScale, loupe, onMove }) {
     d.x(d.x() + dx / factor / stageScale);
     d.y(d.y() + dy / factor / stageScale);
     onMove(d);
-    loupe.move(d, me);
+    loupe.move(d);
   };
   const up = () => {
     if (!drag) return;
@@ -2034,7 +2037,7 @@ function _squareDotDrag(d, { stageScale, loupe, onMove }) {
     if (e) e.cancelBubble = true;
     drag = { x: ev.clientX, y: ev.clientY, t: performance.now(), v: 0 };
     if (_stage) _stage.container().style.cursor = 'none';
-    loupe.show(d, ev);
+    loupe.show(d);
     window.addEventListener('pointermove',   move, true);
     window.addEventListener('pointerup',     up,   true);
     window.addEventListener('pointercancel', up,   true);
