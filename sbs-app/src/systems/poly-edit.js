@@ -32,6 +32,7 @@
  */
 import { state } from '../core/state.js';
 import { sceneCore } from '../core/scene.js';
+import { matches as keyMatches, keyLabel } from '../core/keymap.js';   // ⬚ V0.3.5.13 — 1 / 4 (rebindable) switch the sub-object level
 import * as actions from './actions.js';
 import { gizmo } from '../ui/gizmo.js';
 import { parseExpression } from '../ui/gizmo-numeric.js';
@@ -51,7 +52,7 @@ const _nodeOf = (id) => state.get('nodeById')?.get(id) || null;
 const _isPolyNode = (node) => !!node && node.type === 'primitive' && node.primKind === 'poly';
 const _polyOf = (node) => (isPoly(node?.primParams) ? clonePoly(node.primParams) : makeBoxPoly(20, 20, 20, node?.baseAtOrigin !== false));
 
-export function enterPolyEdit(nodeId) {
+export function enterPolyEdit(nodeId, mode = 'face') {
   const node = _nodeOf(nodeId);
   if (!_isPolyNode(node)) { setStatus('Edit poly works on a Poly box (right-click a box ▸ Convert to editable poly).', 'warn', 5000); return false; }
   if (_ed) exitPolyEdit();
@@ -64,7 +65,7 @@ export function enterPolyEdit(nodeId) {
   // the mode (and goes on to select whatever it hit).
   state.setState({ selectedId: null, multiSelectedIds: new Set(), polyEditing: nodeId });
   gizmo.hide();
-  _ed = { nodeId, node, mesh, poly: _polyOf(node), faceOfTri: null, mode: 'face', selFaces: new Set(), selVerts: new Set(), hoverFace: -1, hoverVert: -1, helpers: null, drag: null, before: null, gz: null, marq: null, space: 'local', gizmoShift: false, swallowClick: false, previewKey: null, lastXY: null };
+  _ed = { nodeId, node, mesh, poly: _polyOf(node), faceOfTri: null, mode: mode === 'vertex' ? 'vertex' : 'face', selFaces: new Set(), selVerts: new Set(), hoverFace: -1, hoverVert: -1, helpers: null, drag: null, before: null, gz: null, marq: null, space: 'local', gizmoShift: false, swallowClick: false, previewKey: null, lastXY: null };
   _ed.faceOfTri = polyToArrays(_ed.poly).faceOfTri;
   _buildHelpers();
   const dom = sceneCore.renderer.domElement;
@@ -750,9 +751,10 @@ function _onKey(e) {
     if (_ed.marq) { e.preventDefault(); e.stopImmediatePropagation(); _ed.marq = null; hideMarqueeBox(); _syncGizmo(); return; }
     e.preventDefault(); e.stopImmediatePropagation(); exitPolyEdit(); setStatus('Edit poly done.', 'info', 2500); return;
   }
-  if (k === '1' || k === '4') {
+  const toVerts = keyMatches('polyVertices', e), toFaces = keyMatches('polyFaces', e);
+  if ((toVerts || toFaces) && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault(); e.stopImmediatePropagation();
-    _ed.mode = k === '1' ? 'vertex' : 'face';
+    _ed.mode = toVerts ? 'vertex' : 'face';
     _ed.hoverFace = -1; _ed.hoverVert = -1;
     _clearPreview();
     if (gizmo.activeTarget === _target) gizmo.hide();            // the frame changes with the mode
@@ -763,8 +765,8 @@ function _onKey(e) {
 function _hint() {
   if (!_ed) return;
   setStickyStatus(_ed.mode === 'face'
-    ? '⬚ Edit poly · FACES: click selects (Shift / Ctrl adds · drag off the poly = box) · drag or the gizmo moves (Shift + an arrow = extrude · type a number = exact · L = axes face / world / parent) · Shift+drag = extrude (type the distance; out joins, in cuts) · Alt = loop-cut preview, Alt+click cuts · 1 = vertices · Esc = done'
-    : '⬚ Edit poly · VERTICES: drag a dot (Shift / Ctrl adds · drag off the poly = box) · the gizmo moves / rotates the picked ones · 4 = faces · Esc = done',
+    ? `⬚ Edit poly · FACES: click selects (Shift / Ctrl adds · drag off the poly = box) · drag or the gizmo moves (Shift + an arrow = extrude · type a number = exact · L = axes face / world / parent) · Shift+drag = extrude (type the distance; out joins, in cuts) · Alt = loop-cut preview, Alt+click cuts · ${keyLabel('polyVertices')} = vertices · Esc = done`
+    : `⬚ Edit poly · VERTICES: drag a dot (Shift / Ctrl adds · drag off the poly = box) · the gizmo moves / rotates the picked ones · ${keyLabel('polyFaces')} = faces · Esc = done`,
   'info', 'polyEdit');
 }
 

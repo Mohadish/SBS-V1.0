@@ -29,6 +29,8 @@ const DEFAULTS = {
   overlayXray:       'KeyX',   // 👓 ghost the overlay to arrange against the 3D (never rendered)
   overlaySnap:       'KeyM',   // 🧲 the magnet — dragged overlay items stick to each other and to the picture
   fitView:           'KeyF',   // ⛶ frame the selection (or the whole scene) — was a bare `key === 'f'`, dead on a Hebrew keyboard
+  polyVertices:      'Digit1', // ⬚ V0.3.5.13 — a selected editable poly: straight into Edit poly, VERTICES (3ds Max's 1)
+  polyFaces:         'Digit4', // ⬚ … FACES (Max's 4). Digit2 is reserved for EDGES once the mode exists.
 };
 
 let _overrides = {};
