@@ -1973,23 +1973,75 @@ function _squareLoupe(node) {
     ctx.restore();
     tag.textContent = `×${zoom} · ${Math.round(p.x)}, ${Math.round(p.y)} px`;
   };
-  const place = (dot) => {
-    const cr = _stage?.container()?.getBoundingClientRect();
-    if (!cr) return;
-    const a = dot.getAbsolutePosition();         // stage (canvas) pixels
-    const sx = cr.left + a.x, sy = cr.top + a.y;
-    let left = sx + 28, top = sy - SIZE - 28;    // above-right of the pointer
-    if (top < cr.top + 4) top = sy + 28;         // no room above: below
-    if (left + SIZE > cr.right - 4) left = sx - SIZE - 28;   // no room right: left
-    el.style.left = `${Math.round(left)}px`; el.style.top = `${Math.round(top)}px`;
+  // V0.3.5.5 — centred ON the pointer (the user: "right on top of the cursor"),
+  // showing the pixels under the DOT, which the precision drag lets fall behind
+  // the mouse. The system cursor is hidden while the loupe is up so the cross is clear.
+  const place = (ev) => {
+    el.style.left = `${Math.round(ev.clientX - SIZE / 2)}px`; el.style.top = `${Math.round(ev.clientY - SIZE / 2)}px`;
   };
   return {
-    show(dot) { el.style.display = 'block'; place(dot); draw(dot); },
-    move(dot) { place(dot); draw(dot); },
+    show(dot, ev) { el.style.display = 'block'; place(ev); draw(dot); },
+    move(dot, ev) { place(ev); draw(dot); },
     hide() { el.style.display = 'none'; },
+    zoom() { return zoom; },
     setZoom(z) { zoom = Math.max(2, Number(z) || 10); },
     destroy() { try { el.remove(); } catch { /* already gone */ } },
   };
+}
+
+/**
+ * ⌗ V0.3.5.5 — PRECISION DRAG for a corner dot. The dot follows the mouse at a
+ * FRACTION of its movement: a slow hand (hunting for the pixel) is divided by
+ * the loupe's zoom (×10 → ten screen pixels move the dot one), a fast sweep
+ * across the screen is divided by only 2, and the factor glides between the
+ * two on a log scale of the speed — so the dot can still cross the picture in
+ * one stroke, yet settles to pixel resolution the moment the hand slows down.
+ * (The user: "every subtle movement is more than you want… you settle".)
+ */
+function _squareDotDrag(d, { stageScale, loupe, onMove }) {
+  let drag = null;
+  const move = (me) => {
+    if (!drag) return;
+    const now = performance.now();
+    const dt = Math.max(1, now - drag.t);
+    const dx = me.clientX - drag.x, dy = me.clientY - drag.y;
+    drag.x = me.clientX; drag.y = me.clientY; drag.t = now;
+    const speed = Math.hypot(dx, dy) / dt;                 // screen px per ms
+    drag.v = drag.v * 0.6 + speed * 0.4;                   // a little smoothing
+    const slow = loupe.zoom(), fast = 2;
+    const lo = Math.log(0.25), hi = Math.log(3);           // ≤ 0.25 px/ms = hunting, ≥ 3 px/ms = sweeping
+    const t = Math.min(1, Math.max(0, (Math.log(drag.v + 1e-6) - lo) / (hi - lo)));
+    const factor = slow + (fast - slow) * t;
+    d.x(d.x() + dx / factor / stageScale);
+    d.y(d.y() + dy / factor / stageScale);
+    onMove(d);
+    loupe.move(d, me);
+  };
+  const up = () => {
+    if (!drag) return;
+    drag = null;
+    window.removeEventListener('pointermove',   move, true);
+    window.removeEventListener('pointerup',     up,   true);
+    window.removeEventListener('pointercancel', up,   true);
+    loupe.hide();
+    if (_stage) _stage.container().style.cursor = '';
+  };
+  const down = (e) => {
+    if (drag) return;                                      // pointerdown and mousedown both land; first wins
+    const ev = e?.evt || e;
+    if (ev?.button != null && ev.button !== 0) return;
+    if (ev?.preventDefault) { ev.preventDefault(); ev.stopPropagation(); }
+    if (e) e.cancelBubble = true;
+    drag = { x: ev.clientX, y: ev.clientY, t: performance.now(), v: 0 };
+    if (_stage) _stage.container().style.cursor = 'none';
+    loupe.show(d, ev);
+    window.addEventListener('pointermove',   move, true);
+    window.addEventListener('pointerup',     up,   true);
+    window.addEventListener('pointercancel', up,   true);
+  };
+  d.on('pointerdown', down);
+  d.on('mousedown',   down);
+  return { stop: up };
 }
 
 export function beginSquareUp(node) {
@@ -2005,16 +2057,18 @@ export function beginSquareUp(node) {
   _uiLayer.add(outline);
   const redraw = () => { _uiLayer?.batchDraw(); _squareEdit?.place?.(); };
   const loupe = _squareLoupe(node);
+  const drags = [];
   const dots = pts.map((p) => {
-    const d = new Konva.Circle({ x: p.x, y: p.y, radius: 7, fill: '#fff', stroke: '#38bdf8', strokeWidth: 2, draggable: true, name: 'sbs-square-dot', strokeScaleEnabled: false, hitStrokeWidth: 12 });
-    d.on('dragstart', () => loupe.show(d));
-    d.on('dragmove', () => { outline.points(dots.flatMap(q => [q.x(), q.y()])); redraw(); loupe.move(d); });
-    d.on('dragend', () => loupe.hide());
-    d.on('mouseenter', () => { if (_stage) _stage.container().style.cursor = 'move'; });
-    d.on('mouseleave', () => { if (_stage) _stage.container().style.cursor = ''; });
+    // not Konva-draggable: the precision drag below moves it at a fraction of the mouse
+    const d = new Konva.Circle({ x: p.x, y: p.y, radius: 7, fill: '#fff', stroke: '#38bdf8', strokeWidth: 2, draggable: false, name: 'sbs-square-dot', strokeScaleEnabled: false, hitStrokeWidth: 12 });
+    d.on('mouseenter', () => { if (_stage && !_squareEdit?.dragging) _stage.container().style.cursor = 'crosshair'; });
+    d.on('mouseleave', () => { if (_stage && !_squareEdit?.dragging) _stage.container().style.cursor = ''; });
     _uiLayer.add(d);
     return d;
   });
+  for (const d of dots) {
+    drags.push(_squareDotDrag(d, { stageScale: _stage.scaleX() || 1, loupe, onMove: () => { outline.points(dots.flatMap(q => [q.x(), q.y()])); redraw(); } }));
+  }
   _setSelection(null);
   const { bar, apply, cancel, place } = _maskEditBar('⌗ Square up — drag the four corners onto what should be a rectangle');
   const aspectSel = document.createElement('select');
@@ -2042,7 +2096,7 @@ export function beginSquareUp(node) {
   cancel.addEventListener('click', () => _cancelSquareUp());
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', place);
-  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel, loupe };
+  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel, loupe, drags };
   redraw();
   setStatus('Drag the four corners onto the screen or panel (a loupe shows the exact pixel), pick its proportion, then Apply (Enter).', 'info', 7000);
   return true;
@@ -2050,8 +2104,9 @@ export function beginSquareUp(node) {
 
 function _teardownSquareUp() {
   if (!_squareEdit) return;
-  const { dots, outline, bar, onKey, place, loupe } = _squareEdit;
+  const { dots, outline, bar, onKey, place, loupe, drags } = _squareEdit;
   _squareEdit = null;
+  try { for (const g of (drags || [])) g.stop(); } catch { /* already gone */ }
   try { loupe?.destroy(); } catch { /* already gone */ }
   try { for (const d of dots) d.destroy(); outline.destroy(); } catch { /* already gone */ }
   try { bar.remove(); } catch { /* already gone */ }
@@ -2104,7 +2159,7 @@ async function _commitSquareUp() {
   const { w: rectW, h: rectH } = rectifiedSize(quad, aspect);
   setStatus('Squaring up…', 'info', 0);
   let out;
-  try { out = warpImage(img, quad, rectW, rectH, { margin: 1, maxDim: 4096 }); }
+  try { out = warpImage(img, quad, rectW, rectH, { margin: 0.1, maxDim: 4096 }); }   // V0.3.5.5 — a 10 % ribbon of surroundings, the user's call
   catch (e) { console.warn('[overlay] square up:', e); setStatus(`Square up failed: ${e?.message || e}`, 'warn', 6000); return; }
   const wasJpeg = /^data:image\/jpe?g/i.test(String(node.getAttr('src') || ''));
   const dataUrl = wasJpeg ? _flattenToJpeg(out.canvas) : out.canvas.toDataURL('image/png');
