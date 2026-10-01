@@ -1912,8 +1912,85 @@ export function isMaskEditing() { return !!_maskEdit; }
 // the surroundings stay under it (scale the picture down to see them). One
 // undo entry. The original file's path stays on the node for "Back to the
 // original file".
-let _squareEdit = null;   // { node, dots, outline, bar, onKey, place, aspectSel }
+let _squareEdit = null;   // { node, dots, outline, bar, onKey, place, aspectSel, loupe }
 const SQUARE_ASPECTS = [['auto', 'Auto (from the corners)'], ['1.7778', '16 : 9'], ['1.6', '16 : 10'], ['1.3333', '4 : 3'], ['1.5', '3 : 2'], ['1', '1 : 1']];
+const SQUARE_LOUPE_ZOOMS = [6, 10, 15];
+
+/** Dot (layer coords) → the picture's own pixel, the same mapping the commit uses (a zoom crop shifts the window). */
+function _squareImagePx(node, layerPt) {
+  const img = node.image?.();
+  const natW = Number(node.getAttr('naturalW')) || img?.naturalWidth || img?.width || 0;
+  const natH = Number(node.getAttr('naturalH')) || img?.naturalHeight || img?.height || 0;
+  if (!img || !natW || !natH) return null;
+  const crop = node.crop?.();
+  const cw = crop?.width ? crop.width : natW, ch = crop?.height ? crop.height : natH;
+  const cx0 = crop?.width ? crop.x : 0, cy0 = crop?.width ? crop.y : 0;
+  const l = node.getTransform().copy().invert().point(layerPt);
+  return { img, x: cx0 + (l.x / (node.width() || 1)) * cw, y: cy0 + (l.y / (node.height() || 1)) * ch, natW, natH };
+}
+
+/**
+ * ⌗ V0.3.5.4 — the LOUPE: while a corner dot is dragged, a round ×10 (×6 /
+ * ×15) view of the picture's own pixels under the dot, with a hairline cross,
+ * parked beside the pointer so the hand never covers it — the scanner-app
+ * gesture (the user: "to see exactly where you put your dot"). Pixels are drawn
+ * unsmoothed on purpose: the edge you are aiming at shows as a hard step.
+ */
+function _squareLoupe(node) {
+  const SIZE = 180;
+  const el = document.createElement('div');
+  el.style.cssText = `position:fixed;z-index:10000;width:${SIZE}px;height:${SIZE}px;border-radius:50%;overflow:hidden;`
+    + 'border:2px solid #38bdf8;box-shadow:0 10px 30px rgba(0,0,0,.6),0 0 0 3px rgba(15,23,42,.9);background:#000;pointer-events:none;display:none;';
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE; canvas.height = SIZE;
+  el.appendChild(canvas);
+  const tag = document.createElement('div');
+  tag.style.cssText = 'position:absolute;left:0;right:0;bottom:8px;text-align:center;font:600 11px system-ui,sans-serif;color:#38bdf8;text-shadow:0 1px 2px #000;';
+  el.appendChild(tag);
+  document.body.appendChild(el);
+  const ctx = canvas.getContext('2d');
+  let zoom = 10;
+  const draw = (dot) => {
+    const p = _squareImagePx(node, { x: dot.x(), y: dot.y() });
+    if (!p) return;
+    const win = SIZE / zoom;                       // source pixels across the loupe
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(SIZE / 2, SIZE / 2, SIZE / 2, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = '#111'; ctx.fillRect(0, 0, SIZE, SIZE);
+    ctx.imageSmoothingEnabled = false;
+    try { ctx.drawImage(p.img, p.x - win / 2, p.y - win / 2, win, win, 0, 0, SIZE, SIZE); } catch { /* a source outside the picture: the dark ground stays */ }
+    // the hairline cross, with a gap at the centre and a dark halo so it reads on any picture
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.6)';
+    for (const w of [3, 1]) {
+      ctx.lineWidth = w; ctx.strokeStyle = w === 3 ? 'rgba(0,0,0,.6)' : '#38bdf8';
+      ctx.beginPath();
+      ctx.moveTo(SIZE / 2, 0); ctx.lineTo(SIZE / 2, SIZE / 2 - 6); ctx.moveTo(SIZE / 2, SIZE / 2 + 6); ctx.lineTo(SIZE / 2, SIZE);
+      ctx.moveTo(0, SIZE / 2); ctx.lineTo(SIZE / 2 - 6, SIZE / 2); ctx.moveTo(SIZE / 2 + 6, SIZE / 2); ctx.lineTo(SIZE, SIZE / 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#38bdf8'; ctx.fillRect(SIZE / 2 - 1, SIZE / 2 - 1, 2, 2);
+    ctx.restore();
+    tag.textContent = `×${zoom} · ${Math.round(p.x)}, ${Math.round(p.y)} px`;
+  };
+  const place = (dot) => {
+    const cr = _stage?.container()?.getBoundingClientRect();
+    if (!cr) return;
+    const a = dot.getAbsolutePosition();         // stage (canvas) pixels
+    const sx = cr.left + a.x, sy = cr.top + a.y;
+    let left = sx + 28, top = sy - SIZE - 28;    // above-right of the pointer
+    if (top < cr.top + 4) top = sy + 28;         // no room above: below
+    if (left + SIZE > cr.right - 4) left = sx - SIZE - 28;   // no room right: left
+    el.style.left = `${Math.round(left)}px`; el.style.top = `${Math.round(top)}px`;
+  };
+  return {
+    show(dot) { el.style.display = 'block'; place(dot); draw(dot); },
+    move(dot) { place(dot); draw(dot); },
+    hide() { el.style.display = 'none'; },
+    setZoom(z) { zoom = Math.max(2, Number(z) || 10); },
+    destroy() { try { el.remove(); } catch { /* already gone */ } },
+  };
+}
 
 export function beginSquareUp(node) {
   if (!_isPlainImageOrVideo(node) || videoOverlay.isVideoNode(node)) { setStatus('Square up works on plain pictures.', 'warn', 4000); return false; }
@@ -1927,9 +2004,12 @@ export function beginSquareUp(node) {
   const outline = new Konva.Line({ points: pts.flatMap(p => [p.x, p.y]), closed: true, stroke: '#38bdf8', strokeWidth: 2, dash: [8, 5], fill: 'rgba(56,189,248,0.06)', listening: false, strokeScaleEnabled: false });
   _uiLayer.add(outline);
   const redraw = () => { _uiLayer?.batchDraw(); _squareEdit?.place?.(); };
+  const loupe = _squareLoupe(node);
   const dots = pts.map((p) => {
-    const d = new Konva.Circle({ x: p.x, y: p.y, radius: 7, fill: '#fff', stroke: '#38bdf8', strokeWidth: 2, draggable: true, name: 'sbs-square-dot', strokeScaleEnabled: false });
-    d.on('dragmove', () => { outline.points(dots.flatMap(q => [q.x(), q.y()])); redraw(); });
+    const d = new Konva.Circle({ x: p.x, y: p.y, radius: 7, fill: '#fff', stroke: '#38bdf8', strokeWidth: 2, draggable: true, name: 'sbs-square-dot', strokeScaleEnabled: false, hitStrokeWidth: 12 });
+    d.on('dragstart', () => loupe.show(d));
+    d.on('dragmove', () => { outline.points(dots.flatMap(q => [q.x(), q.y()])); redraw(); loupe.move(d); });
+    d.on('dragend', () => loupe.hide());
     d.on('mouseenter', () => { if (_stage) _stage.container().style.cursor = 'move'; });
     d.on('mouseleave', () => { if (_stage) _stage.container().style.cursor = ''; });
     _uiLayer.add(d);
@@ -1942,8 +2022,14 @@ export function beginSquareUp(node) {
   aspectSel.title = 'The rectangle\'s width : height. A screen has a known one; Auto guesses from the corners.';
   for (const [v, l] of SQUARE_ASPECTS) { const o = document.createElement('option'); o.value = v; o.textContent = l; aspectSel.appendChild(o); }
   bar.insertBefore(aspectSel, apply);
+  const zoomSel = document.createElement('select');
+  zoomSel.style.cssText = 'height:24px;font-size:12px;';
+  zoomSel.title = 'The loupe that opens while you drag a corner: how much it magnifies the picture\'s own pixels.';
+  for (const z of SQUARE_LOUPE_ZOOMS) { const o = document.createElement('option'); o.value = String(z); o.textContent = `🔍 ×${z}`; if (z === 10) o.selected = true; zoomSel.appendChild(o); }
+  zoomSel.addEventListener('change', () => loupe.setZoom(zoomSel.value));
+  bar.insertBefore(zoomSel, apply);
   const hint = bar.querySelector('.small.muted');
-  if (hint) hint.textContent = 'the rest of the picture stays behind a crop mask — scale the picture down under it for context';
+  if (hint) hint.textContent = 'drag a corner — a loupe shows the exact pixel · the rest of the picture stays behind a crop mask';
   const onKey = (e) => {
     if (e.key !== 'Enter' && e.key !== 'Escape') return;
     const el = document.activeElement, tag = el?.tagName;
@@ -1956,16 +2042,17 @@ export function beginSquareUp(node) {
   cancel.addEventListener('click', () => _cancelSquareUp());
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', place);
-  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel };
+  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel, loupe };
   redraw();
-  setStatus('Drag the four corners onto the screen or panel, pick its proportion, then Apply (Enter).', 'info', 7000);
+  setStatus('Drag the four corners onto the screen or panel (a loupe shows the exact pixel), pick its proportion, then Apply (Enter).', 'info', 7000);
   return true;
 }
 
 function _teardownSquareUp() {
   if (!_squareEdit) return;
-  const { dots, outline, bar, onKey, place } = _squareEdit;
+  const { dots, outline, bar, onKey, place, loupe } = _squareEdit;
   _squareEdit = null;
+  try { loupe?.destroy(); } catch { /* already gone */ }
   try { for (const d of dots) d.destroy(); outline.destroy(); } catch { /* already gone */ }
   try { bar.remove(); } catch { /* already gone */ }
   window.removeEventListener('keydown', onKey, true);
