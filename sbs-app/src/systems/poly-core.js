@@ -301,7 +301,9 @@ export function trianglesToPoly(positions, opts = {}) {
     if (l < extent * extent * 1e-12) continue;                                   // a sliver
     nx /= l; ny /= l; nz /= l;
     tris.push([a, b, c]);
-    planes.push([nx, ny, nz, nx * v[a * 3] + ny * v[a * 3 + 1] + nz * v[a * 3 + 2]]);
+    // the plane offset is measured from the box corner, not the origin: float noise in the normal
+    // times a 500 mm distance used to exceed the tolerance and leave flat faces as triangle fans
+    planes.push([nx, ny, nz, nx * (v[a * 3] - mn[0]) + ny * (v[a * 3 + 1] - mn[1]) + nz * (v[a * 3 + 2] - mn[2])]);
     groups.push(groupOf ? groupOf[t] : 0);
   }
   // 2. coplanar groups across shared edges (union-find)
@@ -320,9 +322,25 @@ export function trianglesToPoly(positions, opts = {}) {
   // 3. merge inside each set
   let f = [];
   for (const g of sets.values()) f.push(..._mergeCoplanar(g));
-  // 4. heal T-junctions: a vertex lying on a face's edge (not its endpoint) joins that edge
+  // 4. heal T-junctions: a vertex lying on a face's edge (not its endpoint) joins that edge.
+  // V0.3.5.14 — candidates come from a grid of cells (~1 vertex each), so a 50k-triangle
+  // CAD part converts in seconds, not minutes; an edge spanning too many cells scans all.
   const nV = v.length / 3;
-  f = f.map(face => {
+  const cs = Math.max(extent / Math.max(4, Math.ceil(Math.cbrt(nV))), onEps * 4);
+  const cellOf = (x, c) => Math.floor((x - mn[c]) / cs);
+  const grid = new Map();
+  if (opts.heal !== false) for (let i = 0; i < nV; i++) {
+    const key = `${cellOf(v[i * 3], 0)},${cellOf(v[i * 3 + 1], 1)},${cellOf(v[i * 3 + 2], 2)}`;
+    let arr = grid.get(key); if (!arr) grid.set(key, arr = []); arr.push(i);
+  }
+  const candidates = (lo, hi) => {
+    const a0 = cellOf(lo[0], 0), a1 = cellOf(lo[1], 1), a2 = cellOf(lo[2], 2), b0 = cellOf(hi[0], 0), b1 = cellOf(hi[1], 1), b2 = cellOf(hi[2], 2);
+    if ((b0 - a0 + 1) * (b1 - a1 + 1) * (b2 - a2 + 1) > 4096) return null;
+    const out = [];
+    for (let x = a0; x <= b0; x++) for (let y = a1; y <= b1; y++) for (let z = a2; z <= b2; z++) { const arr = grid.get(`${x},${y},${z}`); if (arr) for (const i of arr) out.push(i); }
+    return out;
+  };
+  if (opts.heal !== false) f = f.map(face => {
     const out = [];
     for (let k = 0; k < face.length; k++) {
       const a = face[k], b = face[(k + 1) % face.length];
@@ -334,7 +352,9 @@ export function trianglesToPoly(positions, opts = {}) {
       const lo = [Math.min(ax, v[b * 3]) - onEps, Math.min(ay, v[b * 3 + 1]) - onEps, Math.min(az, v[b * 3 + 2]) - onEps];
       const hi = [Math.max(ax, v[b * 3]) + onEps, Math.max(ay, v[b * 3 + 1]) + onEps, Math.max(az, v[b * 3 + 2]) + onEps];
       const on = [];
-      for (let i = 0; i < nV; i++) {
+      const cand = candidates(lo, hi), nC = cand ? cand.length : nV;
+      for (let q2 = 0; q2 < nC; q2++) {
+        const i = cand ? cand[q2] : q2;
         if (i === a || i === b) continue;
         const x = v[i * 3], y = v[i * 3 + 1], z = v[i * 3 + 2];
         if (x < lo[0] || x > hi[0] || y < lo[1] || y > hi[1] || z < lo[2] || z > hi[2]) continue;
@@ -343,7 +363,7 @@ export function trianglesToPoly(positions, opts = {}) {
         const px = ax + dx * t - x, py = ay + dy * t - y, pz = az + dz * t - z;
         if (px * px + py * py + pz * pz <= onEps * onEps && !face.includes(i)) on.push({ i, t });
       }
-      on.sort((p, q2) => p.t - q2.t);
+      on.sort((p, q3) => p.t - q3.t);
       for (const o of on) out.push(o.i);
     }
     return out;

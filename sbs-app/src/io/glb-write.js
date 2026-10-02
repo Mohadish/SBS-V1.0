@@ -123,6 +123,92 @@ export function skinnedMeshGlb({ bones, positions, normals, indices, joints, wei
 }
 
 /**
+ * ⬚ V0.3.5.14 — a whole TREE as a .glb (the Poly Editor's "Apply"): folders are
+ * empty nodes, parts are mesh nodes, each with its own translation / rotation /
+ * scale, name and `extras` (the poly topology rides on the mesh node so the file
+ * re-opens for editing losslessly). One flat-colour material per distinct colour.
+ *
+ * @param {object} o
+ * @param {Array} o.roots   tree items: { name, position?:[x,y,z], quaternion?:[x,y,z,w], scale?:[x,y,z], extras?, children?:[…],
+ *                           mesh?: { positions:Float32Array, normals:Float32Array, indices:Uint32Array|number[], color?:[r,g,b] } }
+ * @param {string} [o.name]
+ * @param {object} [o.extras]  asset.extras
+ * @returns {ArrayBuffer}
+ */
+export function sceneGlb({ roots, name = 'scene', extras = null }) {
+  const views = [], accessors = [], parts = [], nodes = [], meshes = [], materials = [];
+  const matByColor = new Map();
+  let byteLength = 0;
+  const pushView = (typed, target) => {
+    const pad = (4 - (byteLength % 4)) % 4;
+    if (pad) { parts.push(new Uint8Array(pad)); byteLength += pad; }
+    const bytes = new Uint8Array(typed.buffer, typed.byteOffset, typed.byteLength);
+    views.push({ buffer: 0, byteOffset: byteLength, byteLength: bytes.byteLength, ...(target ? { target } : {}) });
+    parts.push(bytes); byteLength += bytes.byteLength;
+    return views.length - 1;
+  };
+  const pushAccessor = (viewIdx, componentType, count, type, extra = {}) => { accessors.push({ bufferView: viewIdx, componentType, count, type, ...extra }); return accessors.length - 1; };
+  const materialFor = (color) => {
+    const c = (color || [0.75, 0.79, 0.83]).map(x => Math.round(Number(x) * 1000) / 1000);
+    const key = c.join(',');
+    if (matByColor.has(key)) return matByColor.get(key);
+    materials.push({ name: `material_${materials.length}`, pbrMetallicRoughness: { baseColorFactor: [c[0], c[1], c[2], 1], metallicFactor: 0, roughnessFactor: 0.6 } });
+    matByColor.set(key, materials.length - 1);
+    return materials.length - 1;
+  };
+  const addMesh = (m, label) => {
+    const pos = m.positions instanceof Float32Array ? m.positions : new Float32Array(m.positions);
+    const nor = m.normals instanceof Float32Array ? m.normals : new Float32Array(m.normals);
+    if (nor.length !== pos.length) throw new Error(`glb: normals/positions mismatch on ${label}`);
+    const idx = new Uint32Array(m.indices);
+    const nV = pos.length / 3;
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < pos.length; i += 3) for (let k = 0; k < 3; k++) { const v = pos[i + k]; if (v < min[k]) min[k] = v; if (v > max[k]) max[k] = v; }
+    const accPos = pushAccessor(pushView(pos, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC3', { min, max });
+    const accNor = pushAccessor(pushView(nor, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC3');
+    const accIdx = pushAccessor(pushView(idx, GL_ELEMENT_ARRAY_BUFFER), GL_UNSIGNED_INT, idx.length, 'SCALAR');
+    meshes.push({ name: label, primitives: [{ attributes: { POSITION: accPos, NORMAL: accNor }, indices: accIdx, material: materialFor(m.color), mode: 4 }] });
+    return meshes.length - 1;
+  };
+  const addNode = (item) => {
+    const n = { name: String(item.name || 'node') };
+    if (item.position && item.position.some(v => v !== 0)) n.translation = item.position.map(Number);
+    if (item.quaternion && (item.quaternion[3] !== 1 || item.quaternion.slice(0, 3).some(v => v !== 0))) n.rotation = item.quaternion.map(Number);
+    if (item.scale && item.scale.some(v => v !== 1)) n.scale = item.scale.map(Number);
+    if (item.extras) n.extras = item.extras;
+    if (item.mesh && item.mesh.positions?.length) n.mesh = addMesh(item.mesh, n.name);
+    const self = nodes.push(n) - 1;
+    const kids = (item.children || []).map(addNode);
+    if (kids.length) n.children = kids;
+    return self;
+  };
+  const rootIdx = (roots || []).map(addNode);
+  const json = {
+    asset: { version: '2.0', generator: 'SBS Step Browser', ...(extras ? { extras } : {}) },
+    scene: 0,
+    scenes: [{ name, nodes: rootIdx }],
+    nodes, meshes, materials, accessors, bufferViews: views, buffers: [{ byteLength }],
+  };
+  if (!meshes.length) { delete json.meshes; delete json.materials; delete json.accessors; delete json.bufferViews; }
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4, binPad = (4 - (byteLength % 4)) % 4;
+  const hasBin = byteLength > 0;
+  const total = 12 + 8 + jsonBytes.length + jsonPad + (hasBin ? 8 + byteLength + binPad : 0);
+  const out = new ArrayBuffer(total);
+  const dv = new DataView(out), u8 = new Uint8Array(out);
+  let o = 0;
+  dv.setUint32(o, 0x46546C67, true); o += 4; dv.setUint32(o, 2, true); o += 4; dv.setUint32(o, total, true); o += 4;
+  dv.setUint32(o, jsonBytes.length + jsonPad, true); o += 4; dv.setUint32(o, 0x4E4F534A, true); o += 4;
+  u8.set(jsonBytes, o); o += jsonBytes.length;
+  for (let i = 0; i < jsonPad; i++) u8[o++] = 0x20;
+  if (hasBin) {
+    dv.setUint32(o, byteLength + binPad, true); o += 4; dv.setUint32(o, 0x004E4942, true); o += 4;
+    for (const p of parts) { u8.set(p, o); o += p.byteLength; }
+  }
+  return out;
+}
+
+/**
  * ⬚ V0.3.5.9 — ONE static mesh as a .glb (the editable poly's export): POSITION /
  * NORMAL, u32 indices, a flat-colour PBR material, `extras` on the asset (the
  * poly topology rides there so a later build can re-open the file for editing).

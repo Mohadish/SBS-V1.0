@@ -1575,6 +1575,8 @@ function _buildContextMenuItems(node) {
   if (node.type !== 'scene') {
     const anyNotArchived = targetIds.some(id => nodeById?.get(id)?.archived !== true);
     const anyArchived    = targetIds.some(id => nodeById?.get(id)?.archived === true);
+    // ⬚ V0.3.5.14 — the selection goes to the Poly Editor (every object becomes an editable poly there).
+    if (anyNotArchived && node.type !== 'note') items.push({ label: targetIds.length > 1 ? `⬚ Edit ${targetIds.length} objects in Poly Editor…` : '⬚ Edit in Poly Editor…', action: () => import('../systems/poly-session.js').then(m => m.startPolySession(targetIds)) });
     if (anyNotArchived || anyArchived) items.push({ separator: true });
     if (anyNotArchived) {
       items.push({

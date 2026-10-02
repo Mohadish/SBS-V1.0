@@ -1714,7 +1714,18 @@ async function loadGltfFile(file, assetEntry = null) {
         // mesh sits as a direct child of the model root. Stabilises the
         // model against the "yank a leaf, everything explodes" failure
         // mode that nested GLBs trigger today. See helper comment.
-        bakeAndFlattenImport(innerRoot, obj3dMap);
+        // ⬚ V0.3.5.14 — EXCEPT a .glb written by the Poly Editor: its tree IS the
+        // design (the user arranged the folders to say which objects are
+        // separate), every node is identity and the vertices are already in
+        // model space — so the folders stay folders.
+        const polyEditorAsset = !!(gltf.userData?.sbsPolyEditor || gltf.asset?.extras?.sbsPolyEditor || gltf.parser?.json?.asset?.extras?.sbsPolyEditor);
+        if (polyEditorAsset) {
+          // GLTFLoader rewrites node names for its animation bindings ('Box 1' → 'Box_1', a
+          // duplicate → '_1') and keeps the original in userData.name: the tree shows what was designed.
+          (function names(n) { const o = n.object3d; if (o && typeof o.userData?.name === 'string' && o.userData.name) n.name = o.userData.name; (n.children || []).forEach(names); })(innerRoot);
+          const sceneName = gltf.parser?.json?.scenes?.[gltf.parser?.json?.scene ?? 0]?.name;
+          if (sceneName) innerRoot.name = sceneName;
+        } else bakeAndFlattenImport(innerRoot, obj3dMap);
 
         // globalDedup:false — GLTF/GLB presets deduplicate only within this
         // model load, not globally.  Two unrelated GLBs that both happen to

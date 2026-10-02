@@ -2008,7 +2008,8 @@ function _syncGizmoToSelection() {
   if (state.get('shapeDrawing')) { gizmo.hide(); return; }
   // ⬚ V0.3.5.12 — the editable-poly mode owns the gizmo (it shows it at the
   // selected faces / vertices through a target); selection is empty meanwhile.
-  if (state.get('polyEditing')) return;
+  // V0.3.5.14 — so does the Poly Editor session (its parts are not tree nodes).
+  if (state.get('polyEditing') || state.get('polySession')) return;
   // E2: socket selection takes the highest precedence — the actions
   // make the three selection states mutually exclusive, but order
   // here defensively in case a future caller sets two at once.
@@ -4758,6 +4759,8 @@ canvas.addEventListener('contextmenu', e => {
         action: () => showAddToReplaceDialog(node.id),
       });
     }
+    // ⬚ V0.3.5.14 — the selection goes to the Poly Editor (every object becomes an editable poly there).
+    items.push({ label: multiIds.size > 1 ? `⬚ Edit ${multiIds.size} objects in Poly Editor…` : '⬚ Edit in Poly Editor…', action: () => import('./systems/poly-session.js').then(m => m.startPolySession([...multiIds])) });
     // ── Archive / Unarchive ─────────────────────────────────────────────
     // Mirrors the tree r-click menu. Toggle is here so the user can lock
     // a node out of the scene without ever opening the tree. Scene root
@@ -5749,6 +5752,7 @@ window.addEventListener('keydown', async e => {
 
 /** A full-window workspace (📄 Document) is covering the animation UI. */
 function _takeoverOpen() {
+  if (state.get('polySession')) return true;   // ⬚ V0.3.5.14 — the Poly Editor has its own keys
   const dw = document.getElementById('document-workspace');
   return !!dw && dw.style.display !== 'none';
 }
@@ -5901,9 +5905,11 @@ function _updateTitle() {
   document.title = `${dirty ? '● ' : ''}${name} — SBS Step Browser`;
   // 🚪 V0.3.2.216 — main process mirrors this flag so closing the window
   // (X, Alt+F4, Quit) can stop and ask instead of discarding the session.
-  try { window.sbsNative?.setDirty?.(!!dirty); } catch { /* no bridge pre-restart */ }
+  // ⬚ V0.3.5.14 — … and un-applied Poly Editor work counts (it lives outside the project until Apply).
+  try { window.sbsNative?.setDirty?.(!!dirty || !!state.get('polySessionDirty')); } catch { /* no bridge pre-restart */ }
 }
 state.on('change:projectDirty', _updateTitle);
+state.on('change:polySessionDirty', _updateTitle);
 state.on('change:projectName',  _updateTitle);
 _updateTitle();
 

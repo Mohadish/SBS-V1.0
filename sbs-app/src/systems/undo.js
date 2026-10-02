@@ -116,6 +116,15 @@ class UndoManager {
   undoScope() { return this._undo.at(-1)?.scope ?? null; }
   redoScope() { return this._redo.at(-1)?.scope ?? null; }
 
+  /** ⬚ V0.3.5.14 — a takeover that ended takes its own entries with it (the Poly Editor session). */
+  dropScope(scope) {
+    if (!scope) return;
+    const u = this._undo.length, r = this._redo.length;
+    this._undo = this._undo.filter(c => c.scope !== scope);
+    this._redo = this._redo.filter(c => c.scope !== scope);
+    if (this._undo.length !== u || this._redo.length !== r) state.emit('undo:change');
+  }
+
   /** Clear both stacks (e.g. after project load). */
   clear() {
     this._undo = [];

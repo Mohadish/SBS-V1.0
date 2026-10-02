@@ -46,26 +46,58 @@ const T = () => window.THREE;
 let _ed = null;
 
 export function isPolyEditing() { return !!_ed; }
-export function polyEditNodeId() { return _ed?.nodeId || null; }
+export function polyEditNodeId() { return _ed?.host?.nodeId || null; }
+export function polyEditHostKey() { return _ed?.host?.key || null; }
+export function polyEditMode() { return _ed?.mode || null; }
 
 const _nodeOf = (id) => state.get('nodeById')?.get(id) || null;
 const _isPolyNode = (node) => !!node && node.type === 'primitive' && node.primKind === 'poly';
 const _polyOf = (node) => (isPoly(node?.primParams) ? clonePoly(node.primParams) : makeBoxPoly(20, 20, 20, node?.baseAtOrigin !== false));
 
+/**
+ * ⬚ V0.3.5.14 — the editor works on a HOST, not on a node: what owns the poly,
+ * where the commit goes (undo included) and who tells us it changed under us.
+ *   { key, nodeId?, mesh (getter), alive(), getPoly(), snapshot(), commit(poly, label, before),
+ *     subscribe(fn) → unsubscribe, onEnter?(), onExit?(), onMissClick?(e) }
+ * nodeHost = a project 'poly' primitive (actions.setPrimitiveParams); the Poly
+ * Editor session supplies hosts for its own parts (poly-session.js).
+ */
+export function nodeHost(nodeId) {
+  return {
+    key: `node:${nodeId}`, nodeId,
+    get mesh() { return _nodeOf(nodeId)?.object3d || null; },
+    alive() { return _isPolyNode(_nodeOf(nodeId)); },
+    getPoly() { const n = _nodeOf(nodeId); return _isPolyNode(n) ? _polyOf(n) : null; },
+    snapshot() { return { ...(_nodeOf(nodeId)?.primParams || {}) }; },
+    commit(poly, label, before) { actions.setPrimitiveParams(nodeId, { v: poly.v.slice(), f: poly.f.map(x => x.slice()) }, { undoLabel: label, before: before || null }); },
+    subscribe(fn) {
+      const undo = () => fn('undo'), tree = () => { if (!this.alive()) fn('gone'); };
+      state.on('undo:applied', undo); state.on('change:treeData', tree);
+      return () => { state.off?.('undo:applied', undo); state.off?.('change:treeData', tree); };
+    },
+    // V0.3.5.11 — the node is NOT left selected: the object gizmo would take the
+    // pointer over the mesh, and a dozen listeners react to a selection change.
+    onEnter() { state.setState({ selectedId: null, multiSelectedIds: new Set() }); },
+  };
+}
+
 export function enterPolyEdit(nodeId, mode = 'face') {
-  const node = _nodeOf(nodeId);
-  if (!_isPolyNode(node)) { setStatus('Edit poly works on a Poly box (right-click a box ▸ Convert to editable poly).', 'warn', 5000); return false; }
+  if (!_isPolyNode(_nodeOf(nodeId))) { setStatus('Edit poly works on a Poly box (right-click a box ▸ Convert to editable poly).', 'warn', 5000); return false; }
+  return enterPolyEditHost(nodeHost(nodeId), mode);
+}
+
+export function enterPolyEditHost(host, mode = 'face') {
+  if (!host?.alive?.()) { setStatus('Nothing to edit here.', 'warn', 4000); return false; }
   if (_ed) exitPolyEdit();
-  const mesh = node.object3d;
+  const mesh = host.mesh;
   if (!mesh || !sceneCore.renderer) { setStatus('That poly has no mesh on screen yet.', 'warn', 4000); return false; }
-  // V0.3.5.11 — the node is NOT left selected: the object gizmo would take the
-  // pointer over the mesh, and a dozen listeners react to a selection change.
-  // The mode holds its own reference and owns the gizmo (main.js leaves it
-  // alone while state.polyEditing is set); a click that misses the poly ends
-  // the mode (and goes on to select whatever it hit).
-  state.setState({ selectedId: null, multiSelectedIds: new Set(), polyEditing: nodeId });
+  // The mode owns the gizmo (main.js leaves it alone while state.polyEditing is
+  // set); a click that misses the poly ends the mode (and, for a project node,
+  // goes on to select whatever it hit).
+  host.onEnter?.();
+  state.setState({ polyEditing: host.key });
   gizmo.hide();
-  _ed = { nodeId, node, mesh, poly: _polyOf(node), faceOfTri: null, mode: mode === 'vertex' ? 'vertex' : 'face', selFaces: new Set(), selVerts: new Set(), hoverFace: -1, hoverVert: -1, helpers: null, drag: null, before: null, gz: null, marq: null, space: 'local', gizmoShift: false, swallowClick: false, previewKey: null, lastXY: null };
+  _ed = { host, mesh, poly: host.getPoly(), faceOfTri: null, mode: mode === 'vertex' ? 'vertex' : 'face', selFaces: new Set(), selVerts: new Set(), hoverFace: -1, hoverVert: -1, helpers: null, drag: null, before: null, gz: null, marq: null, space: 'local', gizmoShift: false, swallowClick: false, previewKey: null, lastXY: null };
   _ed.faceOfTri = polyToArrays(_ed.poly).faceOfTri;
   _buildHelpers();
   const dom = sceneCore.renderer.domElement;
@@ -79,9 +111,8 @@ export function enterPolyEdit(nodeId, mode = 'face') {
     dbl:   (e) => { if (_ed && e.button === 0 && _onPoly(e)) { e.preventDefault(); e.stopImmediatePropagation(); } },
     step:  () => exitPolyEdit(),
     exp:   () => { if (state.get('_exporting')) exitPolyEdit(); },
-    tree:  () => { if (_ed && !_isPolyNode(_nodeOf(_ed.nodeId))) exitPolyEdit(); },
-    undo:  () => _resyncFromNode(),
   };
+  _ed.unsubscribe = host.subscribe?.((why) => { if (!_ed || _ed.committing) return; if (why === 'gone' || !host.alive()) exitPolyEdit(); else _resyncFromNode(); }) || null;
   dom.addEventListener('pointerdown', L.down, true);
   dom.addEventListener('pointermove', L.move, true);
   dom.addEventListener('click', L.click, true);
@@ -91,8 +122,6 @@ export function enterPolyEdit(nodeId, mode = 'face') {
   window.addEventListener('keyup', L.keyup, true);
   state.on('change:activeStepId', L.step);
   state.on('change:_exporting', L.exp);
-  state.on('change:treeData', L.tree);
-  state.on('undo:applied', L.undo);
   _hint();
   warmBooleanLib().catch(() => {});                     // the wasm is ready by the first release
   sceneCore.requestRender?.(200);
@@ -120,26 +149,30 @@ export function exitPolyEdit() {
     window.removeEventListener('keyup', L.keyup, true);
     state.off?.('change:activeStepId', L.step);
     state.off?.('change:_exporting', L.exp);
-    state.off?.('change:treeData', L.tree);
-    state.off?.('undo:applied', L.undo);
+    _ed.unsubscribe?.();
   } catch { /* listeners already gone */ }
   _disposeHelpers();
   if (dom) dom.style.cursor = '';
+  const host = _ed.host;
   _ed = null;
   clearStickyStatus('polyEdit'); clearStickyStatus('polyGesture');
   if (state.get('polyEditing')) state.setState({ polyEditing: null });
+  try { host.onExit?.(); } catch { /* the host's business */ }
   sceneCore.requestRender?.(200);
 }
 
 /** "Clean edges": coplanar neighbours merged, straight-through vertices dropped (undoable; works in or out of the mode). */
-export function cleanPolyEdges(nodeId) {
-  const node = _nodeOf(nodeId);
-  if (!_isPolyNode(node)) return false;
-  if (_ed && _ed.nodeId === nodeId) { if (_ed.drag) _cancelDrag(); }
-  const p = _polyOf(node), c = cleanEdges(p);
+export function cleanPolyEdges(nodeId) { return _isPolyNode(_nodeOf(nodeId)) ? cleanPolyEdgesHost(nodeHost(nodeId)) : false; }
+export function cleanPolyEdgesHost(host) {
+  if (!host?.alive?.()) return false;
+  const mine = _ed && _ed.host.key === host.key;
+  if (mine && _ed.drag) _cancelDrag();
+  const p = host.getPoly(), c = cleanEdges(p);
   if (c.f.length === p.f.length && c.v.length === p.v.length) { setStatus('Nothing to clean — every edge bends the surface.', 'info', 3500); return false; }
-  actions.setPrimitiveParams(nodeId, { v: c.v, f: c.f }, { undoLabel: 'Clean edges' });
-  if (_ed && _ed.nodeId === nodeId) _resyncFromNode();
+  const before = host.snapshot();
+  if (mine) _ed.committing = true;
+  try { host.commit(c, 'Clean edges', before); } finally { if (mine && _ed) _ed.committing = false; }
+  if (mine) _resyncFromNode();
   setStatus(`Edges cleaned: ${p.f.length} → ${c.f.length} faces.`, 'success', 4000);
   return true;
 }
@@ -147,13 +180,14 @@ export function cleanPolyEdges(nodeId) {
 /** Undo / redo (or Clean edges) changed the node under the mode: start again from what the node has. */
 function _resyncFromNode() {
   if (!_ed) return;
-  const node = _nodeOf(_ed.nodeId);
-  if (!_isPolyNode(node)) { exitPolyEdit(); return; }   // undone past "Convert to editable poly": a box again
+  const host = _ed.host;
+  if (!host.alive()) { exitPolyEdit(); return; }       // undone past "Convert to editable poly": a box again
   _ed.drag = null; _ed.gz = null; _ed.before = null;
   if (_ed.marq) { _ed.marq = null; hideMarqueeBox(); }
   clearStickyStatus('polyGesture');
-  if (node.object3d && node.object3d !== _ed.mesh) { _ed.mesh = node.object3d; _buildHelpers(); }
-  _ed.poly = _polyOf(node);
+  const mesh = host.mesh;
+  if (mesh && mesh !== _ed.mesh) { _ed.mesh = mesh; _buildHelpers(); }
+  _ed.poly = host.getPoly();
   _ed.selFaces = new Set([..._ed.selFaces].filter(i => i < _ed.poly.f.length));
   _ed.selVerts = new Set([..._ed.selVerts].filter(i => i < _ed.poly.v.length / 3));
   _ed.hoverFace = -1; _ed.hoverVert = -1;
@@ -248,12 +282,14 @@ function _applyLive() {
 
 /** The gesture is over: one undo entry through the primitive machinery. */
 function _commit(label) {
-  const { nodeId, poly, before } = _ed;
-  actions.setPrimitiveParams(nodeId, { v: poly.v.slice(), f: poly.f.map(x => x.slice()) }, { undoLabel: label, before: before || null });
+  const { host, poly, before } = _ed;
+  _ed.committing = true;
+  try { host.commit(poly, label, before || null); } finally { if (_ed) _ed.committing = false; }
+  if (!_ed) return;
   _ed.before = null;
-  const node = _nodeOf(nodeId);
-  if (node?.object3d && node.object3d !== _ed.mesh) { _ed.mesh = node.object3d; _buildHelpers(); }   // a full rebuild swapped the mesh
-  _ed.poly = _polyOf(node);
+  const mesh = host.mesh;
+  if (mesh && mesh !== _ed.mesh) { _ed.mesh = mesh; _buildHelpers(); }   // a full rebuild swapped the mesh
+  _ed.poly = host.getPoly();
   _ed.faceOfTri = polyToArrays(_ed.poly).faceOfTri;
   _refreshHelpers();
   _syncGizmo();
@@ -381,11 +417,10 @@ const _target = {
 /** A gizmo gesture starts. Shift on an arrow in faces mode = EXTRUDE along that axis (the ring is built now, the Boolean runs on release). */
 function _gzBegin(kind) {
   if (!_ed) return;
-  const node = _nodeOf(_ed.nodeId);
   _clearPreview();
   const extrude = kind === 'move' && _ed.gizmoShift && _ed.mode === 'face' && _ed.selFaces.size > 0;
   _ed.gizmoShift = false;
-  _ed.before = { ...(node?.primParams || {}) };
+  _ed.before = _ed.host.snapshot();
   const pre = clonePoly(_ed.poly);
   if (extrude) {
     const capIds = [..._ed.selFaces].filter(i => i < _ed.poly.f.length);
@@ -486,8 +521,7 @@ function _onDown(e) {
   if (_ed.drag?.finishing) { _swallow(e); return; }                      // the Boolean of the last release is still running
   if (_ed.drag?.typing) { _swallow(e); _releaseExtrude(_ed.drag); return; }   // a typed extrude: the click keeps it
   if (_ed.drag) _endDrag(_ed.drag);                                     // a release that never arrived (pointer let go off-window)
-  const node = _nodeOf(_ed.nodeId);
-  if (!node) { exitPolyEdit(); return; }
+  if (!_ed.host.alive()) { if (_ed.host.onMissClick) _swallow(e); exitPolyEdit(); return; }
   // the gizmo's handles come first (they live in the overlay scene, in front of everything)
   if (gizmo.activeTarget === _target) {
     _ed.gizmoShift = !!e.shiftKey;
@@ -505,7 +539,7 @@ function _onDown(e) {
     if (e.ctrlKey || e.shiftKey) { if (_ed.selVerts.has(vi)) _ed.selVerts.delete(vi); else _ed.selVerts.add(vi); _refreshHelpers(); _syncGizmo(); return; }
     if (!_ed.selVerts.has(vi)) _ed.selVerts = new Set([vi]);
     const anchor = new (T().Vector3)(_ed.poly.v[vi * 3], _ed.poly.v[vi * 3 + 1], _ed.poly.v[vi * 3 + 2]).applyMatrix4(_ed.mesh.matrixWorld);
-    _ed.before = { ...(node.primParams || {}) };
+    _ed.before = _ed.host.snapshot();
     _ed.drag = { kind: 'vertex', ids: [..._ed.selVerts], x: e.clientX, y: e.clientY, moved: false, anchor, start: clonePoly(_ed.poly), preGesture: clonePoly(_ed.poly) };
     _refreshHelpers(); _syncGizmo();
     return;
@@ -518,7 +552,7 @@ function _onDown(e) {
     const r = loopCut(_ed.poly, face, k, t);
     _clearPreview();
     if (!r) { setStatus('No cut possible from that edge.', 'warn', 4000); return; }
-    _ed.before = { ...(node.primParams || {}) };
+    _ed.before = _ed.host.snapshot();
     _ed.poly = r.poly;
     _ed.selFaces = new Set(); _ed.hoverFace = -1;
     _applyLive();
@@ -531,7 +565,7 @@ function _onDown(e) {
   if (e.shiftKey && !wasSel) _ed.selFaces.add(face);              // Shift adds; an unmoved Shift-click on a selected face removes it (below)
   else if (!e.shiftKey && !wasSel) _ed.selFaces = new Set([face]);
   const ids = [..._ed.selFaces];
-  _ed.before = { ...(node.primParams || {}) };
+  _ed.before = _ed.host.snapshot();
   const pre = clonePoly(_ed.poly);
   if (e.shiftKey) {                                                // ⬆ extrude: build the ring now, the drag stretches it
     const ex = extrudeFaces(_ed.poly, ids);
@@ -547,6 +581,7 @@ function _onDown(e) {
 /** Off the poly: a drag becomes a box-select, a plain click ends the mode (and selects whatever it hit). */
 function _beginMarquee(e) {
   _swallow(e);
+  _ed.missEvent = e;
   _ed.marq = { x: e.clientX, y: e.clientY, x2: e.clientX, y2: e.clientY, started: false, shift: !!e.shiftKey, ctrl: !!(e.ctrlKey || e.metaKey), alt: !!e.altKey };
   _clearPreview();
 }
@@ -614,7 +649,13 @@ function _onUp(e) {
 function _endMarquee(e) {
   const m = _ed.marq; _ed.marq = null;
   hideMarqueeBox();
-  if (!m.started) { _ed.swallowClick = false; exitPolyEdit(); return; }
+  if (!m.started) {
+    const host = _ed.host, ev = _ed.missEvent;
+    _ed.swallowClick = !!host.onMissClick;                            // a host that handles the click keeps the app's handler out
+    exitPolyEdit();
+    if (host.onMissClick && ev) { try { host.onMissClick(ev); } catch { /* the host's business */ } }
+    return;
+  }
   e?.preventDefault?.(); e?.stopImmediatePropagation?.();
   _ed.swallowClick = true;
   _marqueeApply(m);
@@ -759,6 +800,7 @@ function _onKey(e) {
     _clearPreview();
     if (gizmo.activeTarget === _target) gizmo.hide();            // the frame changes with the mode
     _refreshHelpers(); _syncGizmo(); _hint();
+    state.emit('polyEdit:mode', _ed.mode);
   }
 }
 

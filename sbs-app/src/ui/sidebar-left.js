@@ -1472,6 +1472,23 @@ async function _onSaveForClose() {
   try { window.sbsNative?.saveResult?.(ok); } catch { /* no bridge */ }
 }
 
+/**
+ * ⬚ V0.3.5.14 — import a model file from a path the app itself just wrote (the
+ * Poly Editor's "Apply"): same route as a file the user picked, so the asset
+ * record, the stable ids and the step bookkeeping are the normal ones.
+ */
+export async function importModelAtPath(absPath) {
+  const res = await window.sbsNative?.readFile?.(absPath, 'buffer');
+  if (!res?.ok) throw new Error(res?.error || `cannot read ${absPath}`);
+  const name = String(absPath).split(/[\\/]/).pop();
+  let st = null;
+  try { st = await window.sbsNative?.statFile?.(absPath); } catch { /* fall back to "now" */ }
+  // lastModified = the file's own mtime: the asset check on reopen compares it within 2 s (a "now" stamp flags a wrong file)
+  const file = new File([res.data], name, st?.mtimeMs ? { lastModified: Math.round(st.mtimeMs) } : undefined);
+  try { Object.defineProperty(file, 'path', { value: absPath }); } catch { /* the importer falls back to the bridge */ }
+  return _loadModelFile(file, null, false);
+}
+
 async function _loadModelFile(file, assetEntry = null, skipColorExtraction = false) {
   setStatus(`Loading ${file.name}…`, 'info', 0);
   try {

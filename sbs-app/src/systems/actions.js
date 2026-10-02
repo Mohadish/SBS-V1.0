@@ -1172,6 +1172,13 @@ function _applyIsolateView() {
   steps.snapMeshesOpaque();    // kill ghost-opacity on freshly-revealed meshes
 }
 
+/** ⬚ V0.3.5.14 — re-stage visibility after the isolate mask was set / cleared from outside (the Poly Editor session). */
+export function refreshIsolateView({ quiet = false } = {}) {
+  // quiet: only the scene changes — no tree event, no step re-capture (the active step must not get a ★ from a mask)
+  if (quiet) { applyAllVisibility(state.get('treeData'), steps.object3dById); steps.snapMeshesOpaque(); return; }
+  _applyIsolateView();
+}
+
 export function isolateSelection() {
   if (isIsolateEngaged()) return;          // can't isolate while already isolated
   const nodeById = state.get('nodeById');
