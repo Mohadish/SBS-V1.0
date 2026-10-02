@@ -527,6 +527,8 @@ class GizmoController {
   show(node, obj3d) {
     if (!this._group) return;
     this._cableTarget = null;          // exit cable-point mode if entering
+    // ⬚ V0.3.5.19 — a space only a target has (the Poly Editor's 'parent') never carries onto a tree node
+    if (this._spaceMode !== 'local' && this._spaceMode !== 'world' && this._spaceMode !== 'pivot') this._spaceMode = 'local';
     this._node    = node;
     this._obj3d   = obj3d;
     // Cache the data-tree parent once (for the LOCAL = relative-to-parent-pivot
@@ -1815,23 +1817,56 @@ class GizmoController {
   /** V0.3.0.173 — minimal transform panel for a cable target (group / socket): a
    *  working LOCAL/WORLD toggle + how to type exact values (drag a handle + type). */
   _cablePanelHTML() {
+    const t = this._cableTarget;
     const closeBtn = `<button data-action="close" title="Close panel" style="font-size:13px;line-height:1;padding:2px 7px;background:transparent;border:1px solid var(--line,#334155);border-radius:4px;color:var(--muted,#94a3b8);cursor:pointer;font-weight:700;">×</button>`;
-    const title = this._cableTarget?.isMulti ? 'Cable group' : 'Cable / socket';
-    const sl = this._spaceMode === 'local', sw = this._spaceMode === 'world';
+    const title = this._escHTML(t?.panelTitle?.() || (t?.isMulti ? 'Cable group' : 'Cable / socket'));
+    // ⬚ V0.3.5.19 — a target with its own list of spaces (the Poly Editor: world / local / parent)
+    // gets one button per space, under the names it gives them.
+    const spaces = Array.isArray(t?.spaces) && t.spaces.length ? t.spaces : ['local', 'world'];
+    const lab = (m) => this._escHTML(t?.spaceLabel?.(m) || String(m).toUpperCase());
+    const spaceBtns = spaces.map(m => `<button data-space="${m}" style="${this._spaceBtn(this._spaceMode === m)}">${lab(m)}</button>`).join('');
+    // … and, when it asks for it (panelNudge), move / rotate BY a typed amount along the gizmo's axes.
+    const inp = (key, color, axis) => `<label style="display:flex;align-items:center;gap:4px;flex:1;min-width:0;"><span style="color:${color};font-weight:700;">${axis}</span><input data-nudge="${key}" type="text" value="0" autocomplete="off" spellcheck="false" style="width:100%;min-width:0;box-sizing:border-box;background:var(--panel);border:1px solid var(--line);border-radius:4px;color:var(--text,#e5e7eb);font-size:12px;padding:3px 5px;"></label>`;
+    const row3 = (k) => `<div style="display:flex;gap:6px;margin-bottom:8px;">${inp(k + '0', '#f87171', 'X')}${inp(k + '1', '#4ade80', 'Y')}${inp(k + '2', '#60a5fa', 'Z')}</div>`;
+    const cap = (s) => `<div style="font-size:10px;font-weight:700;letter-spacing:.5px;color:#94a3b8;margin-bottom:4px;">${s}</div>`;
+    const body = t?.panelNudge
+      ? `${cap('MOVE BY')}${row3('m')}${t.applyRotateAroundAxis ? `${cap('ROTATE BY (°)')}${row3('r')}` : ''}
+        <div style="font-size:11px;color:#94a3b8;line-height:1.55;">
+          Type an amount and press <b>Enter</b> — it is applied along the gizmo's axes (the space chosen above; the <b>L</b> key changes it too).<br>
+          <span style="color:#64748b;">${this._escHTML(t.panelHint?.() || '')}</span>
+        </div>`
+      : `<div style="font-size:11px;color:#94a3b8;line-height:1.55;">
+          <b>LOCAL</b> = the picked node's surface frame · <b>WORLD</b> = world axes (the <b>L</b> key does this too).<br>
+          <span style="color:#64748b;">Exact value: grab a handle (arrow / ring), type a number — mm to move, ° to rotate — then Enter.</span>
+        </div>`;
     return `
       <div data-panel-drag="1" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;cursor:move;user-select:none;padding:2px 0;border-bottom:1px solid #1e293b;">
         <span style="font-weight:700;font-size:13px;color:#f1f5f9;letter-spacing:0.3px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${title}</span>
         ${closeBtn}
       </div>
-      <div style="display:flex;gap:4px;margin-bottom:10px;">
-        <button data-space="local" style="${this._spaceBtn(sl)}">LOCAL</button>
-        <button data-space="world" style="${this._spaceBtn(sw)}">WORLD</button>
-      </div>
-      <div style="font-size:11px;color:#94a3b8;line-height:1.55;">
-        <b>LOCAL</b> = the picked node's surface frame · <b>WORLD</b> = world axes (the <b>L</b> key does this too).<br>
-        <span style="color:#64748b;">Exact value: grab a handle (arrow / ring), type a number — mm to move, ° to rotate — then Enter.</span>
-      </div>
+      <div style="display:flex;gap:4px;margin-bottom:10px;">${spaceBtns}</div>
+      ${body}
     `;
+  }
+
+  /** ⬚ V0.3.5.19 — move / rotate a target BY a typed amount along one of the gizmo's current axes (one undo step of the target's). */
+  _nudgeTarget(key, value) {
+    const T = window.THREE, t = this._cableTarget;
+    if (!T || !t || !isFinite(value) || value === 0 || this._dragging) return;
+    const i = Number(key[1]), axis = this._axisVec('xyz'[i] || 'x');
+    if (key[0] === 'r') {
+      if (!t.applyRotateAroundAxis) return;
+      const rad = value * Math.PI / 180;
+      t.beginRotate?.();
+      t.applyRotateAroundAxis(axis, i < 2 ? -rad : rad);   // the same sign as a number typed on the ring (X / Y read mirrored there)
+      t.commitRotate?.();
+    } else {
+      t.beginMove?.();
+      t.applyCumulativeDelta(axis.clone().multiplyScalar(value));
+      t.commitMove?.();
+    }
+    this._tick();
+    sceneCore.requestRender?.(120);
   }
 
   _rebindPanel() {
@@ -1849,6 +1884,18 @@ class GizmoController {
         btn.addEventListener('click', () => {
           this.setSpace(btn.dataset.space);
           panel.querySelectorAll('[data-space]').forEach(b => { b.style.cssText = this._spaceBtn(b.dataset.space === this._spaceMode); });
+        });
+      });
+      panel.querySelectorAll('[data-nudge]').forEach(inp => {
+        inp.addEventListener('focus', () => inp.select());
+        inp.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          let v = NaN;
+          try { v = parseExpression(inp.value); } catch { v = parseFloat(inp.value); }
+          if (isFinite(v) && v !== 0) this._nudgeTarget(inp.dataset.nudge, v);
+          inp.value = '0'; inp.blur();                      // "by": an amount, not a position — and the keys go back to the editor (Ctrl+Z undoes it)
         });
       });
       panel.querySelector('[data-action="close"]')?.addEventListener('click', () => this._closePanel());

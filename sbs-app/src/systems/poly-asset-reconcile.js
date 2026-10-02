@@ -25,14 +25,14 @@
  *
  * No THREE, no state — plain objects in, plain objects out (node-tested).
  *
- * manifest = { v: 1, root: <inner root id>, nodes: { [id]: { k: 'm' | 'f', p: <parent id>, n: <name>, u: <the part's permanent id in the file>, h?: <hash of a part's shape> } } }
+ * manifest = { v: 1, root: <inner root id>, nodes: { [id]: { k: 'm' | 'f', p: <parent id>, n: <name>, u: <the part's permanent id in the file>, h?: <hash of a part's shape>, fr?: <its pivot + axes in the Poly Editor: { p, q }> } } }
  * — what the project last knew of the asset's own ("native") nodes. The uid is
  * kept here because a folder's three.js group is rebuilt on every step change.
  */
 
 export function makeManifest(rootId, entries) {
   const nodes = {};
-  for (const e of entries || []) nodes[e.id] = { k: e.kind === 'folder' || e.kind === 'f' ? 'f' : 'm', p: e.parent || rootId, n: String(e.name ?? ''), u: e.uid || null, ...(e.hash ? { h: e.hash } : {}) };
+  for (const e of entries || []) nodes[e.id] = { k: e.kind === 'folder' || e.kind === 'f' ? 'f' : 'm', p: e.parent || rootId, n: String(e.name ?? ''), u: e.uid || null, ...(e.hash ? { h: e.hash } : {}), ...(e.frame ? { fr: e.frame } : {}) };
   return { v: 1, root: rootId, nodes };
 }
 

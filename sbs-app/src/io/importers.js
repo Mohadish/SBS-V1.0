@@ -229,7 +229,9 @@ export function polyManifestOfModel(modelNode) {
       const isMesh = c.type === 'mesh', u = c.object3d?.userData?.sbsId;
       // the permanent id counts only when the node id really came from it (a duplicate id in a file falls back to the old rules)
       const uid = typeof u === 'string' && u && assetId && polyPartNodeId(assetId, u, isMesh) === c.id ? u : null;
-      entries.push({ id: c.id, kind: isMesh ? 'mesh' : 'folder', parent: parentId, name: c.name, uid, hash: isMesh ? polyContentHash(c.object3d?.userData?.sbsPoly) : null });
+      const fr = c.object3d?.userData?.sbsFrame;         // ⬚ V0.3.5.19 — the part's / folder's pivot + axes in the Poly Editor
+      const frame = fr && Array.isArray(fr.q) && fr.q.length === 4 ? { p: Array.isArray(fr.p) && fr.p.length === 3 ? fr.p.slice() : null, q: fr.q.slice() } : null;
+      entries.push({ id: c.id, kind: isMesh ? 'mesh' : 'folder', parent: parentId, name: c.name, uid, hash: isMesh ? polyContentHash(c.object3d?.userData?.sbsPoly) : null, frame });
       if (!isMesh) walk(c, c.id);
     }
   })(inner, inner.id);

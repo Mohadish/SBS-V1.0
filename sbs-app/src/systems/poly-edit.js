@@ -377,7 +377,10 @@ const _target = {
   isPoly: true,
   spaces: ['local', 'world', 'parent'],
   defaultSpace: 'local',
-  spaceLabel: (m) => (m === 'local' ? 'FACE' : m === 'parent' ? 'PARENT' : 'WORLD'),
+  spaceLabel: (m) => (m === 'local' ? 'LOCAL' : m === 'parent' ? 'PARENT' : 'WORLD'),   // local = the selected faces' normal · parent = the object
+  panelNudge: true,                                        // ⬚ V0.3.5.19 — right-click the gizmo: move / rotate by a typed amount
+  panelTitle: () => (_ed?.mode === 'vertex' ? 'Vertices' : 'Faces'),
+  panelHint: () => "LOCAL = the selected faces' normal · PARENT = the object's own axes.",
   onSpaceChange(mode) { if (_ed) _ed.space = mode; },   // the user's choice (L / the badge) survives hide + show
   getWorldPos() { return _ed ? _centroidWorld(_selVertexIds()) : null; },
   getWorldQuat(mode = 'local') {

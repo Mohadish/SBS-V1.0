@@ -62,7 +62,7 @@ function _manifestOfParts(assetId, rootId, parts) {
   const idOf = new Map(parts.map(p => [p.uid, polyPartNodeId(assetId, p.uid, p.kind === 'part')]));
   return {
     idOf,
-    manifest: makeManifest(rootId, parts.map(p => ({ id: idOf.get(p.uid), kind: p.kind === 'part' ? 'mesh' : 'folder', parent: p.parentUid ? idOf.get(p.parentUid) : rootId, name: p.name, uid: p.uid }))),
+    manifest: makeManifest(rootId, parts.map(p => ({ id: idOf.get(p.uid), kind: p.kind === 'part' ? 'mesh' : 'folder', parent: p.parentUid ? idOf.get(p.parentUid) : rootId, name: p.name, uid: p.uid, frame: p.frame || null }))),
   };
 }
 

@@ -12,6 +12,7 @@ import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoScope, polyPrimitiveKinds, polyAddPrimitive,
+  polyShowMenu, polySetPivotMode, isPolyPivotMode,
 } from '../systems/poly-session.js';
 
 let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null;
@@ -106,6 +107,7 @@ function _render() {
     btn('Faces (4)', 'Edit the faces of the selected part — extrude, loop cut, join / cut', () => polyEnterSub('face'), info.level === 'face' ? on : ''),
   );
   const edges = btn('Edges (2)', 'Not built yet', () => {}); edges.disabled = true; lv.append(edges);
+  lv.append(btn('✛ Pivot', 'Move / turn only the PIVOT of the selected part or folder — the geometry stays (Esc ends it). More under right-click ▸ Pivot.', () => polySetPivotMode(!isPolyPivotMode()), isPolyPivotMode() ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''));
   _root.append(lv);
 
   // ⬚ V0.3.5.18 — primitives made inside the editor: editable polys from the first moment
@@ -154,6 +156,12 @@ function _treeRow(r, info) {
   line.addEventListener('click', (e) => {
     if (e.detail >= 2 && !(e.ctrlKey || e.metaKey || e.shiftKey)) { e.stopPropagation(); _renameInline(label, r); return; }
     polySelect([r.id], { toggle: e.ctrlKey || e.metaKey || e.shiftKey });
+  });
+  // right-click a row = the same menu as right-clicking the object (align / pivot / …)
+  line.addEventListener('contextmenu', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!info.selected.includes(r.id)) polySelect([r.id]);
+    polyShowMenu(e.clientX, e.clientY);
   });
   line.addEventListener('dragstart', (e) => {
     _dragIds = info.selected.includes(r.id) ? info.selected.slice() : [r.id];

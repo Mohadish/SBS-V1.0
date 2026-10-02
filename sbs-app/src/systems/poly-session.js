@@ -31,6 +31,7 @@ import * as actions from './actions.js';
 import { undoManager } from './undo.js';
 import { gizmo } from '../ui/gizmo.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
+import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';   // ⬚ V0.3.5.19 — right-click a part
 import { matches as keyMatches, keyLabel } from '../core/keymap.js';
 import { setIsolateKeepSet, clearIsolate, getIsolateKeepSet } from '../core/isolate-state.js';
 import { subDir, joinPath } from '../core/project-paths.js';
@@ -182,11 +183,11 @@ function _collectSources(nodeIds, opts = {}) {
     let ok = true, t2 = 0, p2 = 0;
     const mk = (id) => {
       const e = M.nodes[id], n = nodeById?.get(id);
-      if (e.k === 'f') { const kids = (kidsOf.get(id) || []).map(mk).filter(Boolean); return kids.length ? { kind: 'folder', name: n?.name || e.n || 'Folder', children: kids, uid: e.u } : null; }
+      if (e.k === 'f') { const kids = (kidsOf.get(id) || []).map(mk).filter(Boolean); return kids.length ? { kind: 'folder', name: n?.name || e.n || 'Folder', children: kids, uid: e.u, frame: e.fr || null } : null; }
       const m = n ? meshOf(n) : null;
       if (!m || m.userData?.isPlaceholder) { ok = false; return null; }
       t2 += geometryTriangles(m.geometry); p2++;
-      return { kind: 'part', name: n.name || e.n || 'Part', mesh: m, node: n, uid: e.u, assetId: reedit.assetId, native: true, archived: arch.has(id) };
+      return { kind: 'part', name: n.name || e.n || 'Part', mesh: m, node: n, uid: e.u, assetId: reedit.assetId, native: true, archived: arch.has(id), frame: e.fr || null };
     };
     const kids = (kidsOf.get(M.root) || []).map(mk).filter(Boolean);
     if (ok && kids.length) {
@@ -301,7 +302,8 @@ async function _start(nodeIds, opts = {}) {
   let done = 0, failed = 0, nativeFailed = 0;
   const add = async (src, parent) => {
     if (src.kind === 'folder') {
-      const it = { id: newId('f'), kind: 'folder', name: src.name, parent, children: [], uid: uidFor(src) };
+      const ff = _readFrame(src.frame);
+      const it = { id: newId('f'), kind: 'folder', name: src.name, parent, children: [], uid: uidFor(src), frame: { q: ff ? ff.quat : new Th.Quaternion(), p: ff ? ff.pos : null } };
       sess.items.set(it.id, it);
       for (const c of src.children) { const cid = await add(c, it.id); if (cid) it.children.push(cid); }
       if (!it.children.length) { sess.items.delete(it.id); return null; }
@@ -316,7 +318,12 @@ async function _start(nodeIds, opts = {}) {
     const mat = Array.isArray(src.mesh.material) ? src.mesh.material[0] : src.mesh.material;
     const col = mat?.uniforms?.uColor?.value?.isColor ? mat.uniforms.uColor.value : (mat?.color?.isColor ? mat.color : null);
     const c = col ? [col.r, col.g, col.b] : [0.75, 0.79, 0.83];
-    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true };
+    // The part's own frame: the pivot + axes saved with the asset, else the middle of its box, world-aligned.
+    // The poly is kept IN that frame (the mesh carries the frame), so the gizmo sits on the object.
+    const pf = _readFrame(src.frame);
+    const frame0 = pf && pf.pos ? pf : { pos: _polyCentre(poly), quat: new Th.Quaternion() };
+    _polyApply(poly, new Th.Matrix4().compose(frame0.pos, frame0.quat, new Th.Vector3(1, 1, 1)).invert());
+    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true, frame0 };
     sess.items.set(it.id, it);
     return it.id;
   };
@@ -329,7 +336,7 @@ async function _start(nodeIds, opts = {}) {
   let noUpdate = plan.reeditBroken || null;
   if (sess.reedit && nativeFailed) { noUpdate = sess.reedit.file; sess.reedit = null; }
   _s = sess;
-  for (const it of sess.items.values()) if (it.kind === 'part') _buildPartMesh(it);
+  for (const it of sess.items.values()) if (it.kind === 'part') { _buildPartMesh(it); if (it.frame0) { it.mesh.position.copy(it.frame0.pos); it.mesh.quaternion.copy(it.frame0.quat); it.frame0 = null; } }
   sceneCore.rootGroup.add(sess.group);
   sess.group.updateMatrixWorld(true);                      // the first view frames the parts where the session group puts them
   _hideProject();
@@ -342,6 +349,31 @@ async function _start(nodeIds, opts = {}) {
   if (empty) { setStatus('Poly Editor: a new, empty asset — add a primitive from the panel on the left.', 'success', 7000); return true; }
   setStatus(`Poly Editor: ${sess.reedit ? `editing ${sess.reedit.file} (the whole asset) — ` : ''}${[...sess.items.values()].filter(i => i.kind === 'part').length} part(s)${failed ? `, ${failed} could not be converted` : ''}${plan.skipped ? `, ${plan.skipped} skipped (not meshes)` : ''}.${noUpdate ? ` Not every part of ${noUpdate} could come in — this edit can only be saved as a NEW asset.` : ''}`, failed || noUpdate ? 'warn' : 'success', noUpdate ? 11000 : 6000);
   return true;
+}
+
+// ── frames: every part and every folder has its own pivot + axes (V0.3.5.19) ─
+// A part's frame IS its mesh transform (position = the pivot, quaternion = its axes); its poly is kept
+// in that frame. A folder's frame is { q, p } in the session group's space (p null = the middle of what
+// it holds). Frames belong to the editor: Apply still bakes every vertex into the asset's space, and
+// writes the frames beside them (glTF node extras.sbsFrame → model.polyManifest) so the next edit finds them.
+function _readFrame(fr) {
+  const Th = T();
+  if (!fr || !Array.isArray(fr.q) || fr.q.length !== 4 || !fr.q.every(Number.isFinite)) return null;
+  const quat = new Th.Quaternion(fr.q[0], fr.q[1], fr.q[2], fr.q[3]);
+  if (quat.lengthSq() < 1e-12) return null;
+  quat.normalize();
+  const pos = Array.isArray(fr.p) && fr.p.length === 3 && fr.p.every(Number.isFinite) ? new Th.Vector3(fr.p[0], fr.p[1], fr.p[2]) : null;
+  return { pos, quat };
+}
+function _polyCentre(poly) {
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < poly.v.length; i += 3) for (let c = 0; c < 3; c++) { const x = poly.v[i + c]; if (x < mn[c]) mn[c] = x; if (x > mx[c]) mx[c] = x; }
+  return new (T().Vector3)((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2);
+}
+function _polyApply(poly, M) {
+  const v = new (T().Vector3)();
+  for (let i = 0; i < poly.v.length; i += 3) { v.set(poly.v[i], poly.v[i + 1], poly.v[i + 2]).applyMatrix4(M); poly.v[i] = v.x; poly.v[i + 1] = v.y; poly.v[i + 2] = v.z; }
+  return poly;
 }
 
 // ── scene ────────────────────────────────────────────────────────────────────
@@ -491,7 +523,7 @@ export function polyNewFolder() {
     _s.rootIds.forEach(walk);
     const tops = order.filter(x => sel.has(x) && !_hasSelectedAncestor(x, sel));   // what gets wrapped: top-most only, in tree order
     const parent = tops.length ? (_s.items.get(tops[0]).parent || null) : null;
-    const it = { id: `f${(++_s.seq).toString(36)}`, kind: 'folder', name: 'Folder', parent, children: [], uid: _newUid() };
+    const it = { id: `f${(++_s.seq).toString(36)}`, kind: 'folder', name: 'Folder', parent, children: [], uid: _newUid(), frame: { q: new (T().Quaternion)(), p: null } };
     _s.items.set(it.id, it); id = it.id;
     const listOf = () => (parent ? _s.items.get(parent).children : _s.rootIds);
     let at = tops.length ? listOf().indexOf(tops[0]) : listOf().length;   // nothing selected before tops[0] sits in this list
@@ -545,7 +577,7 @@ export function polyDuplicateSelected() {
   const copy = (id, parent) => {
     const it = _s.items.get(id);
     const nid = `${it.kind === 'folder' ? 'f' : 'p'}${(++_s.seq).toString(36)}`;
-    if (it.kind === 'folder') { const f = { id: nid, kind: 'folder', name: it.name, parent, children: [], uid: _newUid() }; _s.items.set(nid, f); f.children = it.children.map(c => copy(c, nid)); }
+    if (it.kind === 'folder') { const f = { id: nid, kind: 'folder', name: it.name, parent, children: [], uid: _newUid(), frame: { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null } }; _s.items.set(nid, f); f.children = it.children.map(c => copy(c, nid)); }
     else {
       const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null, uid: _newUid() };   // a copy is a new object
       _s.items.set(nid, p); _buildPartMesh(p);
@@ -745,27 +777,81 @@ function _clickSelect(id, e) {
   polySelect([id], { toggle: !!(e.shiftKey || e.ctrlKey || e.metaKey) });
 }
 
+// What the gizmo acts on, and in whose axes (his rule, V0.3.5.19):
+//   WORLD   the world's axes — always;
+//   LOCAL   the object's own axes (a part's frame, a folder's frame);
+//   PARENT  the axes of the nearest folder above it — the world when it sits at the top level.
+// (Inside a part — vertices / faces — the same three mean: world · the selected faces' normal · the part.)
+function _itemBoxWorld(it) {
+  const Th = T(), box = new Th.Box3(), alive = _aliveIds();
+  const walk = (x) => { const n = _s.items.get(x); if (!n || !alive.has(x)) return; if (n.kind === 'part') { if (n.mesh) box.expandByObject(n.mesh); } else n.children.forEach(walk); };
+  walk(it.id);
+  return box.isEmpty() ? null : box;
+}
+/** The pivot of a part / folder, in the session group's space. */
+function _pivotLocal(it) {
+  if (it.kind === 'part') return it.mesh ? it.mesh.position.clone() : null;
+  if (it.frame.p) return it.frame.p.clone();
+  const box = _itemBoxWorld(it);
+  return box ? _s.group.worldToLocal(box.getCenter(new (T().Vector3)())) : null;
+}
+const _groupQuat = () => _s.group.getWorldQuaternion(new (T().Quaternion)());
+/** The ONE item the selection is (a part, or a folder with everything in it) — null for a multi-selection. */
+function _singleTop() {
+  if (!_s) return null;
+  const alive = _aliveIds(), sel = new Set([..._s.sel].filter(x => alive.has(x)));
+  const tops = [...sel].filter(x => !_hasSelectedAncestor(x, sel));
+  return tops.length === 1 ? _s.items.get(tops[0]) : null;
+}
+/** The item whose axes LOCAL / PARENT are read from: the primary selection. */
+function _subject() {
+  if (!_s) return null;
+  const alive = _aliveIds();
+  const id = _s.primary && _s.sel.has(_s.primary) && alive.has(_s.primary) ? _s.primary : [..._s.sel].find(x => alive.has(x));
+  return id ? _s.items.get(id) : null;
+}
+const _nearestFolder = (it) => { const f = it?.parent ? _s.items.get(it.parent) : null; return f && f.kind === 'folder' ? f : null; };
+/** Folders that move with the selection: the selected ones and every folder inside them. */
+function _foldersInSelection() {
+  const out = [], alive = _aliveIds();
+  const walk = (id, inSel) => { const it = _s.items.get(id); if (!it || !alive.has(id) || it.kind !== 'folder') return; const on = inSel || _s.sel.has(id); if (on) out.push(it); it.children.forEach(c => walk(c, on)); };
+  _s.rootIds.forEach(id => walk(id, false));
+  return out;
+}
+
 const _target = {
   isPolySession: true,
-  spaces: ['world', 'local'], defaultSpace: 'world',
-  spaceLabel: (m) => (m === 'local' ? 'OBJECT' : 'WORLD'),
+  spaces: ['world', 'local', 'parent'], defaultSpace: 'world',
+  spaceLabel: (m) => `${_s?.pivotMode ? 'PIVOT · ' : ''}${m === 'local' ? 'LOCAL' : m === 'parent' ? 'PARENT' : 'WORLD'}`,
+  panelNudge: true,
+  panelTitle: () => { if (!_s) return 'Poly Editor'; const one = _singleTop(), n = _selectedPartIds().length; return `${_s.pivotMode ? 'Pivot of ' : ''}${one ? one.name : `${n} parts`}`; },
+  panelHint: () => (_s?.pivotMode ? 'Pivot mode: only the pivot moves, the geometry stays where it is.' : "LOCAL = the object's own axes · PARENT = its folder's axes (no folder = the world)."),
   onSpaceChange(m) { if (_s) _s.space = m; },
   getWorldPos() {
     if (!_s) return null;
-    const Th = T(); const box = new Th.Box3();
+    const Th = T();
+    const po = _s.xf?.pivotOnly; if (po) return _s.group.localToWorld(po.pos.clone());
+    const one = _singleTop();
+    if (one) { const p = _pivotLocal(one); return p ? _s.group.localToWorld(p) : null; }   // ONE object: the gizmo sits on its pivot
+    const box = new Th.Box3();
     for (const id of _selectedPartIds()) { const m = _s.items.get(id)?.mesh; if (m) box.expandByObject(m); }
     return box.isEmpty() ? null : box.getCenter(new Th.Vector3());
   },
-  getWorldQuat() {
-    const Th = T(); const ids = _selectedPartIds();
-    const m = _s?.items.get(ids.includes(_s?.primary) ? _s.primary : ids[0])?.mesh;
-    return m ? m.getWorldQuaternion(new Th.Quaternion()) : new Th.Quaternion();
+  getWorldQuat(mode = 'local') {
+    const Th = T(); if (!_s) return new Th.Quaternion();
+    const sub = _subject(); if (!sub) return new Th.Quaternion();
+    const gq = _groupQuat();
+    if (mode === 'parent') { const f = _nearestFolder(sub); return f ? gq.multiply(f.frame.q) : new Th.Quaternion(); }
+    const po = _s.xf?.pivotOnly; if (po) return gq.multiply(po.quat);
+    return sub.kind === 'part' ? sub.mesh.getWorldQuaternion(new Th.Quaternion()) : gq.multiply(sub.frame.q);
   },
   beginMove() { _xfBegin(); },
   applyCumulativeDelta(worldD) {
     const xf = _s?.xf; if (!xf) return;
     const d = worldD.clone().applyMatrix3(xf.rootInv3);
+    if (xf.pivotOnly) { xf.pivotOnly.pos.copy(xf.pivotOnly.pos0).add(d); sceneCore.requestRender?.(60); return; }
     for (const r of xf.rows) r.mesh.position.copy(r.pos).add(d);
+    for (const r of xf.frows) if (r.p) r.it.frame.p.copy(r.p).add(d);
     sceneCore.requestRender?.(60);
   },
   commitMove() { _xfCommit('Move part'); },
@@ -776,39 +862,305 @@ const _target = {
     const Th = T();
     const axis = worldAxis.clone().applyMatrix3(xf.rootInv3).normalize();
     const q = new Th.Quaternion().setFromAxisAngle(axis, rad);
-    for (const r of xf.rows) { r.mesh.position.copy(r.pos).sub(xf.pivot).applyQuaternion(q).add(xf.pivot); r.mesh.quaternion.copy(q).multiply(r.quat); }
+    if (xf.pivotOnly) { xf.pivotOnly.quat.copy(q).multiply(xf.pivotOnly.quat0); sceneCore.requestRender?.(60); return; }
+    _xfRigid(xf, q, null);
     sceneCore.requestRender?.(60);
   },
   commitRotate() { _xfCommit('Rotate part'); },
 };
 
+/** Rotate (about the gesture's pivot) and / or shift everything the gesture holds — parts and folder frames. Group space. */
+function _xfRigid(xf, q, d) {
+  for (const r of xf.rows) {
+    r.mesh.position.copy(r.pos).sub(xf.pivot).applyQuaternion(q).add(xf.pivot); if (d) r.mesh.position.add(d);
+    r.mesh.quaternion.copy(q).multiply(r.quat);
+  }
+  for (const r of xf.frows) {
+    r.it.frame.q.copy(q).multiply(r.q);
+    if (r.p) { r.it.frame.p.copy(r.p).sub(xf.pivot).applyQuaternion(q).add(xf.pivot); if (d) r.it.frame.p.add(d); }
+  }
+}
+
 function _xfBegin() {
   if (!_s) return;
   const Th = T();
-  _s.group.updateWorldMatrix(true, false);
+  _s.group.updateWorldMatrix(true, true);
   const rootInv = _s.group.matrixWorld.clone().invert();      // the parts' parent space (the session group; identity for a plain session)
   const pivotW = _target.getWorldPos() || new Th.Vector3();
-  _s.xf = {
-    rows: _selectedPartIds().map(id => { const m = _s.items.get(id).mesh; return { id, mesh: m, pos: m.position.clone(), quat: m.quaternion.clone() }; }),
-    rootInv3: new Th.Matrix3().setFromMatrix4(rootInv), pivot: pivotW.clone().applyMatrix4(rootInv),
-  };
+  const xf = { rows: [], frows: [], rootInv3: new Th.Matrix3().setFromMatrix4(rootInv), pivot: pivotW.clone().applyMatrix4(rootInv), pivotOnly: null };
+  const one = _s.pivotMode ? _singleTop() : null;
+  if (one) {                                                 // PIVOT mode: the gesture moves the frame, not the geometry
+    const pos = _pivotLocal(one) || new Th.Vector3(), quat = one.kind === 'part' ? one.mesh.quaternion.clone() : one.frame.q.clone();
+    xf.pivotOnly = { it: one, pos0: pos.clone(), quat0: quat.clone(), pos, quat };
+  } else {
+    xf.rows = _selectedPartIds().map(id => { const m = _s.items.get(id).mesh; return { id, mesh: m, pos: m.position.clone(), quat: m.quaternion.clone() }; });
+    xf.frows = _foldersInSelection().map(it => ({ it, q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null }));
+  }
+  _s.xf = xf;
 }
 
 function _xfCommit(label) {
   const xf = _s?.xf; if (!xf) return;
   _s.xf = null;
+  if (xf.pivotOnly) {
+    const po = xf.pivotOnly;
+    if (po.pos.distanceToSquared(po.pos0) > 1e-12 || Math.abs(po.quat.dot(po.quat0)) < 1 - 1e-12) _setFrame(po.it, po.pos, po.quat, /^Rotate/.test(label) ? 'Rotate pivot' : 'Move pivot');
+    return;
+  }
   const after = xf.rows.map(r => ({ mesh: r.mesh, pos: r.mesh.position.clone(), quat: r.mesh.quaternion.clone() }));
-  const moved = xf.rows.some((r, i) => r.pos.distanceToSquared(after[i].pos) > 1e-12 || Math.abs(r.quat.dot(after[i].quat)) < 1 - 1e-12);
+  const fafter = xf.frows.map(r => ({ it: r.it, q: r.it.frame.q.clone(), p: r.it.frame.p ? r.it.frame.p.clone() : null }));
+  const moved = xf.rows.some((r, i) => r.pos.distanceToSquared(after[i].pos) > 1e-12 || Math.abs(r.quat.dot(after[i].quat)) < 1 - 1e-12)
+    || xf.frows.some((r, i) => Math.abs(r.q.dot(fafter[i].q)) < 1 - 1e-12 || (!!r.p && r.p.distanceToSquared(fafter[i].p) > 1e-12));
   if (!moved) return;
-  const set = (rows) => { for (const r of rows) { r.mesh.position.copy(r.pos); r.mesh.quaternion.copy(r.quat); } };
-  _push(xf.rows.length > 1 ? `${label}s` : label, () => set(xf.rows), () => set(after));
+  const set = (rows, frows) => {
+    for (const r of rows) { r.mesh.position.copy(r.pos); r.mesh.quaternion.copy(r.quat); }
+    for (const r of frows) { r.it.frame.q.copy(r.q); r.it.frame.p = r.p ? r.p.clone() : null; }
+  };
+  _push(xf.rows.length > 1 ? `${label}s` : label, () => set(xf.rows, xf.frows), () => set(after, fafter));
+}
+
+/**
+ * Give a part / folder another pivot + axes WITHOUT moving its geometry (pos, quat in the session group's space).
+ * A part's vertices are re-expressed in the new frame; a folder only remembers the frame. One undo step.
+ */
+function _setFrame(it, pos, quat, label) {
+  if (!_s || !it) return false;
+  const Th = T(), q1 = quat.clone().normalize();
+  if (it.kind === 'folder') {
+    const before = { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null }, after = { q: q1, p: pos ? pos.clone() : null };
+    const set = (f) => { it.frame.q.copy(f.q); it.frame.p = f.p ? f.p.clone() : null; };
+    set(after);
+    _push(label, () => set(before), () => set(after));
+  } else {
+    const m = it.mesh, sc = m.scale.clone();
+    const M = new Th.Matrix4().compose(pos, q1, sc).invert().multiply(new Th.Matrix4().compose(m.position, m.quaternion, sc));
+    const before = { poly: clonePoly(it.poly), pos: m.position.clone(), quat: m.quaternion.clone() };
+    const after = { poly: _polyApply(clonePoly(it.poly), M), pos: pos.clone(), quat: q1 };
+    const set = (f) => { it.poly = clonePoly(f.poly); m.position.copy(f.pos); m.quaternion.copy(f.quat); _refreshPartMesh(it); _partChanged(it.id); };
+    set(after);
+    _push(label, () => set(before), () => set(after));
+  }
+  _syncScene(); _emit('tree');
+  return true;
+}
+
+// ── pivot ────────────────────────────────────────────────────────────────────
+export const isPolyPivotMode = () => !!_s?.pivotMode;
+/** PIVOT mode: the gizmo moves / turns only the pivot of the ONE selected object. */
+export function polySetPivotMode(on) {
+  if (!_s) return false;
+  if (on && !_singleTop()) { setStatus('Select ONE part or folder first — a pivot belongs to one object.', 'warn', 4000); return false; }
+  if (on && isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  _s.pivotMode = !!on;
+  try { gizmo.setSpace(gizmo.spaceMode); } catch { /* the badge re-reads its name on the next show */ }
+  _hint(); _syncScene(); _emit('mode');
+  return true;
+}
+
+/** 'center' · 'base' (the lowest side, in the object's own axes) · 'reset' (axes back to the world's). */
+export function polyPivotPreset(what) {
+  const it = _singleTop();
+  if (!it) { setStatus('Select ONE part or folder first.', 'warn', 3500); return false; }
+  const Th = T();
+  _s.group.updateWorldMatrix(true, true);
+  const curPos = _pivotLocal(it) || new Th.Vector3();
+  const curQuat = it.kind === 'part' ? it.mesh.quaternion.clone() : it.frame.q.clone();
+  if (what === 'reset') return _setFrame(it, curPos, new Th.Quaternion(), 'Reset pivot axes');
+  let target = null;
+  if (it.kind === 'part') {
+    const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < it.poly.v.length; i += 3) for (let c = 0; c < 3; c++) { const x = it.poly.v[i + c]; if (x < mn[c]) mn[c] = x; if (x > mx[c]) mx[c] = x; }
+    target = new Th.Vector3((mn[0] + mx[0]) / 2, what === 'base' ? mn[1] : (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2)
+      .applyMatrix4(new Th.Matrix4().compose(it.mesh.position, it.mesh.quaternion, it.mesh.scale));   // its own box → the group's space
+  } else {
+    const box = _itemBoxWorld(it); if (!box) return false;
+    const c = box.getCenter(new Th.Vector3()); if (what === 'base') c.y = box.min.y;
+    target = _s.group.worldToLocal(c);
+  }
+  return _setFrame(it, target, curQuat, what === 'base' ? 'Pivot to base' : 'Pivot to centre');
+}
+
+/** The world frame "the object's Y turned onto n, everything else kept" → the session group's space. */
+function _quatOnto(it, nW) {
+  const Th = T(), gq = _groupQuat();
+  const curW = it.kind === 'part' ? it.mesh.getWorldQuaternion(new Th.Quaternion()) : gq.clone().multiply(it.frame.q);
+  const y = new Th.Vector3(0, 1, 0).applyQuaternion(curW);
+  const qW = nW ? new Th.Quaternion().setFromUnitVectors(y, nW.clone().normalize()).multiply(curW) : curW;
+  return gq.invert().multiply(qW);
+}
+export function polyPivotToSurface() {
+  const it = _singleTop();
+  if (!it) { setStatus('Select ONE part or folder first.', 'warn', 3500); return false; }
+  _startPick({ need: 1, what: `Pivot of ${it.name} — click where it goes (its Y turns to the surface)`, done: ([h]) => _setFrame(it, _s.group.worldToLocal(h.p.clone()), _quatOnto(it, h.n), 'Pivot to surface') });
+  return true;
+}
+export function polyPivotBy3Points() {
+  const it = _singleTop();
+  if (!it) { setStatus('Select ONE part or folder first.', 'warn', 3500); return false; }
+  _startPick({ need: 3, what: `Pivot of ${it.name} — 3 points on a circle (the pivot goes to its centre)`, done: (pts) => {
+    const c = _circle3(pts[0].p, pts[1].p, pts[2].p);
+    if (!c) { setStatus('Those 3 points are on one line — no circle goes through them.', 'warn', 5000); return; }
+    _setFrame(it, _s.group.worldToLocal(c.c.clone()), _quatOnto(it, c.n), 'Pivot by 3 points');
+  } });
+  return true;
+}
+
+// ── align (moves the object: its pivot onto the point, its Y onto the normal) ──
+function _alignSelectionTo(pW, nW, label) {
+  if (!_s) return;
+  const Th = T();
+  const wasPivot = _s.pivotMode; _s.pivotMode = false;
+  try {
+    const P0 = _target.getWorldPos(); if (!P0) return;
+    const y0 = new Th.Vector3(0, 1, 0).applyQuaternion(_target.getWorldQuat('local'));
+    const Rw = nW ? new Th.Quaternion().setFromUnitVectors(y0, nW.clone().normalize()) : new Th.Quaternion();
+    _xfBegin();
+    const xf = _s.xf; if (!xf) return;
+    const q = new Th.Quaternion(), s = Math.sqrt(Math.max(0, 1 - Rw.w * Rw.w)), ang = 2 * Math.acos(Math.min(1, Math.max(-1, Rw.w)));
+    if (s > 1e-9 && ang > 1e-9) q.setFromAxisAngle(new Th.Vector3(Rw.x / s, Rw.y / s, Rw.z / s).applyMatrix3(xf.rootInv3).normalize(), ang);
+    _xfRigid(xf, q, pW.clone().sub(P0).applyMatrix3(xf.rootInv3));
+    _xfCommit(label);
+  } finally { if (_s) { _s.pivotMode = wasPivot; _syncScene(); } }
+}
+const _otherParts = () => { const sel = new Set(_selectedPartIds()), alive = _aliveIds(); return [..._s.items.values()].filter(it => it.kind === 'part' && alive.has(it.id) && !sel.has(it.id)); };
+export function polyAlignToSurface() {
+  if (!_s || !_selectedPartIds().length) { setStatus('Select what should be aligned first.', 'warn', 3500); return false; }
+  if (!_otherParts().length) { setStatus('There is no other part to align to.', 'warn', 4000); return false; }
+  _startPick({ need: 1, exclude: new Set(_selectedPartIds()), what: 'Align — click the surface it should sit on (its pivot goes there, its Y along the surface)', done: ([h]) => _alignSelectionTo(h.p, h.n, 'Align to surface') });
+  return true;
+}
+export function polyAlignBy3Points() {
+  if (!_s || !_selectedPartIds().length) { setStatus('Select what should be aligned first.', 'warn', 3500); return false; }
+  if (!_otherParts().length) { setStatus('There is no other part to align to.', 'warn', 4000); return false; }
+  _startPick({ need: 3, exclude: new Set(_selectedPartIds()), what: 'Align — 3 points on a circle (a hole, a rim): its pivot goes to the centre', done: (pts) => {
+    const c = _circle3(pts[0].p, pts[1].p, pts[2].p);
+    if (!c) { setStatus('Those 3 points are on one line — no circle goes through them.', 'warn', 5000); return; }
+    _alignSelectionTo(c.c, c.n, 'Align by 3 points');
+  } });
+  return true;
+}
+
+/** The circle through 3 points → { c: centre, n: its normal, turned to the camera } — null when they are on one line. */
+function _circle3(a, b, c) {
+  const Th = T();
+  const ab = b.clone().sub(a), ac = c.clone().sub(a), n = new Th.Vector3().crossVectors(ab, ac), n2 = n.lengthSq();
+  if (!(n2 > 1e-18 * Math.max(ab.lengthSq(), ac.lengthSq(), 1e-12) ** 2) || n2 < 1e-24) return null;
+  const centre = a.clone()
+    .addScaledVector(new Th.Vector3().crossVectors(n, ab), ac.lengthSq() / (2 * n2))
+    .addScaledVector(new Th.Vector3().crossVectors(ac, n), ab.lengthSq() / (2 * n2));
+  n.normalize();
+  if (n.dot(sceneCore.camera.position.clone().sub(centre)) < 0) n.negate();
+  return { c: centre, n };
+}
+
+// ── picking points on the model (for the align / pivot tools) ────────────────
+function _startPick({ need, what, exclude = null, done }) {
+  if (!_s) return;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return;
+  _endPick(true);
+  _s.pick = { need, what, exclude: exclude || new Set(), pts: [], marks: [], done };
+  if (gizmo.activeTarget === _target) gizmo.hide();
+  _pickHint();
+}
+function _pickHint() { const k = _s?.pick; if (k) setStickyStatus(`⬚ ${k.what} — click point ${k.pts.length + 1} of ${k.need} on the model (it snaps to a corner) · Esc or right-click cancels`, 'info', 'polySession'); }
+function _endPick(quiet = false) {
+  const k = _s?.pick; if (!k) return;
+  for (const m of k.marks) { try { m.parent?.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch { /* gone */ } }
+  _s.pick = null;
+  if (!quiet) { _hint(); _syncGizmo(); }
+  sceneCore.requestRender?.(120);
+}
+function _pickPoint(e) {
+  const Th = T(), rect = sceneCore.renderer.domElement.getBoundingClientRect(), cam = sceneCore.camera, k = _s.pick;
+  const rc = _s.rc || (_s.rc = new Th.Raycaster());
+  rc.setFromCamera(new Th.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
+  const alive = _aliveIds();
+  const meshes = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id) && !k.exclude.has(it.id)).map(it => it.mesh);
+  const h = rc.intersectObjects(meshes, false)[0];
+  if (!h) return null;
+  const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
+  if (n && n.dot(rc.ray.direction) > 0) n.negate();        // the side that was clicked
+  const p = h.point.clone(), part = _s.items.get(h.object.userData.polyPartId);
+  // Snap to the nearest corner OF THE FACE THAT WAS CLICKED, within 12 px. (Not of the whole part: in a flat
+  // view the corner on the far side projects onto the same pixel, and the tool would land behind the surface.)
+  const ids = part ? part.poly.f[h.object.geometry?.userData?.faceOfTri?.[h.faceIndex]] : null;
+  if (ids) {
+    let best = 144, bp = null; const v = new Th.Vector3(), s = new Th.Vector3();
+    for (const vi of ids) {
+      v.set(part.poly.v[vi * 3], part.poly.v[vi * 3 + 1], part.poly.v[vi * 3 + 2]).applyMatrix4(h.object.matrixWorld); s.copy(v).project(cam);
+      if (s.z >= 1) continue;
+      const dx = (s.x * 0.5 + 0.5) * rect.width + rect.left - e.clientX, dy = (-s.y * 0.5 + 0.5) * rect.height + rect.top - e.clientY, d2 = dx * dx + dy * dy;
+      if (d2 < best) { best = d2; bp = v.clone(); }
+    }
+    if (bp) p.copy(bp);
+  }
+  return { p, n };
+}
+function _pickMark(p) {
+  const Th = T(), cam = sceneCore.camera, scene = sceneCore.scene;
+  if (!scene) return null;
+  const r = Math.max(1e-6, cam.position.distanceTo(p) * Math.tan((cam.fov || 35) * Math.PI / 360) * 0.012);
+  const m = new Th.Mesh(new Th.SphereGeometry(r, 12, 8), new Th.MeshBasicMaterial({ color: 0xfbbf24, depthTest: false, transparent: true }));
+  m.renderOrder = 9999; m.position.copy(p);
+  scene.add(m);
+  return m;
+}
+function _pickClick(e) {
+  const k = _s.pick, h = _pickPoint(e);
+  if (!h) { setStatus('Click on a part of the model.', 'warn', 2500); return; }
+  k.pts.push(h);
+  const mk = _pickMark(h.p); if (mk) k.marks.push(mk);
+  sceneCore.requestRender?.(120);
+  if (k.pts.length < k.need) { _pickHint(); return; }
+  const pts = k.pts.slice(), done = k.done;
+  _endPick(true);
+  try { done(pts); } catch (err) { console.warn('[poly session] pick', err); }
+  if (_s) { _hint(); _syncScene(); }
+}
+
+// ── the right-click menu of a part / folder ──────────────────────────────────
+export function polyShowMenu(x, y) {
+  if (!_s || !_s.sel.size) return;
+  const one = _singleTop(), nParts = _selectedPartIds().length, onePart = one?.kind === 'part';
+  showContextMenu([
+    { label: '📍 Align to a surface…', disabled: !nParts, action: () => polyAlignToSurface() },
+    { label: '⊚ Align by 3 points…', disabled: !nParts, action: () => polyAlignBy3Points() },
+    { separator: true },
+    { label: '✛ Pivot', disabled: !one, submenu: [
+      { label: _s.pivotMode ? '✔ Moving the pivot only — click to finish' : '✛ Move the pivot only (with the gizmo)', action: () => polySetPivotMode(!_s.pivotMode) },
+      { separator: true },
+      { label: '📍 Pivot to a point on a surface…', action: () => polyPivotToSurface() },
+      { label: '⊚ Pivot by 3 points (the centre of a circle)…', action: () => polyPivotBy3Points() },
+      { separator: true },
+      { label: 'Pivot to the centre', action: () => polyPivotPreset('center') },
+      { label: 'Pivot to the base', action: () => polyPivotPreset('base') },
+      { label: "Reset the pivot's axes to the world's", action: () => polyPivotPreset('reset') },
+    ] },
+    { separator: true },
+    { label: `Vertices (${keyLabel('polyVertices')})`, disabled: !onePart, action: () => polyEnterSub('vertex') },
+    { label: `Faces (${keyLabel('polyFaces')})`, disabled: !onePart, action: () => polyEnterSub('face') },
+    { separator: true },
+    { label: '⧉ Duplicate', action: () => polyDuplicateSelected() },
+    { label: '📁 New folder around the selection', action: () => polyNewFolder() },
+    { label: '🗑 Delete', action: () => polyDeleteSelected() },
+  ], x, y);
 }
 
 function _syncGizmo() {
-  if (!_s || isPolyEditing()) return;
+  if (!_s || isPolyEditing() || _s.pick) return;
+  if (_s.pivotMode && !_singleTop()) {                       // a pivot belongs to ONE object
+    _s.pivotMode = false;
+    try { if (gizmo.activeTarget === _target) gizmo.setSpace(gizmo.spaceMode); } catch { /* the badge re-reads its name on the next show */ }
+    _hint(); _emit('mode');
+  }
   const want = _selectedPartIds().length > 0;
   if (!want) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (gizmo.activeTarget !== _target) { gizmo.showForCableTarget(_target, 'all'); if (_s.space && _s.space !== gizmo.spaceMode) gizmo.setSpace(_s.space); }
+  const title = _target.panelTitle();                        // the open amount panel names what it acts on
+  if (gizmo._panel && _s.panelTitle !== title) { try { gizmo._rebindPanel(); } catch { /* the panel is the gizmo's own */ } }
+  _s.panelTitle = title;
 }
 
 // ── input (capture on the canvas / window, registered before the sub-object editor's) ──
@@ -819,15 +1171,30 @@ function _attachInput() {
   const swallow = (e) => { e.preventDefault(); e.stopImmediatePropagation(); const a = document.activeElement; if (a && a !== document.body && _typing()) a.blur(); };
   const L = {
     down: (e) => {
-      if (!_s || e.button !== 0) return;
+      if (!_s) return;
+      if (e.button === 2) { _s.rmb = { x: e.clientX, y: e.clientY }; return; }
+      if (e.button !== 0) return;
+      if (_s.pick) { swallow(e); _pickClick(e); return; }
       if (isPolyEditing()) return;                         // the sub-object editor's own listener (added later) takes it
       swallow(e);
       if (gizmo.activeTarget === _target && gizmo.onPointerDown(e.clientX, e.clientY, false)) { try { dom.setPointerCapture(e.pointerId); } catch { /* fine */ } return; }
       _clickSelect(_pickPart(e), e);
     },
     click: (e) => { if (_s) { e.preventDefault(); e.stopImmediatePropagation(); } },          // the app's click handler never runs here
-    dbl: (e) => { if (!_s) return; e.preventDefault(); e.stopImmediatePropagation(); if (isPolyEditing()) return; const id = _pickPart(e); if (id) polyEnterSub('face', id); },
-    menu: (e) => { if (_s) { e.preventDefault(); e.stopImmediatePropagation(); } },
+    dbl: (e) => { if (!_s) return; e.preventDefault(); e.stopImmediatePropagation(); if (isPolyEditing() || _s.pick) return; const id = _pickPart(e); if (id) polyEnterSub('face', id); },
+    menu: (e) => {
+      if (!_s) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      const r = _s.rmb; _s.rmb = null;
+      if (r && Math.hypot(e.clientX - r.x, e.clientY - r.y) > 5) return;      // the button was dragged: not a menu click
+      if (_s.pick) { _endPick(); setStatus('Cancelled.', 'info', 2000); return; }
+      if (gizmo.onRightClick(e.clientX, e.clientY)) return;                    // on the gizmo: move / rotate by an amount · world / local / parent
+      if (isPolyEditing()) return;
+      const id = _pickPart(e);
+      if (id && !_selectedPartIds().includes(id)) polySelect([id]);
+      if (!_s.sel.size) return;
+      polyShowMenu(e.clientX, e.clientY);
+    },
     key: (e) => _onKey(e),
     mode: () => { if (_s) _emit('mode'); },
     std: (v) => { if (_s) { _s.view = v || 'persp'; _emit('view'); } },   // orbiting out of an axis view = perspective again
@@ -867,6 +1234,8 @@ function _detachInput() {
 
 function _onKey(e) {
   if (!_s || _typing() || document.querySelector('dialog[open]')) return;
+  // the right-click menu closes on Esc through a listener this handler would cut off: close it here, and nothing else
+  if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return; }
   const mod = e.ctrlKey || e.metaKey;
   // Undo / redo stay inside the editor: the shared stack also holds the project's entries underneath.
   if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
@@ -878,6 +1247,7 @@ function _onKey(e) {
     return;
   }
   if (gizmo.isDragging) return;                              // gizmo-numeric owns the keys of a gizmo gesture
+  if (_s.pick) { if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _endPick(); setStatus('Cancelled.', 'info', 2000); } return; }
   if (keyMatches('gizmoSpace', e) && !mod && !e.altKey) { e.preventDefault(); gizmo.toggleSpace(); return; }
   if (keyMatches('fitView', e) && !mod && !e.altKey) { e.preventDefault(); polyFit(); return; }
   if (isPolyEditing()) return;                               // 1 / 4 / Esc / typed distances: the sub-object editor's
@@ -885,19 +1255,23 @@ function _onKey(e) {
   if (mod || e.altKey) return;
   if (keyMatches('polyVertices', e) || keyMatches('polyFaces', e)) { e.preventDefault(); e.stopImmediatePropagation(); polyEnterSub(keyMatches('polyVertices', e) ? 'vertex' : 'face'); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopImmediatePropagation(); polyDeleteSelected(); return; }
-  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (_s.sel.size) polySelect([]); return; }
+  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (_s.pivotMode) polySetPivotMode(false); else if (_s.sel.size) polySelect([]); return; }
 }
 
 function _hint() {
   if (!_s) return;
-  setStickyStatus(`⬚ Poly Editor · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
+  if (_s.pivotMode) { setStickyStatus(`⬚ PIVOT mode — the gizmo moves / turns only the pivot of ${_singleTop()?.name || 'the object'}; the geometry stays · Esc ends it (or right-click ▸ Pivot)`, 'info', 'polySession'); return; }
+  setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
 }
 
 // ── the end ──────────────────────────────────────────────────────────────────
 function _teardown(how = 'discard') {
   if (!_s) return;
   if (isPolyEditing()) exitPolyEdit();
+  _endPick(true);
+  try { hideContextMenu(); } catch { /* not up */ }
   if (gizmo.activeTarget === _target) gizmo.hide();
+  try { gizmo._closePanel?.(); } catch { /* not open */ }
   if (sceneCore.getStandardView?.()) { try { sceneCore._exitStandardView?.(); } catch { /* fine */ } }
   _detachInput();
   try {
@@ -958,26 +1332,35 @@ function _assetLayout(space = 'scene') {
   const Th = T();
   sceneCore.rootGroup.updateWorldMatrix(true, true);
   const rootInv = (space === 'asset' ? _s.group.matrixWorld : sceneCore.rootGroup.matrixWorld).clone().invert();
+  // frames → the file's space (a folder's frame lives in the session group's space; a part's is its mesh)
+  const X = new Th.Matrix4().multiplyMatrices(rootInv, _s.group.matrixWorld), xq = new Th.Quaternion();
+  X.decompose(new Th.Vector3(), xq, new Th.Vector3());
+  const r6 = (x) => Math.round(x * 1e6) / 1e6;
+  const frameOut = (p, q) => ({ p: p ? [r6(p.x), r6(p.y), r6(p.z)] : null, q: [r6(q.x), r6(q.y), r6(q.z), r6(q.w)] });
   const parts = [];
   const node = (id, parentUid) => {
     const it = _s.items.get(id);
     if (!it.uid) it.uid = _newUid();
     if (it.kind === 'folder') {
       const mark = parts.length;
-      parts.push({ uid: it.uid, kind: 'folder', name: it.name, parentUid });
+      const ff = frameOut(it.frame.p ? it.frame.p.clone().applyMatrix4(X) : null, xq.clone().multiply(it.frame.q));
+      parts.push({ uid: it.uid, kind: 'folder', name: it.name, parentUid, frame: ff });
       const kids = it.children.map(c => node(c, it.uid)).filter(Boolean);
       if (!kids.length) { parts.length = mark; return null; }
-      return { name: it.name, children: kids, extras: { sbsId: it.uid } };
+      return { name: it.name, children: kids, extras: { sbsId: it.uid, sbsFrame: ff } };
     }
-    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid });
     const M = new Th.Matrix4().multiplyMatrices(rootInv, it.mesh.matrixWorld);
+    const fp = new Th.Vector3(), fq = new Th.Quaternion();
+    M.decompose(fp, fq, new Th.Vector3());
+    const pfr = frameOut(fp, fq);
+    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr });
     const baked = clonePoly(it.poly), v = new Th.Vector3();
     for (let i = 0; i < baked.v.length; i += 3) { v.set(baked.v[i], baked.v[i + 1], baked.v[i + 2]).applyMatrix4(M); baked.v[i] = v.x; baked.v[i + 1] = v.y; baked.v[i + 2] = v.z; }
     if (M.determinant() < 0) baked.f = baked.f.map(f => f.slice().reverse());
     const { positions, normals } = polyToArrays(baked);
     const indices = new Uint32Array(positions.length / 3); for (let i = 0; i < indices.length; i++) indices[i] = i;
     const r4 = (x) => Math.round(x * 1e5) / 1e5;
-    return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsId: it.uid, sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
+    return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsId: it.uid, sbsFrame: pfr, sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
   };
   const roots = _s.rootIds.map(id => node(id, null)).filter(Boolean);
   return { roots, parts };
