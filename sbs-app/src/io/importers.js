@@ -30,6 +30,7 @@ import { storeBaseTransformFromObject3D, captureMeshModelLocalMatrices } from '.
 import * as modelCache  from './model-cache.js';            // V0.2.22.80 — CAD fast-load tail cache
 import * as userSettings from '../core/user-settings.js';   // remembered bake preference
 import { repairNormalsIfBad } from './normal-repair.js';     // V0.3.4.171 — unusable stored normals rebuilt at the door
+import { makeManifest } from '../systems/poly-asset-reconcile.js';   // ⬚ V0.3.5.16 — what a project knows of a Poly Editor asset
 
 // Three.js add-on loaders — imported as ES modules from the local vendor bundles.
 // These bundles import from three.module.proxy.mjs which wraps window.THREE,
@@ -208,6 +209,63 @@ function _remapToStableIds(innerRoot, assetId, obj3dMap) {
   }
 
   visit(innerRoot);
+}
+
+// ── ⬚ Poly Editor assets (V0.3.5.16) ─────────────────────────────────────────
+/** The project node id of a part / folder of a Poly Editor asset: the asset id + the part's permanent id in the file. */
+export function polyPartNodeId(assetId, uid, isMesh) { return `${isMesh ? 'ms' : 'fd'}_${_stableHash(assetId + ':sbs:' + uid)}`; }
+export function geomFingerprint(geom) { return _geomFingerprint(geom); }
+/** A hash of a part's stored topology (what the Poly Editor wrote): two files hold the same shape when it is equal. */
+export function polyContentHash(poly) { try { return poly && Array.isArray(poly.v) ? _stableHash(JSON.stringify(poly)) : null; } catch { return null; } }
+
+/** The asset's own nodes as the FILE has them — read right after a load, before any step rearranges the live tree. */
+export function polyManifestOfModel(modelNode) {
+  const inner = modelNode?.children?.[0];
+  if (!inner) return null;
+  const entries = [], assetId = modelNode.assetId || null;
+  (function walk(n, parentId) {
+    for (const c of n.children || []) {
+      if (c.type !== 'mesh' && c.type !== 'folder') continue;
+      const isMesh = c.type === 'mesh', u = c.object3d?.userData?.sbsId;
+      // the permanent id counts only when the node id really came from it (a duplicate id in a file falls back to the old rules)
+      const uid = typeof u === 'string' && u && assetId && polyPartNodeId(assetId, u, isMesh) === c.id ? u : null;
+      entries.push({ id: c.id, kind: isMesh ? 'mesh' : 'folder', parent: parentId, name: c.name, uid, hash: isMesh ? polyContentHash(c.object3d?.userData?.sbsPoly) : null });
+      if (!isMesh) walk(c, c.id);
+    }
+  })(inner, inner.id);
+  return makeManifest(inner.id, entries);
+}
+
+/** A .glb the Poly Editor wrote, parsed again in memory: its objects by part id (the same objects a reload would make). */
+export function parsePolyGlb(arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(_getDracoLoader());
+    loader.parse(arrayBuffer, '', (gltf) => {
+      const root = gltf.scene ?? gltf.scenes?.[0];
+      if (!root) { reject(new Error('no scene in the file')); return; }
+      const byUid = new Map();
+      root.traverse(o => { const u = o.userData?.sbsId; if (typeof u === 'string' && u && !byUid.has(u)) byUid.set(u, o); });
+      resolve({ root, byUid });
+    }, reject);
+  });
+}
+
+/** A parsed mesh becomes a part of an already-loaded model: the node an import would have made, under its permanent id. */
+export function adoptPolyMesh(mesh, assetId, uid, name) {
+  mesh.removeFromParent?.();
+  const map = new Map();
+  const node = buildNodeFromThreeObject(mesh, map);          // normalises the material, bbox, fingerprint; registers under a random id
+  const randomId = node.id, id = polyPartNodeId(assetId, uid, true);
+  materials.unregisterMesh(randomId);
+  node.id = id;
+  if (name) { node.name = name; mesh.name = name; }
+  node.sourceAssetId = assetId;
+  mesh.userData.meshNodeId = id;
+  mesh.userData.sbsModelAssetId = assetId;
+  materials.registerMesh(id, mesh);
+  mesh.userData.importPose = { p: [mesh.position.x, mesh.position.y, mesh.position.z], q: [mesh.quaternion.x, mesh.quaternion.y, mesh.quaternion.z, mesh.quaternion.w], s: [mesh.scale.x, mesh.scale.y, mesh.scale.z] };
+  return node;
 }
 
 /**
@@ -1741,14 +1799,18 @@ async function loadGltfFile(file, assetEntry = null) {
         // model load, not globally.  Two unrelated GLBs that both happen to
         // have white (#ffffff) meshes won't share the same preset, so tinting
         // one model won't accidentally affect the other.
-        resolve(finalizeModelImport(group3d, innerRoot, file.name, {
+        const modelNode = finalizeModelImport(group3d, innerRoot, file.name, {
           id:           assetEntry?.id,
           type:         ext,
           fileSize:     file.size,
     lastModified: file.lastModified ?? null,
           originalPath: assetEntry?.originalPath || _diskPathOf(file),
           relativePath: assetEntry?.relativePath || '',
-        }, obj3dMap, true, { globalDedup: false }));
+        }, obj3dMap, true, { globalDedup: false });
+        // ⬚ V0.3.5.16 — what this project knows of the asset's own nodes (saved with the model node;
+        // compared with the file on the next open, and on an "update in place").
+        if (polyEditorAsset && modelNode) { try { modelNode.polyManifest = polyManifestOfModel(modelNode); } catch (err) { console.warn('[poly asset] manifest', err); } }
+        resolve(modelNode);
       } catch (err) { reject(err); }
     }, reject);
   });

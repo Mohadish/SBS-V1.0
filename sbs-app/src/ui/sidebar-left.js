@@ -14,6 +14,7 @@ import { loadModelFile, disposeSceneSubtree,
          beginProjectBakeCollection, pendingProjectBakes,
          discardPendingProjectBakes, bakePendingProjectCaches,
          applyProjectBakePlacement, rememberedCacheMode } from '../io/importers.js';
+import { preparePolyAssetOnLoad, reconcilePolyAssetsOnLoad } from '../systems/poly-asset-update.js';   // ⬚ V0.3.5.16
 import { chooseFromButtons } from './prompt.js';   // ⚡ V0.3.2.250 — post-load fast-load offer
 import { showAssetVerifyDialog } from './asset-verify.js';
 import {
@@ -974,6 +975,8 @@ async function _onOpenProject() {
     // ⚡ V0.3.2.250 — park raw-STEP tessellations for the post-load fast-load offer.
     beginProjectBakeCollection();
     const pathHeals = new Map();
+    const _polyReconciles = [];   // ⬚ V0.3.5.16 — Poly Editor assets found changed on disk (see below)
+    let _polyNotes = [];
 
     for (const { assetEntry, resolvedPath } of resolvedAssets) {
       setStatus(`Loading ${assetEntry.name}…`, 'info', 0);
@@ -1034,11 +1037,25 @@ async function _onOpenProject() {
       if (modelNode) {
         // Remap freshly-generated IDs → saved IDs from project spec.
         if (specNode) {
-          const idMap = buildIdRemapFromSpec(modelNode, specNode);
+          // ⬚ V0.3.5.16 — a Poly Editor asset names its own parts: the ids the loader just made ARE
+          // the saved ids (asset id + part id), whatever happened to a part's shape or place. Matching
+          // them by fingerprint / position would cross-wire an edited asset — so no remap, and the
+          // file is compared with what the project last knew (reconciled below, once, for all steps).
+          // The parts the file no longer has leave the SAVED tree here (what hung on them moves up), so
+          // the passes below restore those shapes / primitives under the parent instead of dropping them.
+          const _polyOuter = steps.object3dById.get(modelNode.id) ?? modelNode.object3d;
+          let _polyItem = null;
+          if (_polyOuter?.userData?.sbsPolyEditorAsset && modelNode.polyManifest) {
+            try { _polyItem = preparePolyAssetOnLoad({ modelNode, assetId: assetEntry.id, name: assetEntry.name, specNode, savedRoot: savedSceneRoot, allSavedMeshSpecs }); }
+            catch (err) { console.warn('[poly asset] prepare on load', err); }
+          }
+          const _polyAsset = !!_polyItem;
+          if (_polyItem) _polyReconciles.push(_polyItem);
+          const idMap = _polyAsset ? new Map() : buildIdRemapFromSpec(modelNode, specNode);
 
           // Also remap "displaced" meshes: those moved to custom folders and therefore
           // absent from specNode's subtree.  Matched by meshIndex + sourceAssetId.
-          buildDisplacedMeshIdRemap(modelNode, allSavedMeshSpecs, assetEntry.id, idMap);
+          if (!_polyAsset) buildDisplacedMeshIdRemap(modelNode, allSavedMeshSpecs, assetEntry.id, idMap);
 
           applyIdRemap(modelNode, idMap);
           materials.remapMeshIds(idMap);
@@ -1102,6 +1119,13 @@ async function _onOpenProject() {
         for (const c of (spec.children || [])) applyArch(c);
       })(savedSceneRoot);
       state.emit('change:treeData', state.get('treeData'));
+    }
+
+    // ⬚ V0.3.5.16 — Poly Editor assets that are not what this project last saw (edited from another
+    // project): every step learns the new parts, forgets the removed ones — before anything is staged.
+    if (_polyReconciles.length) {
+      try { _polyNotes = reconcilePolyAssetsOnLoad(_polyReconciles.splice(0)) || []; }
+      catch (err) { console.warn('[poly asset] reconcile on load failed', err); }
     }
 
     // Stage scene from Step 0 (exact saved scene state), then activate first user step
@@ -1168,6 +1192,8 @@ async function _onOpenProject() {
     state.emit('project:modelsSettled');
 
     setStatus(`Opened: ${state.get('projectName')}.`);
+    // ⬚ V0.3.5.16 — an asset of the Poly Editor was edited since this project last saw it
+    if (_polyNotes.length) setStatus(`Opened: ${state.get('projectName')}. Updated from disk — ${_polyNotes.join(' · ')}. Steps whose picture changed are starred ★.`, 'info', 14000);
 
     // Post-load SUGGESTION (never auto-runs): CAD/STEP imports leave deep chains
     // of empty + single-child folders. If this project carries a lot, offer the

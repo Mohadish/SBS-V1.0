@@ -73,11 +73,24 @@ function _render() {
   _root.append(nameRow);
 
   const act = row(); act.style.marginTop = '8px';
-  act.append(
-    btn('✔ Apply — save & load', 'Write the tree as one .glb into the project\'s models folder and load it into the scene', () => applyPolySession(), 'flex:1;background:#14532d;border-color:#22c55e;color:#dcfce7;font-weight:600;'),
-    btn('✕ Discard', 'Close the editor; the project stays exactly as it was', () => discardPolySession()),
-  );
-  _root.append(act);
+  const green = 'flex:1;background:#14532d;border-color:#22c55e;color:#dcfce7;font-weight:600;';
+  if (info.reedit) {
+    // re-editing an asset that is already in the project: saving over it is the default
+    act.append(
+      btn(`✔ Apply — update ${info.reedit.file}`, 'Save the edit over this asset: the same file, the same model in the project, in every step', () => applyPolySession(), green),
+      btn('✕ Discard', 'Close the editor; the project stays exactly as it was', () => discardPolySession()),
+    );
+    _root.append(act);
+    const alt = row(); alt.style.marginTop = '5px';
+    alt.append(btn('＋ Save as a new asset instead', 'Leave the old asset as it is and write a new .glb (named as above) — a new model in the project', () => applyPolySession({ mode: 'new' }), 'flex:1;'));
+    _root.append(alt);
+  } else {
+    act.append(
+      btn('✔ Apply — save & load', 'Write the tree as one .glb into the project\'s models folder and load it into the scene', () => applyPolySession(), green),
+      btn('✕ Discard', 'Close the editor; the project stays exactly as it was', () => discardPolySession()),
+    );
+    _root.append(act);
+  }
 
   _root.append(section('Views'));
   const views = row();
@@ -167,6 +180,50 @@ function _renameInline(label, r) {
   input.addEventListener('click', (e) => e.stopPropagation());
   label.replaceWith(input);
   input.focus(); input.select();
+}
+
+function _dialog(title, bodyNodes, buttons) {
+  return new Promise((resolve) => {
+    const dlg = el('dialog', 'max-width:500px;border-radius:14px;border:1px solid var(--line,#334155);background:var(--panel,#0f172a);color:var(--text,#e5e7eb);padding:18px 20px;');
+    dlg.append(el('div', 'font-size:16px;font-weight:700;margin-bottom:8px;', title));
+    for (const n of bodyNodes) dlg.append(n);
+    const box = el('div', 'display:flex;flex-direction:column;gap:7px;margin-top:12px;');
+    const done = (v) => { try { dlg.close(); } catch { /* fine */ } dlg.remove(); resolve(v); };
+    for (const [label, value, css] of buttons) box.append(btn(label, '', () => done(value), `justify-content:flex-start;${css || ''}`));
+    dlg.append(box);
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); done(null); });
+    document.body.appendChild(dlg);
+    try { dlg.showModal(); } catch { done(null); }
+  });
+}
+const _p = (text) => el('div', 'font-size:13px;line-height:1.45;margin-bottom:8px;', text);
+
+/**
+ * The tree of an asset that is already in use was changed → 'new' | 'update' | null.
+ * A new version is the suggestion: other projects that use the asset would get the new tree.
+ */
+export function askPolyTreeChanged({ file, added, gone, moved }) {
+  const what = [added ? `${added} added` : '', gone ? `${gone} removed` : '', moved ? `${moved} moved to another folder` : ''].filter(Boolean).join(' · ');
+  return _dialog('You changed the tree of this asset', [
+    _p(`${file}: ${what}.`),
+    _p('In this project the model is brought up to date in every step. Other projects that use this asset get the new tree the next time they open: new parts appear, removed parts disappear. As long as the tree stays the same, they only get the changed shapes.'),
+  ], [
+    ['＋ Save as a new version (the other projects are not touched)', 'new', 'font-weight:600;'],
+    [`✔ Update ${file} anyway`, 'update', ''],
+    ['Cancel', null, ''],
+  ]);
+}
+
+/** The update was refused: these hang on parts that were removed in the editor. */
+export function showPolyBlocked(attached, file) {
+  const list = el('div', 'font-size:13px;line-height:1.5;max-height:220px;overflow:auto;border:1px solid var(--line,#334155);border-radius:8px;padding:8px 10px;margin-bottom:8px;');
+  for (const a of attached.slice(0, 40)) list.append(el('div', '', `• ${a.name} (${a.type || 'object'}) — on "${a.onName || a.on}"${a.where && a.where !== 'the scene' ? `, in ${a.where}` : ''}`));
+  if (attached.length > 40) list.append(el('div', 'opacity:.7;', `… and ${attached.length - 40} more`));
+  return _dialog(`${file} was not changed`, [
+    _p('You removed parts that still have something attached to them in the project:'),
+    list,
+    _p('Move or delete those in the project first, or keep the parts — or save this edit as a new asset.'),
+  ], [['OK', null, 'justify-content:center;font-weight:600;']]);
 }
 
 /**

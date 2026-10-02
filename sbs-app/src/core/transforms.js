@@ -344,6 +344,9 @@ function _composeSourceMatrix(node) {
   );
 }
 
+/** ⬚ V0.3.5.16 — the model's source transform as a matrix (it is baked into the vertices of its meshes). */
+export function sourceMatrixOfModel(node) { return _composeSourceMatrix(node); }
+
 function _isIdentitySource(node) {
   const p = node.sourceLocalPosition   || [0, 0, 0];
   const q = node.sourceLocalQuaternion || [0, 0, 0, 1];

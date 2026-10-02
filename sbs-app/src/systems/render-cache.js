@@ -295,6 +295,10 @@ export async function computeSegmentPlan() {
   const notesByAnchor = new Map();    // anchor mesh id → [note projection]
   const modelOfNode  = new Map();     // node id → nearest model ancestor id
   const srcXfOfModel = new Map();     // model id → { id, p, q, s } (only models that carry one)
+  // ⬚ V0.3.5.16 — a part of a Poly Editor asset keeps its ID when the asset is saved over, and a
+  // reshape can leave its bbox and triangle count as they were: nothing in the snapshot moves. The
+  // hash of the part's stored shape (model.polyManifest) is what tells an old clip from a new one.
+  const polyHashOfNode = new Map();   // part id → { id, h }
   const _noteTplById = new Map((state.get('noteTemplates') || []).map(t => [t.id, t]));
   const _noteProj = (n) => {
     const tpl = n.templateId ? _noteTplById.get(n.templateId) : null;
@@ -318,6 +322,7 @@ export async function computeSegmentPlan() {
     if (n.type === 'model') {
       modelId = n.id;
       if (!_isIdentityXf(n)) srcXfOfModel.set(n.id, { id: n.id, p: n.sourceLocalPosition || [0, 0, 0], q: n.sourceLocalQuaternion || [0, 0, 0, 1], s: n.sourceLocalScale || [1, 1, 1] });
+      for (const [id, e] of Object.entries(n.polyManifest?.nodes || {})) if (e?.k === 'm' && e.h) polyHashOfNode.set(id, { id, h: e.h });
     }
     if (modelId) modelOfNode.set(n.id, modelId);
     (n.children || []).forEach(c => walk(c, modelId));
@@ -330,6 +335,7 @@ export async function computeSegmentPlan() {
   const allHardware = (state.get('hardwareTemplates') || []).slice().sort(_byId);
   const allNotes    = [...notesByAnchor.values()].flat().sort(_byId);
   const allSrcXf    = [...srcXfOfModel.values()].sort(_byId);
+  const allPoly     = [...polyHashOfNode.values()].sort(_byId);
   // V0.3.2.150 — OVERLAY-side project definitions. These were absent, so a
   // cached segment could be re-used after the definition that draws its
   // overlay changed: edit a linked shape's size, export, and the cached
@@ -372,6 +378,7 @@ export async function computeSegmentPlan() {
   const _defScope = {
     primById, shapeTplOfNode, tplById, allPrims, allShapes, byId: _byId,
     hwTplOfNode, hwById, allHardware, notesByAnchor, allNotes, modelOfNode, srcXfOfModel, allSrcXf,   // 🔩📝📐 V0.3.4.95
+    polyHashOfNode, allPoly,                                                                           // ⬚ V0.3.5.16
     // V0.3.2.156 — overlay-side definitions belong on the SPAN key, not just
     // the drift report. See _scopedDefs.
     overlay: _overlayDefs,
@@ -643,10 +650,11 @@ function _scopedDefs(V, plan, span) {
   // 🔩📝📐 V0.3.4.95 — spread ONLY when non-empty (the exportBoundaryBoxes /
   // cropMasks pattern): a project with no hardware, no notes and no source
   // transform keeps every key byte-identical — no mass re-render on upgrade.
-  const _extras = (hardware, notes, srcXf) => ({
+  const _extras = (hardware, notes, srcXf, poly) => ({
     ...(hardware?.length ? { hardware } : {}), ...(notes?.length ? { notes } : {}), ...(srcXf?.length ? { srcXf } : {}),
+    ...(poly?.length ? { poly } : {}),                     // ⬚ V0.3.5.16 — only when the span shows a Poly Editor part
   });
-  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay, ..._extras(sc.allHardware, sc.allNotes, sc.allSrcXf) };
+  if (!V) return { prims: sc.allPrims, shapes: sc.allShapes, colors: sc.colors, cables: sc.cables, overlay, ..._extras(sc.allHardware, sc.allNotes, sc.allSrcXf, sc.allPoly) };
   const prims = [];
   for (const id of V) { const d = sc.primById.get(id); if (d) prims.push(d); }
   prims.sort(sc.byId);
@@ -668,7 +676,11 @@ function _scopedDefs(V, plan, span) {
   const modelIds = new Set();
   for (const id of V) { const m = sc.modelOfNode?.get(id); if (m && sc.srcXfOfModel?.has(m)) modelIds.add(m); }
   const srcXf = [...modelIds].map(m => sc.srcXfOfModel.get(m)).sort(sc.byId);
-  return { prims, shapes, colors, cables: sc.cables, overlay, ..._extras(hardware, notes, srcXf) };
+  // ⬚ the shape of every Poly Editor part the span shows
+  const poly = [];
+  for (const id of V) { const d = sc.polyHashOfNode?.get(id); if (d) poly.push(d); }
+  poly.sort(sc.byId);
+  return { prims, shapes, colors, cables: sc.cables, overlay, ..._extras(hardware, notes, srcXf, poly) };
 }
 
 /** (Re)compute a span's key + part-hashes from the CURRENT live objects.

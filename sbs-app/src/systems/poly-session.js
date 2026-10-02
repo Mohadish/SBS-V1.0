@@ -39,6 +39,9 @@ import { geometryToPoly, geometryTriangles } from './poly-convert.js';
 import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost } from './poly-edit.js';
 import { sceneGlb } from '../io/glb-write.js';
 import { isEditing as overlayIsEditing, setEditingMode as overlaySetEditing } from './overlay.js';
+import { sourceMatrixOfModel } from '../core/transforms.js';
+import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
+import { polyPartNodeId } from '../io/importers.js';
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
@@ -79,6 +82,7 @@ export function polySessionInfo() {
     selected: [..._s.sel], primary: _s.primary,
     tree: _s.rootIds.map(id => row(id, 0)),
     canUndo: undoManager.undoScope?.() === SCOPE,
+    reedit: _s.reedit ? { file: _s.reedit.file } : null,   // this session edits an asset that is already in the project
   };
 }
 export function setPolySessionName(name) { if (_s) { _s.name = String(name || '').trim() || 'poly-asset'; } }
@@ -97,9 +101,10 @@ function _collectSources(nodeIds) {
   for (const id of picked) { const n = nodeById?.get(id); if (n && n.type !== 'scene' && !hasPickedAncestor(id)) tops.push(n); }
   let tris = 0, parts = 0, skipped = 0;
   const meshOf = (n) => (n.object3d?.isMesh && n.object3d.geometry?.attributes?.position ? n.object3d : null);
+  let skipNative = null;                                   // ids of the asset being re-edited: they come in from its manifest, once
   const build = (n) => {
     if (!n || n.archived === true) return null;
-    if (n.type === 'mesh') { const m = meshOf(n); if (!m) { skipped++; return null; } tris += geometryTriangles(m.geometry); parts++; return { kind: 'part', name: n.name || 'Part', mesh: m, node: n, uid: _uidOf(m) }; }
+    if (n.type === 'mesh') { if (skipNative?.has(n.id)) return null; const m = meshOf(n); if (!m) { skipped++; return null; } tris += geometryTriangles(m.geometry); parts++; return { kind: 'part', name: n.name || 'Part', mesh: m, node: n, uid: _uidOf(m), assetId: n.sourceAssetId || null }; }
     if (n.type === 'primitive') {
       const m = meshOf(n);
       const kids = (n.children || []).map(build).filter(Boolean);
@@ -117,23 +122,80 @@ function _collectSources(nodeIds) {
     skipped++;                                            // shapes, hardware, hands, notes: not meshes the editor can take (yet)
     return null;
   };
-  const built = tops.map(n => ({ n, r: build(n) })).filter(x => x.r);
-  let roots = built.map(x => x.r), rootSource = built.map(x => x.n.id);
-  // One model on its own: its CONTENT is the tree — not one more folder around it, or
-  // every re-edit of an asset would nest it one level deeper.
-  if (built.length === 1 && built[0].n.type === 'model' && roots[0].kind === 'folder') { roots = roots[0].children; rootSource = roots.map(() => built[0].n.id); }
-  return { roots, rootSource, tris, parts, skipped, name: tops.length === 1 ? (tops[0].name || 'poly-asset') : 'poly-asset' };
+  // ⬚ V0.3.5.16 — picking the single inner folder of a model is picking the model
+  for (let i = 0; i < tops.length; i++) {
+    const n = tops[i]; if (n.type !== 'folder') continue;
+    const root = state.get('treeData'); let parent = null;
+    (function walk(x) { if (parent || !x?.children) return; if (x.children.includes(n)) { parent = x; return; } x.children.forEach(walk); })(root);
+    if (parent?.type === 'model' && parent.children.length === 1 && !tops.includes(parent)) tops[i] = parent;
+  }
+  // Exactly ONE asset of the Poly Editor in the selection = that asset is being re-edited (Apply can save over it).
+  const polyModels = tops.filter(n => polyAssetOfModel(n));
+  let reedit = polyModels.length === 1 ? polyAssetOfModel(polyModels[0]) : null;
+  // The asset being re-edited comes in as the FILE has it: every part and folder of its manifest,
+  // wherever this step has put a part (another folder, archived, hidden). Seeding it from the live
+  // tree would read a part the user dragged out of the model in this step as "removed from the asset".
+  let reeditKids = null, reeditBroken = null, native = null;
+  if (reedit) {
+    const model = polyModels[0], M = model.polyManifest, kidsOf = new Map();
+    for (const [id, e] of Object.entries(M.nodes)) { if (!kidsOf.has(e.p)) kidsOf.set(e.p, []); kidsOf.get(e.p).push(id); }
+    const arch = new Set();                                // archived in the project (itself or through a folder above it)
+    (function walk(n, a) { if (!n) return; const x = a || n.archived === true; if (x) arch.add(n.id); (n.children || []).forEach(c => walk(c, x)); })(state.get('treeData'), false);
+    let ok = true, t2 = 0, p2 = 0;
+    const mk = (id) => {
+      const e = M.nodes[id], n = nodeById?.get(id);
+      if (e.k === 'f') { const kids = (kidsOf.get(id) || []).map(mk).filter(Boolean); return kids.length ? { kind: 'folder', name: n?.name || e.n || 'Folder', children: kids, uid: e.u } : null; }
+      const m = n ? meshOf(n) : null;
+      if (!m || m.userData?.isPlaceholder) { ok = false; return null; }
+      t2 += geometryTriangles(m.geometry); p2++;
+      return { kind: 'part', name: n.name || e.n || 'Part', mesh: m, node: n, uid: e.u, assetId: reedit.assetId, native: true, archived: arch.has(id) };
+    };
+    const kids = (kidsOf.get(M.root) || []).map(mk).filter(Boolean);
+    if (ok && kids.length) {
+      reeditKids = kids; tris += t2; parts += p2; skipNative = new Set(Object.keys(M.nodes));
+      native = { modelId: model.id, meshIds: Object.keys(M.nodes).filter(id => M.nodes[id].k === 'm') };
+      // Picked together with the asset and sitting inside its tree, but not a part of it (a primitive, a part
+      // of another model, a folder of the user's): it comes in as its own object, like anything picked outside.
+      const isNative = (id) => id === M.root || !!M.nodes[id];
+      (function walk(n) { for (const c of n.children || []) { if (!isNative(c.id) && picked.has(c.id)) { if (!tops.includes(c)) tops.push(c); } else walk(c); } })(model);
+    }
+    else { reeditBroken = reedit.file; reedit = null; }    // a part of the asset is not in the project any more: this can only become a new asset
+  }
+  const built = tops.map(n => (reedit && n.id === reedit.modelId ? { n, kids: reeditKids } : { n, r: build(n) })).filter(x => x.r || x.kids);
+  built.sort((a, b) => (b.kids ? 1 : 0) - (a.kids ? 1 : 0));   // the asset's own parts first: they own their permanent ids (a picked copy of one gets a new id)
+  // A model on its own brings its CONTENT, not one more folder around it.
+  const roots = [], rootSource = [];
+  for (const b of built) {
+    const list = b.kids || (b.n.type === 'model' && b.r.kind === 'folder' && built.length === 1 ? b.r.children : [b.r]);
+    for (const r of list) { roots.push(r); rootSource.push(b.n.id); }
+  }
+  const name = reedit ? reedit.file : (tops.length === 1 ? (tops[0].name || 'poly-asset') : 'poly-asset');
+  return { roots, rootSource, tris, parts, skipped, name, reedit, reeditBroken, native };
 }
 
-function _bakedPoly(src, rootInv) {
+/**
+ * A source object → its poly in SESSION space. cx = { toLocal (world → session), reedit, sourceInv }.
+ * A part of the asset being re-edited comes exactly as the file holds it (its own space, wherever
+ * the current step has put the model or its folders); everything else is baked from where it stands.
+ */
+function _bakedPoly(src, cx) {
   const Th = T(); const mesh = src.mesh, node = src.node;
   let poly = null;
+  if (cx.reedit && src.assetId === cx.reedit.assetId) {
+    if (isPoly(mesh.userData?.sbsPoly)) return clonePoly(mesh.userData.sbsPoly);
+    poly = geometryToPoly(mesh.geometry, { heal: geometryTriangles(mesh.geometry) <= 20000 });   // no stored topology: the live vertices carry the model's source transform
+    if (!poly) return null;
+    const v0 = new Th.Vector3();
+    for (let i = 0; i < poly.v.length; i += 3) { v0.set(poly.v[i], poly.v[i + 1], poly.v[i + 2]).applyMatrix4(cx.sourceInv); poly.v[i] = v0.x; poly.v[i + 1] = v0.y; poly.v[i + 2] = v0.z; }
+    if (cx.sourceInv.determinant() < 0) poly.f = poly.f.map(f => f.slice().reverse());
+    return poly;
+  }
   if (node?.type === 'primitive' && node.primKind === 'poly' && isPoly(node.primParams)) poly = clonePoly(node.primParams);
   else if (isPoly(mesh.userData?.sbsPoly) && _sameExtent(mesh.userData.sbsPoly, mesh.geometry)) poly = clonePoly(mesh.userData.sbsPoly);   // a .glb this editor wrote: lossless
   else poly = geometryToPoly(mesh.geometry, { heal: geometryTriangles(mesh.geometry) <= 20000 });
   if (!poly) return null;
   mesh.updateWorldMatrix(true, false);
-  const M = new Th.Matrix4().multiplyMatrices(rootInv, mesh.matrixWorld);
+  const M = new Th.Matrix4().multiplyMatrices(cx.toLocal, mesh.matrixWorld);
   const v = new Th.Vector3();
   for (let i = 0; i < poly.v.length; i += 3) { v.set(poly.v[i], poly.v[i + 1], poly.v[i + 2]).applyMatrix4(M); poly.v[i] = v.x; poly.v[i + 1] = v.y; poly.v[i + 2] = v.z; }
   if (M.determinant() < 0) poly.f = poly.f.map(f => f.slice().reverse());   // a mirrored source: keep the faces outward
@@ -168,17 +230,35 @@ async function _start(nodeIds) {
   const Th = T();
   setStickyStatus(`⬚ Poly Editor — converting ${plan.parts} object${plan.parts === 1 ? '' : 's'}…`, 'info', 'polySession');
   await new Promise(r => setTimeout(r, 30));
-  sceneCore.rootGroup.updateWorldMatrix(true, false);
-  const rootInv = sceneCore.rootGroup.matrixWorld.clone().invert();
+  sceneCore.rootGroup.updateWorldMatrix(true, true);
   const sess = {
     sid: ++_sidSeq, seq: 0, name: plan.name.replace(/\.[a-z0-9]+$/i, ''), items: new Map(), rootIds: [], sel: new Set(), primary: null,
     view: 'persp', space: 'world', subMode: null, sourceIds: [], group: new Th.Group(), prev: null, listeners: null, xf: null, fovPersp: sceneCore.camera?.fov || 35, edits: 0,
+    reedit: plan.reedit || null,
+    native: plan.native || null,                           // the asset this session was seeded from (stays when Apply can only make a NEW asset)
   };
   sess.group.name = 'PolyEditorSession';
+  // ⬚ V0.3.5.16 — the session's own space. A plain session works in the scene's space (identity).
+  // Re-editing an asset works in the ASSET's space — what the file holds — and the session group
+  // carries the model's pose so it is seen where the model stands; saving over the asset then writes
+  // those coordinates as they are (baking the step's pose in would move the model twice).
+  const frame = new Th.Matrix4();                            // session space → rootGroup space
+  let sourceInv = new Th.Matrix4();
+  if (sess.reedit) {
+    const model = state.get('nodeById')?.get(sess.reedit.modelId), outer = model?.object3d;
+    if (outer) {
+      outer.updateWorldMatrix(true, false);
+      const S = sourceMatrixOfModel(model);
+      sourceInv = S.clone().invert();
+      frame.copy(sceneCore.rootGroup.matrixWorld).invert().multiply(outer.matrixWorld).multiply(S);
+    }
+  }
+  frame.decompose(sess.group.position, sess.group.quaternion, sess.group.scale);
+  const cx = { toLocal: frame.clone().invert().multiply(sceneCore.rootGroup.matrixWorld.clone().invert()), reedit: sess.reedit, sourceInv };
   const newId = (p) => `${p}${(++sess.seq).toString(36)}`;
   const seenUid = new Set();
   const uidFor = (src) => { const u = src.uid && !seenUid.has(src.uid) ? src.uid : _newUid(); seenUid.add(u); return u; };   // a part that came from this editor keeps its id
-  let done = 0, failed = 0;
+  let done = 0, failed = 0, nativeFailed = 0;
   const add = async (src, parent) => {
     if (src.kind === 'folder') {
       const it = { id: newId('f'), kind: 'folder', name: src.name, parent, children: [], uid: uidFor(src) };
@@ -188,15 +268,15 @@ async function _start(nodeIds) {
       return it.id;
     }
     let poly = null;
-    try { poly = _bakedPoly(src, rootInv); } catch (err) { console.warn('[poly session] conversion failed for', src.name, err); }
+    try { poly = _bakedPoly(src, cx); } catch (err) { console.warn('[poly session] conversion failed for', src.name, err); }
     done++;
     if (done % 5 === 0) { setStickyStatus(`⬚ Poly Editor — converting… ${done} / ${plan.parts}`, 'info', 'polySession'); await new Promise(r => setTimeout(r, 0)); }
-    if (!poly) { failed++; return null; }
+    if (!poly) { failed++; if (src.native) nativeFailed++; return null; }
     // A preset-coloured mesh wears the app's falloff ShaderMaterial: its colour is the uColor uniform, not .color.
     const mat = Array.isArray(src.mesh.material) ? src.mesh.material[0] : src.mesh.material;
     const col = mat?.uniforms?.uColor?.value?.isColor ? mat.uniforms.uColor.value : (mat?.color?.isColor ? mat.color : null);
     const c = col ? [col.r, col.g, col.b] : [0.75, 0.79, 0.83];
-    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src) };
+    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true };
     sess.items.set(it.id, it);
     return it.id;
   };
@@ -205,9 +285,13 @@ async function _start(nodeIds) {
   sess.sourceIds = [...okSources];
   clearStickyStatus('polySession');
   if (![...sess.items.values()].some(it => it.kind === 'part')) { setStatus('None of those objects could be converted.', 'warn', 5000); return false; }
+  // Saving over the asset needs ALL of it in the editor: a part that did not come in would be read as deleted.
+  let noUpdate = plan.reeditBroken || null;
+  if (sess.reedit && nativeFailed) { noUpdate = sess.reedit.file; sess.reedit = null; }
   _s = sess;
   for (const it of sess.items.values()) if (it.kind === 'part') _buildPartMesh(it);
   sceneCore.rootGroup.add(sess.group);
+  sess.group.updateMatrixWorld(true);                      // the first view frames the parts where the session group puts them
   _hideProject();
   _attachInput();
   const { openPolyEditorPanel } = await import('../ui/poly-editor-panel.js');
@@ -215,7 +299,7 @@ async function _start(nodeIds) {
   _emit('open');
   setPolyView('persp');
   _hint();
-  setStatus(`Poly Editor: ${[...sess.items.values()].filter(i => i.kind === 'part').length} part(s)${failed ? `, ${failed} could not be converted` : ''}${plan.skipped ? `, ${plan.skipped} skipped (not meshes)` : ''}.`, failed ? 'warn' : 'success', 6000);
+  setStatus(`Poly Editor: ${[...sess.items.values()].filter(i => i.kind === 'part').length} part(s)${failed ? `, ${failed} could not be converted` : ''}${plan.skipped ? `, ${plan.skipped} skipped (not meshes)` : ''}.${noUpdate ? ` Not every part of ${noUpdate} could come in — this edit can only be saved as a NEW asset.` : ''}`, failed || noUpdate ? 'warn' : 'success', noUpdate ? 11000 : 6000);
   return true;
 }
 
@@ -502,6 +586,7 @@ function _sessionBox(onlySelected = false) {
   const Th = T(); const box = new Th.Box3();
   const ids = onlySelected && _s.sel.size ? new Set(_selectedPartIds()) : null;
   const alive = _aliveIds();
+  _s.group.updateWorldMatrix(true, true);
   for (const it of _s.items.values()) if (it.kind === 'part' && it.mesh && alive.has(it.id) && (!ids || ids.has(it.id))) box.expandByObject(it.mesh);
   return box.isEmpty() ? null : box;
 }
@@ -599,8 +684,8 @@ const _target = {
 function _xfBegin() {
   if (!_s) return;
   const Th = T();
-  sceneCore.rootGroup.updateWorldMatrix(true, false);
-  const rootInv = sceneCore.rootGroup.matrixWorld.clone().invert();
+  _s.group.updateWorldMatrix(true, false);
+  const rootInv = _s.group.matrixWorld.clone().invert();      // the parts' parent space (the session group; identity for a plain session)
   const pivotW = _target.getWorldPos() || new Th.Vector3();
   _s.xf = {
     rows: _selectedPartIds().map(id => { const m = _s.items.get(id).mesh; return { id, mesh: m, pos: m.position.clone(), quat: m.quaternion.clone() }; }),
@@ -762,14 +847,28 @@ async function _targetPath(name) {
   return joinPath(dir, `${base}-${Date.now()}.glb`);
 }
 
-/** The session tree → glTF node tree: folders = empty nodes, parts = meshes in model space (their session transform baked in). */
-function _glbRoots() {
+/**
+ * The session tree → { roots: the glTF node tree, parts: the flat list of what it holds, top-down }.
+ * Folders = empty nodes (an empty folder is not written), parts = meshes with their session transform
+ * baked in — in the SCENE's space for a new asset (it lands where it stands), in the ASSET's own
+ * space when saving over the asset being re-edited.
+ */
+function _assetLayout(space = 'scene') {
   const Th = T();
   sceneCore.rootGroup.updateWorldMatrix(true, true);
-  const rootInv = sceneCore.rootGroup.matrixWorld.clone().invert();
-  const node = (id) => {
+  const rootInv = (space === 'asset' ? _s.group.matrixWorld : sceneCore.rootGroup.matrixWorld).clone().invert();
+  const parts = [];
+  const node = (id, parentUid) => {
     const it = _s.items.get(id);
-    if (it.kind === 'folder') { const kids = it.children.map(node).filter(Boolean); return kids.length ? { name: it.name, children: kids, extras: { sbsId: it.uid || (it.uid = _newUid()) } } : null; }
+    if (!it.uid) it.uid = _newUid();
+    if (it.kind === 'folder') {
+      const mark = parts.length;
+      parts.push({ uid: it.uid, kind: 'folder', name: it.name, parentUid });
+      const kids = it.children.map(c => node(c, it.uid)).filter(Boolean);
+      if (!kids.length) { parts.length = mark; return null; }
+      return { name: it.name, children: kids, extras: { sbsId: it.uid } };
+    }
+    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid });
     const M = new Th.Matrix4().multiplyMatrices(rootInv, it.mesh.matrixWorld);
     const baked = clonePoly(it.poly), v = new Th.Vector3();
     for (let i = 0; i < baked.v.length; i += 3) { v.set(baked.v[i], baked.v[i + 1], baked.v[i + 2]).applyMatrix4(M); baked.v[i] = v.x; baked.v[i + 1] = v.y; baked.v[i + 2] = v.z; }
@@ -777,20 +876,85 @@ function _glbRoots() {
     const { positions, normals } = polyToArrays(baked);
     const indices = new Uint32Array(positions.length / 3); for (let i = 0; i < indices.length; i++) indices[i] = i;
     const r4 = (x) => Math.round(x * 1e5) / 1e5;
-    return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsId: it.uid || (it.uid = _newUid()), sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
+    return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsId: it.uid, sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
   };
-  return _s.rootIds.map(node).filter(Boolean);
+  const roots = _s.rootIds.map(id => node(id, null)).filter(Boolean);
+  return { roots, parts };
 }
 
-/** APPLY: write the tree as one .glb into the project, load it as a model, then settle the originals. */
-export async function applyPolySession() {
+/**
+ * APPLY. Re-editing an asset: by default the edit is saved OVER it and the same model in the
+ * project is updated (mode 'new' = a new file and a new model instead; the app suggests that
+ * itself when the tree was changed — other projects that use the asset would get the new tree).
+ * Otherwise: the tree is written as a new .glb into the project and loaded as a model.
+ */
+export async function applyPolySession({ mode = 'auto' } = {}) {
   if (!_s) return false;
   if (_s.applying) return false;
   if (isPolyEditing()) exitPolyEdit();
-  const roots = _glbRoots();
+  if (_s.reedit && mode !== 'new') return _applyUpdate(mode);
+  return _applyNew();
+}
+
+async function _applyUpdate(mode) {
+  const re = _s.reedit;
+  const { roots, parts } = _assetLayout('asset');
+  if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
+  const plan = planPolyAssetUpdate(re.modelId, parts);
+  if (!plan.ok) { setStatus(`${plan.reason} Use "Save as a new asset" instead.`, 'warn', 9000); return false; }
+  const panel = await import('../ui/poly-editor-panel.js');
+  if (plan.attached.length) { await panel.showPolyBlocked(plan.attached, re.file); return false; }
+  if (plan.structureChanged && mode !== 'update') {
+    const choice = await panel.askPolyTreeChanged({ file: re.file, added: plan.diff.added.length, gone: plan.diff.gone.length, moved: plan.diff.moved.length });
+    if (!_s || !choice) return false;
+    if (choice === 'new') return _applyNew();
+  }
+  _s.applying = true;
+  const name = _safeName(_s.name), others = _s.sourceIds.filter(id => id !== re.modelId);
+  try {
+    setStickyStatus(`⬚ Poly Editor — updating ${re.file}…`, 'info', 'polySession');
+    const glb = sceneGlb({ roots, name: re.file.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1 } });
+    const r = await updatePolyAssetInPlace(re.modelId, parts, glb);   // the session stays open until this has worked
+    if (!r.ok) {
+      if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
+      if (r.reason === 'attached') { await panel.showPolyBlocked(r.attached, re.file); return false; }
+      setStatus(`The asset was not updated: ${r.reason}`, 'danger', 12000);
+      return false;
+    }
+    _teardown('applied');
+    try { state.setSelection?.(re.modelId, new Set([re.modelId])); } catch { /* fine */ }
+    setStatus(`Updated ${re.file} — the same model, in every step${r.added || r.gone || r.moved ? ` (${[r.added ? `+${r.added} new` : '', r.gone ? `−${r.gone} removed` : '', r.moved ? `${r.moved} moved` : ''].filter(Boolean).join(', ')})` : ''}.${r.backup ? ' The previous version is in backups/.' : ''} Undo history was cleared.`, 'success', 10000);
+    if (others.length) {
+      // A picked container that still holds a part of this asset (the user parked it there) is not an
+      // "original": archiving it would hide the part that was just updated. Only its other content is.
+      const nb = state.get('nodeById'), M = nb?.get(re.modelId)?.polyManifest?.nodes || {};
+      const holdsNative = (n) => !!n && (!!M[n.id] || (n.children || []).some(holdsNative));
+      const TAKEN = new Set(['mesh', 'primitive', 'folder', 'model', 'replaceModel']);
+      const absorbed = [];
+      const expand = (n) => {
+        if (!n || M[n.id] || !TAKEN.has(n.type)) return;
+        if (!holdsNative(n)) { absorbed.push(n.id); return; }
+        (n.children || []).forEach(expand);
+      };
+      others.forEach(id => expand(nb?.get(id)));
+      if (absorbed.length) await _settleOriginals(absorbed, name, re.modelId, panel.askPolyOriginals);
+    }
+    return true;
+  } catch (err) {
+    console.error('[poly session] update failed', err);
+    if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
+    setStatus(`Update failed: ${err?.message || err}`, 'danger', 12000);
+    return false;
+  }
+}
+
+async function _applyNew() {
+  const { roots } = _assetLayout('scene');
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
   _s.applying = true;
   const name = _safeName(_s.name), sourceIds = _s.sourceIds.slice();
+  const native = _s.native, aliveNow = _aliveIds();
+  const archUids = [..._s.items.values()].filter(it => it.kind === 'part' && it.archived && it.uid && aliveNow.has(it.id)).map(it => it.uid);
   let written = null;
   try {
     const path = await _targetPath(name);
@@ -806,7 +970,22 @@ export async function applyPolySession() {
     if (!modelNode) throw new Error('the saved asset did not load back');
     setStatus(`Poly Editor: saved ${path.split(/[\\/]/).pop()} (${Math.round(glb.byteLength / 1024)} KB) and loaded it into the scene.`, 'success', 7000);
     const { askPolyOriginals } = await import('../ui/poly-editor-panel.js');
-    await _settleOriginals(sourceIds, name, modelNode.id, askPolyOriginals);
+    // The session held the whole old asset (seeded from its manifest). Two things follow for the NEW model:
+    // a part that was archived in the project stays archived, and a part some step keeps OUTSIDE the old
+    // model is an original too — archiving the old model alone would leave it on screen beside its copy.
+    const strays = [];
+    if (native) {
+      const nb = state.get('nodeById');
+      const trees = [state.get('treeData'), ...(state.get('steps') || []).map(s => s?.snapshot?.tree)].filter(Boolean);
+      for (const t of trees) {
+        const all = new Set(), under = new Set();
+        (function w(n, u) { const x = u || n.id === native.modelId; all.add(n.id); if (x) under.add(n.id); (n.children || []).forEach(c => w(c, x)); })(t, false);
+        if (!all.has(native.modelId)) continue;
+        for (const id of native.meshIds) if (all.has(id) && !under.has(id) && nb?.has(id) && !strays.includes(id)) strays.push(id);
+      }
+      if (archUids.length && modelNode.assetId) { try { actions.archiveNodes(archUids.map(u => polyPartNodeId(modelNode.assetId, u, true))); } catch (err) { console.warn('[poly session] re-archive', err); } }
+    }
+    await _settleOriginals([...sourceIds, ...strays], name, modelNode.id, askPolyOriginals);
     return true;
   } catch (err) {
     console.error('[poly session] apply failed', err);
