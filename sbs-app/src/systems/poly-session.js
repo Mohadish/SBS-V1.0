@@ -1530,6 +1530,8 @@ function _pickClick(e) {
 //   ◣ a flat TRIANGLE on each corner of each face that looks at you: pull it = scale that face's TWO
 //     directions like a standard scaler — the opposite corner stays, the third direction is untouched;
 //     Shift = keep the proportions it had; Alt = from the centre; Shift + Alt = both.
+//   △ a WHITE tip on that same corner (V0.3.5.29 — the coloured triangles are a band around it): pull it =
+//     ONE scale for all three directions; the corner straight across the box stays; Alt = from the centre.
 // Every part and folder keeps a RECORD of its scale along its own axes (100 % = as it came into the editor);
 // typing the numbers back (the panel's Size row) rescales it — 100 / 100 / 100 = the proportions it came with.
 // The scale is real: it goes into the vertices of every selected part (a part carries no "scale" of its
@@ -1547,7 +1549,8 @@ export function polySetScaleMode(on) {
   return true;
 }
 const SCALE_AXIS_COLOR = [0xef4444, 0x22c55e, 0x3b82f6], SCALE_HOT = 0xfde047;
-const SCALE_PYR_W = 15, SCALE_PYR_H = 24, SCALE_TRI = 18;     // sizes on screen, px
+const SCALE_PYR_W = 15, SCALE_PYR_H = 24, SCALE_TRI = 36;     // sizes on screen, px (the white tip is the inner half of a triangle)
+const SCALE_WHITE = 0xffffff;
 const SCALE_BOX_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
 function _scaleBegin() {
   const Th = T(), group = new Th.Group(); group.name = 'sbs:poly-scale';
@@ -1563,10 +1566,13 @@ function _scaleBegin() {
     pyr.renderOrder = 992; pyr.frustumCulled = false; pyr.userData.h = { type: 'axis', a, sg };
     group.add(pyr); handles.push(pyr);
     for (const sb of [1, -1]) for (const s2 of [1, -1]) {   // a triangle on each of the face's four corners
-      const tg = new Th.BufferGeometry(); tg.setAttribute('position', new Th.BufferAttribute(new Float32Array(9), 3));
+      const tg = new Th.BufferGeometry(); tg.setAttribute('position', new Th.BufferAttribute(new Float32Array(18), 3));   // the coloured band: two triangles
       const tri = new Th.Mesh(tg, mat(SCALE_AXIS_COLOR[a], 0.8));
       tri.renderOrder = 991; tri.frustumCulled = false; tri.userData.h = { type: 'plane', a, sg, sb, sc: s2 };
-      group.add(tri); handles.push(tri);
+      const wg = new Th.BufferGeometry(); wg.setAttribute('position', new Th.BufferAttribute(new Float32Array(9), 3));    // the white tip on the corner itself
+      const tip = new Th.Mesh(wg, mat(SCALE_WHITE, 0.95));
+      tip.renderOrder = 993; tip.frustumCulled = false; tip.userData.h = { type: 'uniform', a, sg, sb, sc: s2 };
+      group.add(tri, tip); handles.push(tri, tip);
     }
   }
   group.visible = false;
@@ -1634,8 +1640,8 @@ function _scaleLayout() {
   for (const m of sc.handles) {
     const h = m.userData.h, n = B[h.a].clone().multiplyScalar(h.sg), fc = C.clone().addScaledVector(n, half[h.a]);
     const facing = n.dot(camPos.clone().sub(fc)) > 0, hot = sc.hot === m || sc.drag?.mesh === m;
-    m.material.color.setHex(hot ? SCALE_HOT : SCALE_AXIS_COLOR[h.a]);
-    m.material.opacity = (hot ? 1 : h.type === 'axis' ? 0.95 : 0.8) * (facing || hot ? 1 : 0.35);   // a handle on a far face is dimmer
+    m.material.color.setHex(hot ? SCALE_HOT : h.type === 'uniform' ? SCALE_WHITE : SCALE_AXIS_COLOR[h.a]);
+    m.material.opacity = (hot ? 1 : h.type === 'plane' ? 0.8 : 0.95) * (facing || hot ? 1 : 0.35);   // a handle on a far face is dimmer
     const s = wpp(fc);
     if (h.type === 'axis') {
       m.position.copy(fc); m.quaternion.setFromUnitVectors(Y, n); m.scale.set(s * SCALE_PYR_W, s * SCALE_PYR_H, s * SCALE_PYR_W);
@@ -1645,8 +1651,10 @@ function _scaleLayout() {
     const P = fc.clone().addScaledVector(B[b], h.sb * half[b]).addScaledVector(B[c], h.sc * half[c]);
     const Lb = Math.min(s * SCALE_TRI, half[b]), Lc = Math.min(s * SCALE_TRI, half[c]);     // never past the middle of a small face
     const P1 = P.clone().addScaledVector(B[b], -h.sb * Lb), P2 = P.clone().addScaledVector(B[c], -h.sc * Lc);
+    const W1 = P.clone().addScaledVector(B[b], -h.sb * Lb / 2), W2 = P.clone().addScaledVector(B[c], -h.sc * Lc / 2);   // where the white tip ends
     const tp = m.geometry.getAttribute('position');
-    tp.setXYZ(0, P.x, P.y, P.z); tp.setXYZ(1, P1.x, P1.y, P1.z); tp.setXYZ(2, P2.x, P2.y, P2.z);
+    if (h.type === 'uniform') { tp.setXYZ(0, P.x, P.y, P.z); tp.setXYZ(1, W1.x, W1.y, W1.z); tp.setXYZ(2, W2.x, W2.y, W2.z); }
+    else { [W1, P1, P2, W1, P2, W2].forEach((v, i) => tp.setXYZ(i, v.x, v.y, v.z)); }   // the band around the tip
     tp.needsUpdate = true; m.geometry.computeBoundingSphere();
     // a face with no area has nothing to scale; a face that looks away is not offered (the face across the box
     // scales the same two directions, and it looks at you)
@@ -1665,7 +1673,7 @@ function _scaleHit(e) {
   sc.group.updateMatrixWorld(true);
   const hits = _scaleRay(e).intersectObjects(sc.handles.filter(m => m.visible), false);
   if (!hits.length) return null;
-  return (hits.find(h => h.object.userData.h.type === 'axis') || hits[0]).object;   // a pyramid in front of a triangle wins
+  return (hits.find(h => h.object.userData.h.type === 'axis') || hits.find(h => h.object.userData.h.type === 'uniform') || hits[0]).object;   // a pyramid wins over a triangle, the white tip over a band
 }
 function _scaleHover(e) {
   const sc = _s?.scale; if (!sc || sc.drag) return;
@@ -1734,9 +1742,17 @@ function _scaleMove(e) {
     const rb = d.sb * half[b], rc2 = d.sc * half[c];
     // the corner follows the cursor; what stays is the opposite corner of the face — or, with Alt, the centre
     const eb = alt ? rb : 2 * rb, ec = alt ? rc2 : 2 * rc2, nb = eb + dl.dot(B[b]), nc = ec + dl.dot(B[c]);
-    if (shift) { const s = lim((nb * eb + nc * ec) / (eb * eb + ec * ec)); f[b] = s; f[c] = s; }   // the proportions it had
-    else { f[b] = Math.abs(eb) > 1e-9 ? lim(nb / eb) : 1; f[c] = Math.abs(ec) > 1e-9 ? lim(nc / ec) : 1; }
-    if (!alt) F = C.clone().addScaledVector(B[b], -rb).addScaledVector(B[c], -rc2);   // (the third direction is not scaled: where F sits along it does not matter)
+    if (d.type === 'uniform') {
+      // the white tip: one factor for all three directions; the corner straight across the box stays (Alt: the centre)
+      if (eb * eb + ec * ec < 1e-18) return;
+      const s = lim((nb * eb + nc * ec) / (eb * eb + ec * ec));
+      f = [s, s, s];
+      if (!alt) F = C.clone().addScaledVector(B[b], -rb).addScaledVector(B[c], -rc2).addScaledVector(d.n, -half[d.a]);
+    } else {
+      if (shift) { const s = lim((nb * eb + nc * ec) / (eb * eb + ec * ec)); f[b] = s; f[c] = s; }   // the proportions it had
+      else { f[b] = Math.abs(eb) > 1e-9 ? lim(nb / eb) : 1; f[c] = Math.abs(ec) > 1e-9 ? lim(nc / ec) : 1; }
+      if (!alt) F = C.clone().addScaledVector(B[b], -rb).addScaledVector(B[c], -rc2);   // (the third direction is not scaled: where F sits along it does not matter)
+    }
   }
   d.f = f;
   // x' = F + A (x − F), A = the stretch along the box's own axes
@@ -1747,7 +1763,7 @@ function _scaleMove(e) {
   d.cur = { B, C: C.clone().applyMatrix4(d.M), half: half.map((x, i) => x * f[i]) };
   sc.camKey = '';
   const pc = (x) => `${Math.round(x * 1000) / 10}%`, names = ['X', 'Y', 'Z'];
-  setStatus(`Scale: ${f.map((x, i) => (Math.abs(x - 1) > 1e-6 ? `${names[i]} ${pc(x)}` : null)).filter(Boolean).join(' · ') || '100%'}${(alt ? ' · from the centre' : ' · Alt = from the centre') + (d.type === 'axis' ? (shift ? ' · all directions' : ' · Shift = all directions') : (shift ? ' · proportions kept' : ' · Shift = keep the proportions'))}`, 'info', 2500);
+  setStatus(`Scale: ${f.map((x, i) => (Math.abs(x - 1) > 1e-6 ? `${names[i]} ${pc(x)}` : null)).filter(Boolean).join(' · ') || '100%'}${(alt ? ' · from the centre' : ' · Alt = from the centre') + (d.type === 'uniform' ? ' · all directions' : d.type === 'axis' ? (shift ? ' · all directions' : ' · Shift = all directions') : (shift ? ' · proportions kept' : ' · Shift = keep the proportions'))}`, 'info', 2500);
   sceneCore.requestRender?.(60);
 }
 /** The gesture ends: bake it (commit) or put everything back. */
@@ -2020,7 +2036,7 @@ function _onKey(e) {
 
 function _hint() {
   if (!_s) return;
-  if (_s.scale) { setStickyStatus('⬚ SCALE — pyramid ▲ = stretch that side (the opposite side stays · Alt = from the centre · Shift = every direction equally) · corner triangle ◣ = that face\'s two directions (the opposite corner stays · Shift = keep the proportions · Alt = from the centre) · Esc ends it', 'info', 'polySession'); return; }
+  if (_s.scale) { setStickyStatus('⬚ SCALE — pyramid ▲ = stretch that side (the opposite side stays · Alt = from the centre · Shift = every direction) · coloured corner ◣ = that face\'s two directions (the opposite corner stays · Shift = keep the proportions · Alt = from the centre) · WHITE corner tip = everything equally (the corner across the box stays · Alt = from the centre) · Esc ends it', 'info', 'polySession'); return; }
   if (_s.pivotMode) { setStickyStatus(`⬚ PIVOT mode — the gizmo moves / turns only the pivot of ${_singleTop()?.name || 'the object'}; the geometry stays · Esc ends it (or right-click ▸ Pivot)`, 'info', 'polySession'); return; }
   setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
 }

@@ -1,6 +1,6 @@
 {
   "name": "sbs-step-browser",
-  "version": "0.3.5-28",
+  "version": "0.3.5-29",
   "description": "SBS Step Browser — CAD Presentation Tool",
   "author": "SBS Step Browser",
   "main": "electron/main.js",

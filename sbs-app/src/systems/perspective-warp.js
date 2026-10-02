@@ -69,6 +69,64 @@ export function applyH(m, x, y) {
 
 const _len = (p, q) => Math.hypot(q.x - p.x, q.y - p.y);
 
+// ── ⌗ V0.3.5.29 — the FRAME ───────────────────────────────────────────────────
+// The four corners mark something that SHOULD be a rectangle (the reference): that fixes the perspective.
+// What is cut out need not be that rectangle — the thing you can trust (a screen, a label) is often smaller
+// than what you want. ext = [u0, v0, u1, v1] is the frame in the reference's own coordinates (the reference
+// itself = 0, 0 → 1, 1); the same perspective carries it, so an edge pulled out stays "parallel" the way the
+// picture's perspective means it (toward the same vanishing point).
+const _UNIT = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+// w of the perspective (1 at the reference's first corner). Pulled AWAY from the eye a frame only closes in on
+// the vanishing line; pulled TOWARD the eye the plane runs out of the picture (w → 0): that is the limit.
+const _HORIZON = 0.05;
+export const UNIT_EXTENT = [0, 0, 1, 1];
+export const isUnitExtent = (e) => !Array.isArray(e) || e.length !== 4 || !e.every(Number.isFinite)
+  || (Math.abs(e[0]) < 1e-9 && Math.abs(e[1]) < 1e-9 && Math.abs(e[2] - 1) < 1e-9 && Math.abs(e[3] - 1) < 1e-9);
+/** The quad [tl, tr, br, bl] of the frame `ext` under the perspective of the reference `quad` — null when it runs past the limit (see _HORIZON). */
+export function quadForExtent(quad, ext) {
+  if (isUnitExtent(ext)) return quad.map(p => ({ x: p.x, y: p.y }));
+  const H = homographyFromPoints(_UNIT, quad);
+  if (!H) return null;
+  const [u0, v0, u1, v1] = ext, out = [];
+  for (const [u, v] of [[u0, v0], [u1, v0], [u1, v1], [u0, v1]]) {
+    if (H[6] * u + H[7] * v + 1 < _HORIZON) return null;
+    out.push(applyH(H, u, v));
+  }
+  return out;
+}
+/** Where a point sits in the reference's own coordinates ({ u, v }: 0…1 inside it) — null past the limit. */
+export function quadCoords(quad, p) {
+  const H = homographyFromPoints(_UNIT, quad), inv = H && invert3(H);
+  if (!inv) return null;
+  const q = applyH(inv, p.x, p.y);
+  if (!Number.isFinite(q.x) || !Number.isFinite(q.y) || H[6] * q.x + H[7] * q.y + 1 < _HORIZON) return null;
+  return { u: q.x, v: q.y };
+}
+/** One edge of the frame (0 top · 1 right · 2 bottom · 3 left) pulled to the point p → the new ext, or null when that cannot be. */
+export function slideExtent(quad, ext, edge, p, { minSize = 0.05, reach = 8 } = {}) {
+  const c = quadCoords(quad, p);
+  if (!c) return null;
+  const e = (isUnitExtent(ext) ? UNIT_EXTENT : ext).slice();
+  const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+  if (edge === 0) e[1] = clamp(c.v, -reach, e[3] - minSize);
+  else if (edge === 1) e[2] = clamp(c.u, e[0] + minSize, 1 + reach);
+  else if (edge === 2) e[3] = clamp(c.v, e[1] + minSize, 1 + reach);
+  else e[0] = clamp(c.u, -reach, e[2] - minSize);
+  return quadForExtent(quad, e) ? e : null;
+}
+/**
+ * What to warp: the frame's quad and its rectangle, from the reference quad (picture pixels), the reference's
+ * proportion (w / h, null = measured from its corners) and the frame. → { quad, w, h } (the reference alone when the frame is it).
+ */
+export function framedWarp(refQuad, aspect, ext, maxDim = 6000) {
+  const ref = rectifiedSize(refQuad, aspect > 0 ? aspect : null);
+  const q = isUnitExtent(ext) ? null : quadForExtent(refQuad, ext);
+  if (!q) return { quad: refQuad, w: ref.w, h: ref.h, k: 1, framed: false };
+  let w = ref.w * (ext[2] - ext[0]), h = ref.h * (ext[3] - ext[1]);
+  const k = Math.min(1, maxDim / Math.max(w, h));
+  return { quad: q, w: Math.max(8, Math.round(w * k)), h: Math.max(8, Math.round(h * k)), k, framed: true };
+}
+
 /**
  * The rectified size for a quad [tl, tr, br, bl] in image pixels.
  * `aspect` null → from the edge lengths (a scanner's guess); a number (w/h)

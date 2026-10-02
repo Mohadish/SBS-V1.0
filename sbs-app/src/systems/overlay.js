@@ -21,7 +21,7 @@ import { sceneCore } from '../core/scene.js';   // H2: tick hook for overlay fad
 import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.75 — disk-referenced video clips
 import * as clock    from '../core/clock.js';
 import { getCanonicalSize, computeSafeFrameRect } from '../core/safe-frame.js';
-import { warpImage, rectifiedSize } from './perspective-warp.js';   // ⌗ V0.3.5.1 — Square up (perspective correction)
+import { warpImage, rectifiedSize, quadForExtent, slideExtent, isUnitExtent, framedWarp } from './perspective-warp.js';   // ⌗ V0.3.5.1 — Square up (perspective correction)
 import { showContextMenu } from '../ui/context-menu.js';
 import * as clipPool from './clip-pool.js';   // 📋 V0.3.4.90 — copy here, paste in another SBS window
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
@@ -2071,11 +2071,70 @@ export function beginSquareUp(node) {
     _uiLayer.add(d);
     return d;
   });
+  // ⌗ V0.3.5.29 — the FRAME: what the corners mark is often smaller than what is wanted. A square handle on
+  // each edge pulls that edge out (or in) under the same perspective; the frame is what gets cut out.
+  const frameLine = new Konva.Line({ points: [], closed: true, stroke: '#f59e0b', strokeWidth: 2, fill: 'rgba(245,158,11,0.07)', listening: false, strokeScaleEnabled: false, visible: false });
+  _uiLayer.add(frameLine);
+  const refQuad = () => dots.map(q => ({ x: q.x(), y: q.y() }));
+  const edges = [0, 1, 2, 3].map((i) => {
+    const g = new Konva.Rect({ width: 14, height: 14, offsetX: 7, offsetY: 7, cornerRadius: 3, fill: '#f59e0b', stroke: '#fff', strokeWidth: 2, name: 'sbs-square-edge', strokeScaleEnabled: false, hitStrokeWidth: 10 });
+    g.on('mouseenter', () => { if (_stage && !edgeDrag) _stage.container().style.cursor = i % 2 ? 'ew-resize' : 'ns-resize'; });
+    g.on('mouseleave', () => { if (_stage && !edgeDrag) _stage.container().style.cursor = ''; });
+    g.on('dblclick', () => { if (_squareEdit) { _squareEdit.ext = [0, 0, 1, 1]; refresh(); } });   // back onto the four corners
+    _uiLayer.add(g);
+    return g;
+  });
+  for (const d of dots) d.moveToTop();                       // a corner is never hidden under (or out-clicked by) an edge handle
+  const refresh = () => {
+    outline.points(dots.flatMap(q => [q.x(), q.y()]));
+    const se = _squareEdit, ext = se?.ext, rq = refQuad();
+    const f = ext && !isUnitExtent(ext) ? quadForExtent(rq, ext) : null;
+    frameLine.visible(!!f);
+    if (f) frameLine.points(f.flatMap(p => [p.x, p.y]));
+    const q = f || rq;
+    edges.forEach((g, i) => { const a = q[i], b2 = q[(i + 1) % 4]; g.position({ x: (a.x + b2.x) / 2, y: (a.y + b2.y) / 2 }); g.rotation(Math.atan2(b2.y - a.y, b2.x - a.x) * 180 / Math.PI); });
+    redraw();
+  };
+  let edgeDrag = null;
+  const edgeMove = (me) => {
+    if (!edgeDrag || !_squareEdit || !_stage) return;
+    const cr = _stage.container().getBoundingClientRect();
+    const p = _uiLayer.getAbsoluteTransform().copy().invert().point({ x: me.clientX - cr.left, y: me.clientY - cr.top });
+    const e2 = slideExtent(refQuad(), _squareEdit.ext, edgeDrag.i, p);
+    if (e2) { _squareEdit.ext = e2; refresh(); }
+  };
+  const edgeUp = () => {
+    if (!edgeDrag) return;
+    edgeDrag = null;
+    window.removeEventListener('pointermove', edgeMove, true);
+    window.removeEventListener('pointerup', edgeUp, true);
+    window.removeEventListener('pointercancel', edgeUp, true);
+    if (_stage) _stage.container().style.cursor = '';
+  };
+  edges.forEach((g, i) => {
+    const down = (e) => {
+      if (edgeDrag) return;                                 // pointerdown and mousedown both land; first wins
+      const ev = e?.evt || e;
+      if (ev?.button != null && ev.button !== 0) return;
+      if (ev?.preventDefault) { ev.preventDefault(); ev.stopPropagation(); }
+      if (e) e.cancelBubble = true;
+      edgeDrag = { i };
+      window.addEventListener('pointermove', edgeMove, true);
+      window.addEventListener('pointerup', edgeUp, true);
+      window.addEventListener('pointercancel', edgeUp, true);
+    };
+    g.on('pointerdown', down); g.on('mousedown', down);
+  });
+  drags.push({ stop: edgeUp });
   for (const d of dots) {
-    drags.push(_squareDotDrag(d, { stageScale: _stage.scaleX() || 1, loupe, onMove: () => { outline.points(dots.flatMap(q => [q.x(), q.y()])); redraw(); } }));
+    drags.push(_squareDotDrag(d, { stageScale: _stage.scaleX() || 1, loupe, onMove: () => {
+      // a corner that would throw the frame past the horizon keeps the frame where it can still be drawn
+      if (_squareEdit && !isUnitExtent(_squareEdit.ext) && !quadForExtent(refQuad(), _squareEdit.ext)) _squareEdit.ext = [0, 0, 1, 1];
+      refresh();
+    } }));
   }
   _setSelection(null);
-  const { bar, apply, cancel, place } = _maskEditBar('⌗ Square up — drag the four corners onto what should be a rectangle');
+  const { bar, apply, cancel, place } = _maskEditBar('⌗ Square up');
   const aspectSel = document.createElement('select');
   aspectSel.style.cssText = 'height:24px;font-size:12px;';
   aspectSel.title = 'The rectangle\'s width : height. A screen has a known one; Auto guesses from the corners.';
@@ -2088,7 +2147,7 @@ export function beginSquareUp(node) {
   zoomSel.addEventListener('change', () => loupe.setZoom(zoomSel.value));
   bar.insertBefore(zoomSel, apply);
   const hint = bar.querySelector('.small.muted');
-  if (hint) hint.textContent = 'drag a corner — a loupe shows the exact pixel · the rest of the picture stays behind a crop mask';
+  if (hint) hint.textContent = 'corners = the rectangle · square handles = the frame (double-click one = reset)';
   const onKey = (e) => {
     if (e.key !== 'Enter' && e.key !== 'Escape') return;
     const el = document.activeElement, tag = el?.tagName;
@@ -2101,20 +2160,20 @@ export function beginSquareUp(node) {
   cancel.addEventListener('click', () => _cancelSquareUp());
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', place);
-  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel, loupe, drags };
-  redraw();
-  setStickyStatus('⌗ Drag a corner onto the screen / panel: move slowly = pixel by pixel under the loupe, sweep fast = across the picture · pick the proportion · Enter applies, Esc cancels', 'info', 'squareUp');
+  _squareEdit = { node, dots, outline, bar, onKey, place, aspectSel, loupe, drags, ext: [0, 0, 1, 1], frameLine, edges };
+  refresh();
+  setStickyStatus('⌗ Drag a corner onto the screen / panel: move slowly = pixel by pixel under the loupe, sweep fast = across the picture · pull an orange square on an edge = a bigger frame, same perspective (double-click it = back onto the corners) · pick the proportion · Enter applies, Esc cancels', 'info', 'squareUp');
   return true;
 }
 
 function _teardownSquareUp() {
   if (!_squareEdit) return;
-  const { dots, outline, bar, onKey, place, loupe, drags } = _squareEdit;
+  const { dots, outline, bar, onKey, place, loupe, drags, frameLine, edges } = _squareEdit;
   _squareEdit = null;
   clearStickyStatus('squareUp');
   try { for (const g of (drags || [])) g.stop(); } catch { /* already gone */ }
   try { loupe?.destroy(); } catch { /* already gone */ }
-  try { for (const d of dots) d.destroy(); outline.destroy(); } catch { /* already gone */ }
+  try { for (const d of dots) d.destroy(); outline.destroy(); frameLine?.destroy(); for (const g of (edges || [])) g.destroy(); } catch { /* already gone */ }
   try { bar.remove(); } catch { /* already gone */ }
   window.removeEventListener('keydown', onKey, true);
   window.removeEventListener('resize', place);
@@ -2144,7 +2203,7 @@ function _flattenToJpeg(canvas) {
 
 async function _commitSquareUp() {
   if (!_squareEdit) return;
-  const { node, dots, aspectSel } = _squareEdit;
+  const { node, dots, aspectSel, ext } = _squareEdit;
   const aspect = aspectSel.value === 'auto' ? null : Number(aspectSel.value);
   const layerPts = dots.map(d => ({ x: d.x(), y: d.y() }));
   _teardownSquareUp();
@@ -2160,9 +2219,12 @@ async function _commitSquareUp() {
   const cw = crop?.width ? crop.width : natW, ch = crop?.height ? crop.height : natH;
   const cx0 = crop?.width ? crop.x : 0, cy0 = crop?.width ? crop.y : 0;
   const nw = node.width() || 1, nh = node.height() || 1;
-  const local = layerPts.map(p => inv.point(p));
-  const quad = local.map(l => ({ x: cx0 + (l.x / nw) * cw, y: cy0 + (l.y / nh) * ch }));
-  const { w: rectW, h: rectH } = rectifiedSize(quad, aspect);
+  const refLocal = layerPts.map(p => inv.point(p));
+  const refQuadPx = refLocal.map(l => ({ x: cx0 + (l.x / nw) * cw, y: cy0 + (l.y / nh) * ch }));
+  // the frame: what the corners mark fixes the perspective and the proportion; the frame is what is cut out
+  const fw = framedWarp(refQuadPx, aspect, ext);
+  const quad = fw.quad, rectW = fw.w, rectH = fw.h;
+  const local = quad.map(p => ({ x: ((p.x - cx0) / cw) * nw, y: ((p.y - cy0) / ch) * nh }));
   setStatus('Squaring up…', 'info', 0);
   let out;
   try { out = warpImage(img, quad, rectW, rectH, { margin: 0.1, maxDim: 4096 }); }   // V0.3.5.5 — a 10 % ribbon of surroundings, the user's call
@@ -2174,7 +2236,7 @@ async function _commitSquareUp() {
   if (!_isLiveNode(node)) return;
 
   // the rectified rectangle takes the quad's place on the canvas, at the same scale
-  const kx = nw / cw, ky = nh / ch;                      // layer units per image pixel
+  const kx = nw / cw / fw.k, ky = nh / ch / fw.k;        // layer units per pixel of the result (a very big frame is rendered smaller: fw.k)
   const quadCentreLocal = { x: local.reduce((s, p) => s + p.x, 0) / 4, y: local.reduce((s, p) => s + p.y, 0) / 4 };
   const quadCentreLayer = xf.point(quadCentreLocal);
   const rectCentreLocal = { x: (out.rect.x + rectW / 2) * kx, y: (out.rect.y + rectH / 2) * ky };

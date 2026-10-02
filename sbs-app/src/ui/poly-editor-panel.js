@@ -15,6 +15,7 @@ import {
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent,
   setPolyTab, setPolyBackground, polyColorsHost,
 } from '../systems/poly-session.js';
+import { quadForExtent, slideExtent, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
 import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
 import { REF_VIEWS, addPolyRef, removePolyRef, squarePolyRef, selectPolyRef, setPolyRefsEdit, setPolyRefProps, movePolyRefOrder } from '../systems/poly-refs.js';   // ⬚ V0.3.5.25
 
@@ -152,7 +153,7 @@ function _render(what) {
   _root.append(lv);
   // ⬚ V0.3.5.28 — scale: a 3D box around the selection, a pyramid and a flat triangle on each face
   const scr = row(); scr.style.marginTop = '5px';
-  scr.append(btn('⤢ Scale', 'A box around the selection. Pull a pyramid = stretch that side (the opposite side stays; Alt = from the centre; Shift = every direction equally). Pull a corner triangle = scale that face\'s two directions (the opposite corner stays; Shift = keep the proportions; Alt = from the centre). Esc ends it.', () => polySetScaleMode(!info.scale), `flex:1;${info.scale ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''}`));
+  scr.append(btn('⤢ Scale', 'A box around the selection. Pull a pyramid = stretch that side (the opposite side stays; Alt = from the centre; Shift = every direction equally). Pull a coloured corner triangle = scale that face\'s two directions (the opposite corner stays; Shift = keep the proportions; Alt = from the centre). Pull the WHITE tip of a corner = everything equally, the corner across the box stays (Alt = from the centre). Esc ends it.', () => polySetScaleMode(!info.scale), `flex:1;${info.scale ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''}`));
   _root.append(scr);
   if (info.scl) {
     // the scale record of the one selected object: 100 % = as it came into the editor. Typing rescales it.
@@ -279,49 +280,99 @@ function _renderRefs(info) {
 
 /**
  * ⌗ Square a picture up: four corners dragged onto what should be a rectangle (a face of the object, a
- * drawing's frame). → { quad: [tl, tr, br, bl] as fractions of the picture, aspect: w / h | null } | 'asis' | null.
+ * drawing's frame). V0.3.5.29 — the FRAME: the thing you can trust is often smaller than what you want, so
+ * each edge has a square handle; pulling it moves that edge out (or in) while the perspective the corners
+ * fixed stays — the frame can take in the whole of what is needed.
+ * sq = what the dialog was left at last time ({ ref, ext, aspect }), to open it the same way.
+ * → { quad: [tl, tr, br, bl] of what is cut out (fractions of the picture), aspect: w / h | null, sq } | 'asis' | null.
  */
-export function askPolySquareUp(src, { title = 'Reference picture', quad = null, aspect = null } = {}) {
+export function askPolySquareUp(src, { title = 'Reference picture', quad = null, aspect = null, sq = null } = {}) {
   return new Promise((resolve) => {
-    const dlg = el('dialog', 'max-width:94vw;border-radius:14px;border:1px solid var(--line,#334155);background:var(--panel,#0f172a);color:var(--text,#e5e7eb);padding:16px 18px;');
+    const dlg = el('dialog', 'max-width:96vw;border-radius:14px;border:1px solid var(--line,#334155);background:var(--panel,#0f172a);color:var(--text,#e5e7eb);padding:16px 18px;');
     dlg.append(el('div', 'font-size:16px;font-weight:700;margin-bottom:4px;', `⌗ ${title}`));
-    dlg.append(el('div', 'font-size:12px;opacity:.75;line-height:1.45;margin-bottom:8px;max-width:760px;', 'A photo is never square-on. Drag the four corners onto what SHOULD be a rectangle — a face of the object, the frame of a drawing — and the picture is re-formed so that it is one. A drawing or a clean front shot can be used as it is.'));
-    const k = Math.min((window.innerWidth * 0.84) / src.width, (window.innerHeight * 0.6) / src.height, 1);
+    dlg.append(el('div', 'font-size:12px;opacity:.75;line-height:1.45;margin-bottom:8px;max-width:820px;', 'A photo is never square-on. Drag the four round corners onto something that SHOULD be a rectangle — a face of the object, a label, the frame of a drawing: that fixes the perspective. Then pull the square handles on the edges to make the frame as big as what you need: the perspective stays. A drawing or a clean front shot can be used as it is.'));
+    // the picture sits inside a border of empty room, so the frame can be pulled out past it
+    const k0 = Math.min((window.innerWidth * 0.8) / src.width, (window.innerHeight * 0.56) / src.height, 1);
+    const PAD = Math.max(28, Math.min(110, Math.round(Math.min(src.width, src.height) * k0 * 0.16)));
+    const k = Math.min((window.innerWidth * 0.86 - 2 * PAD) / src.width, (window.innerHeight * 0.62 - 2 * PAD) / src.height, 1);
     const W = Math.max(60, Math.round(src.width * k)), H = Math.max(60, Math.round(src.height * k));
-    const wrap = el('div', `position:relative;width:${W}px;height:${H}px;margin:0 auto;user-select:none;touch-action:none;`);
-    const cv = el('canvas', 'display:block;border-radius:6px;'); cv.width = W; cv.height = H;
+    const wrap = el('div', `position:relative;width:${W + 2 * PAD}px;height:${H + 2 * PAD}px;margin:0 auto;user-select:none;touch-action:none;background:rgba(127,127,127,.08);border-radius:8px;overflow:hidden;`);
+    const cv = el('canvas', `position:absolute;left:${PAD}px;top:${PAD}px;display:block;`); cv.width = W; cv.height = H;
     cv.getContext('2d').drawImage(src, 0, 0, W, H);
-    const ov = el('canvas', 'position:absolute;left:0;top:0;pointer-events:none;'); ov.width = W; ov.height = H;
+    const ov = el('canvas', 'position:absolute;left:0;top:0;pointer-events:none;'); ov.width = W + 2 * PAD; ov.height = H + 2 * PAD;
     wrap.append(cv, ov);
-    const pts = (Array.isArray(quad) && quad.length === 4 ? quad : [{ x: 0.12, y: 0.12 }, { x: 0.88, y: 0.12 }, { x: 0.88, y: 0.88 }, { x: 0.12, y: 0.88 }]).map(p => ({ x: p.x, y: p.y }));
-    const dots = [];
+    const okQuad = (q) => Array.isArray(q) && q.length === 4 && q.every(p => Number.isFinite(p?.x) && Number.isFinite(p?.y));
+    const start = okQuad(sq?.ref) ? sq.ref : okQuad(quad) ? quad : [{ x: 0.12, y: 0.12 }, { x: 0.88, y: 0.12 }, { x: 0.88, y: 0.88 }, { x: 0.12, y: 0.88 }];
+    const pts = start.map(p => ({ x: p.x, y: p.y }));         // the reference: what should be a rectangle
+    let ext = okQuad(sq?.ref) && !isUnitExtent(sq?.ext) ? sq.ext.slice() : [0, 0, 1, 1];   // the frame, in the reference's own coordinates
+    const startAspect = okQuad(sq?.ref) ? (sq.aspect || null) : aspect;
+    const X = (x) => PAD + x * W, Y = (y) => PAD + y * H;
+    const dots = [], grips = [];
+    const frame = () => quadForExtent(pts, ext);
+    const path = (c, q) => { c.beginPath(); q.forEach((p, i) => (i ? c.lineTo(X(p.x), Y(p.y)) : c.moveTo(X(p.x), Y(p.y)))); c.closePath(); };
     const draw = () => {
-      const c = ov.getContext('2d'); c.clearRect(0, 0, W, H);
-      c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p.x * W, p.y * H) : c.moveTo(p.x * W, p.y * H))); c.closePath();
-      c.fillStyle = 'rgba(56,189,248,0.10)'; c.fill();
+      const c = ov.getContext('2d'); c.clearRect(0, 0, ov.width, ov.height);
+      const f = frame(), own = !isUnitExtent(ext) && f;
+      path(c, pts);
+      if (!own) { c.fillStyle = 'rgba(56,189,248,0.10)'; c.fill(); }
       c.lineWidth = 2; c.strokeStyle = '#38bdf8'; c.setLineDash([8, 5]); c.stroke();
-      dots.forEach((d, i) => { d.style.left = `${pts[i].x * W - 9}px`; d.style.top = `${pts[i].y * H - 9}px`; });
+      if (own) { path(c, f); c.fillStyle = 'rgba(245,158,11,0.10)'; c.fill(); c.setLineDash([]); c.lineWidth = 2; c.strokeStyle = '#f59e0b'; c.stroke(); }
+      dots.forEach((d, i) => { d.style.left = `${X(pts[i].x) - 9}px`; d.style.top = `${Y(pts[i].y) - 9}px`; });
+      const q = f || pts;
+      grips.forEach((g, i) => {
+        const a = q[i], b2 = q[(i + 1) % 4];
+        // kept inside the dialog's picture area: under perspective the middle of an edge can run out of it, and a grip that is clipped cannot be grabbed again
+        const keep = (v, hi) => Math.min(hi, Math.max(0, v));
+        g.style.left = `${keep(X((a.x + b2.x) / 2) - 8, W + 2 * PAD - 20)}px`; g.style.top = `${keep(Y((a.y + b2.y) / 2) - 8, H + 2 * PAD - 20)}px`;
+        g.style.transform = `rotate(${Math.atan2(Y(b2.y) - Y(a.y), X(b2.x) - X(a.x))}rad)`;
+      });
     };
+    const drag = (node, onMove) => node.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      try { node.setPointerCapture(e.pointerId); } catch { /* fine */ }
+      const move = (ev) => { const r = wrap.getBoundingClientRect(); onMove((ev.clientX - r.left - PAD) / W, (ev.clientY - r.top - PAD) / H); draw(); };
+      const up = () => { node.removeEventListener('pointermove', move); node.removeEventListener('pointerup', up); node.removeEventListener('pointercancel', up); };
+      node.addEventListener('pointermove', move); node.addEventListener('pointerup', up); node.addEventListener('pointercancel', up);
+    });
     pts.forEach((p, i) => {
-      const d = el('div', 'position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #38bdf8;box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:grab;touch-action:none;');
-      d.title = ['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left'][i];
-      d.addEventListener('pointerdown', (e) => {
-        e.preventDefault(); e.stopPropagation();
-        try { d.setPointerCapture(e.pointerId); } catch { /* fine */ }
-        const move = (ev) => { const r = wrap.getBoundingClientRect(); p.x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)); p.y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)); draw(); };
-        const up = () => { d.removeEventListener('pointermove', move); d.removeEventListener('pointerup', up); d.removeEventListener('pointercancel', up); };
-        d.addEventListener('pointermove', move); d.addEventListener('pointerup', up); d.addEventListener('pointercancel', up);
+      const d = el('div', 'position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #38bdf8;box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:grab;touch-action:none;z-index:2;');
+      d.title = `${['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left'][i]} corner of what should be a rectangle`;
+      drag(d, (x, y) => {
+        const was = { x: p.x, y: p.y };
+        p.x = Math.min(1, Math.max(0, x)); p.y = Math.min(1, Math.max(0, y));
+        if (!frame()) { p.x = was.x; p.y = was.y; }          // that corner would throw the frame past the horizon
       });
       dots.push(d); wrap.append(d);
     });
+    const padX = PAD / W, padY = PAD / H;
+    for (let i = 0; i < 4; i++) {
+      const g = el('div', 'position:absolute;width:16px;height:16px;border-radius:3px;background:#f59e0b;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6);touch-action:none;z-index:1;');
+      g.style.cursor = i % 2 ? 'ew-resize' : 'ns-resize';
+      g.title = `Pull the ${['top', 'right', 'bottom', 'left'][i]} edge of the frame out (or in) — the perspective stays`;
+      drag(g, (x, y) => {
+        const e2 = slideExtent(pts, ext, i, { x: Math.min(1 + padX, Math.max(-padX, x)), y: Math.min(1 + padY, Math.max(-padY, y)) });
+        if (e2) ext = e2;
+      });
+      grips.push(g); wrap.append(g);
+    }
     dlg.append(wrap);
     const bar = el('div', 'display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;');
     const sel = el('select', 'height:28px;font-size:12px;border-radius:6px;background:var(--panel,#0f172a);color:inherit;border:1px solid var(--line,#334155);');
-    sel.title = "The rectangle's width : height. Auto measures it from the corners.";
-    for (const [v, l] of [['', 'Proportion: auto'], ['1', '1 : 1'], ['1.3333', '4 : 3'], ['1.5', '3 : 2'], ['1.7778', '16 : 9'], ['0.75', '3 : 4'], ['0.6667', '2 : 3']]) { const o = el('option', '', l); o.value = v; if (aspect && Math.abs(Number(v) - aspect) < 1e-3) o.selected = true; sel.append(o); }
+    sel.title = "The width : height of what the four round corners mark. Auto measures it from the corners. (The frame's own proportion follows from it.)";
+    for (const [v, l] of [['', 'Proportion: auto'], ['1', '1 : 1'], ['1.3333', '4 : 3'], ['1.5', '3 : 2'], ['1.7778', '16 : 9'], ['0.75', '3 : 4'], ['0.6667', '2 : 3']]) { const o = el('option', '', l); o.value = v; if (startAspect && Math.abs(Number(v) - startAspect) < 1e-3) o.selected = true; sel.append(o); }
     const done = (v) => { try { dlg.close(); } catch { /* fine */ } dlg.remove(); resolve(v); };
-    bar.append(sel, el('div', 'flex:1;'),
-      btn('⌗ Square it up', 'Re-form the picture so the four corners make a rectangle', () => done({ quad: pts.map(p => ({ x: p.x, y: p.y })), aspect: Number(sel.value) || null }), 'font-weight:600;background:#14532d;border-color:#22c55e;color:#dcfce7;'),
+    const result = () => {
+      const refAspect = Number(sel.value) || null, ref = pts.map(p => ({ x: p.x, y: p.y }));
+      const f = isUnitExtent(ext) ? null : frame();
+      if (!f) return { quad: ref, aspect: refAspect, sq: { ref, ext: [0, 0, 1, 1], aspect: refAspect } };
+      // the frame's proportion: the reference's (as given, or measured in picture pixels) times how much wider / taller the frame is
+      const fw = framedWarp(ref.map(p => ({ x: p.x * src.width, y: p.y * src.height })), refAspect, ext);
+      return { quad: f, aspect: fw.w / fw.h, sq: { ref, ext: ext.slice(), aspect: refAspect } };
+    };
+    bar.append(sel,
+      btn('↺ Frame = the corners', 'Put the frame back on the four corners', () => { ext = [0, 0, 1, 1]; draw(); }),
+      el('div', 'flex:1;'),
+      btn('⌗ Square it up', 'Re-form the picture so the marked rectangle is one, and cut out the frame', () => done(result()), 'font-weight:600;background:#14532d;border-color:#22c55e;color:#dcfce7;'),
       btn('Use the picture as it is', 'No correction', () => done('asis')),
       btn('Cancel', '', () => done(null)));
     dlg.append(bar);

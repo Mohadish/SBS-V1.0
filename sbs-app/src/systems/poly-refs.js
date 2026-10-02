@@ -215,6 +215,7 @@ export function polyRefsForSave(X = null) {
       if (!view) continue;
     }
     out.push({ view, name: r.name, path: r.path, quad: r.quad ? r.quad.map(p => ({ x: r6(p.x), y: r6(p.y) })) : null, aspect: r.aspect || null,
+      ...(r.quad && r.sq ? { sq: r.sq } : {}),               // how the square-up dialog was left (its corners + the frame), to open it the same way
       a: [r6(a.x), r6(a.y), r6(a.z)], u: r6(r.u * k), v: r6(r.v * k), size: r6(r.size * k), opacity: r6(r.opacity), front: !!r.front, visible: !!r.visible });
   }
   return out;
@@ -235,7 +236,7 @@ export function initPolyRefs(host, saved = null) {
   for (const s of Array.isArray(saved) ? saved : []) {
     if (!s || !REF_VIEWS.includes(s.view) || typeof s.path !== 'string') continue;
     const quad = Array.isArray(s.quad) && s.quad.length === 4 && s.quad.every(p => Number.isFinite(p?.x) && Number.isFinite(p?.y)) ? s.quad.map(p => ({ x: p.x, y: p.y })) : null;
-    const ref = { id: `r${++_seq}`, view: s.view, name: String(s.name || s.path.split(/[\\/]/).pop() || 'picture'), path: s.path, quad, aspect: s.aspect > 0 ? s.aspect : null,
+    const ref = { id: `r${++_seq}`, view: s.view, name: String(s.name || s.path.split(/[\\/]/).pop() || 'picture'), path: s.path, quad, aspect: s.aspect > 0 ? s.aspect : null, sq: quad && s.sq && typeof s.sq === 'object' ? s.sq : null,
       u: Number(s.u) || 0, v: Number(s.v) || 0, size: s.size > 0 ? s.size : 100, opacity: s.opacity > 0 ? s.opacity : 0.6, front: !!s.front, visible: s.visible !== false, w: 1, h: 1, mesh: null, mode: null };
     if (Array.isArray(s.a) && s.a.length === 3 && s.a.every(Number.isFinite)) {   // measured from another anchor than today's: same spot, new numbers
       const d = new Th.Vector3(s.a[0], s.a[1], s.a[2]).sub(A), b = _basis(ref.view);
@@ -281,14 +282,14 @@ export async function addPolyRef() {
   const panel = await import('../ui/poly-editor-panel.js');
   const sq = await panel.askPolySquareUp(src, { title: `A picture for the ${view} view` });
   if (!sq || !_h) return null;
-  let canvas, quad = null, aspect = null;
+  let canvas, quad = null, aspect = null, sqState = null;
   try {
-    if (sq !== 'asis') { quad = sq.quad; aspect = sq.aspect || null; }
+    if (sq !== 'asis') { quad = sq.quad; aspect = sq.aspect || null; sqState = sq.sq || null; }
     canvas = _finalCanvas(src, quad, aspect);
   } catch (err) { setStatus(`Squaring the picture failed: ${err?.message || err}`, 'warn', 7000); return null; }
   let size = _h.contentSize();
   if (!(size > 0)) size = _viewHeightLocal(_h.anchor()) * 0.6;
-  const ref = { id: `r${++_seq}`, view, name: path.split(/[\\/]/).pop() || 'picture', path, quad, aspect, u: 0, v: 0, size, opacity: 0.6, front: false, visible: true, w: 1, h: 1, mesh: null, mode: null };
+  const ref = { id: `r${++_seq}`, view, name: path.split(/[\\/]/).pop() || 'picture', path, quad, aspect, sq: sqState, u: 0, v: 0, size, opacity: 0.6, front: false, visible: true, w: 1, h: 1, mesh: null, mode: null };
   _buildMesh(ref, canvas);
   const add = () => { if (!_refs.includes(ref)) _refs.push(ref); _sel = ref.id; };
   const drop = () => { _refs = _refs.filter(r => r !== ref); if (_sel === ref.id) _sel = null; };
@@ -308,11 +309,11 @@ export async function squarePolyRef(id) {
   try { src = await _readImage(ref.path); } catch (err) { setStatus(`The file of that picture could not be opened: ${err?.message || err}`, 'warn', 7000); return false; }
   if (!_h || !_refs.includes(ref)) return false;
   const panel = await import('../ui/poly-editor-panel.js');
-  const sq = await panel.askPolySquareUp(src, { title: ref.name, quad: ref.quad, aspect: ref.aspect });
+  const sq = await panel.askPolySquareUp(src, { title: ref.name, quad: ref.quad, aspect: ref.aspect, sq: ref.sq || null });
   if (!sq || !_h || !_refs.includes(ref)) return false;
-  const before = { quad: ref.quad, aspect: ref.aspect }, after = sq === 'asis' ? { quad: null, aspect: null } : { quad: sq.quad, aspect: sq.aspect || null };
+  const before = { quad: ref.quad, aspect: ref.aspect, sq: ref.sq || null }, after = sq === 'asis' ? { quad: null, aspect: null, sq: null } : { quad: sq.quad, aspect: sq.aspect || null, sq: sq.sq || null };
   const apply = (s) => {
-    try { _swapCanvas(ref, _finalCanvas(src, s.quad, s.aspect)); ref.quad = s.quad; ref.aspect = s.aspect; }
+    try { _swapCanvas(ref, _finalCanvas(src, s.quad, s.aspect)); ref.quad = s.quad; ref.aspect = s.aspect; ref.sq = s.sq; }
     catch (err) { setStatus(`Squaring the picture failed: ${err?.message || err}`, 'warn', 7000); }
   };
   apply(after);
