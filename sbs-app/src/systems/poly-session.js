@@ -49,6 +49,9 @@ import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForS
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
+// ⬚ V0.3.5.27 — edits of the PROJECT made from inside the editor (its Colours tab is the project's own panel):
+// undoable here with the editor's Ctrl+Z; they stay in the project's history when the editor is discarded.
+const SCOPE_PROJ = 'polySessionProject';
 const TRI_WARN = 80000;
 const HIDE_DOM = ['sidebar-right', 'step-nav-bar', 'overlay-stage', 'notes-overlay', 'screen-overlay', 'export-safe-frame', 'overlay-toolbar', 'overlay-helpers-bar', 'overlay-float-toolbar'];
 
@@ -68,6 +71,8 @@ const _subs = new Set();
 
 export const isPolySession = () => !!_s;
 export const polySessionUndoScope = SCOPE;
+/** Is the next Ctrl+Z (or Ctrl+Y) something that was done in this editor? */
+export const polySessionUndoOk = (redo = false) => { const s = redo ? undoManager.redoScope?.() : undoManager.undoScope?.(); return s === SCOPE || s === SCOPE_PROJ; };
 /** Subscribe to session changes ('open' | 'tree' | 'select' | 'mode' | 'view' | 'undo' | 'close'). */
 export function onPolySession(fn) { _subs.add(fn); return () => _subs.delete(fn); }
 const _emit = (what) => { for (const fn of [..._subs]) { try { fn(what); } catch (err) { console.warn('[poly session] listener', err); } } };
@@ -86,12 +91,11 @@ export function polySessionInfo() {
     parts: [...alive].filter(id => _s.items.get(id).kind === 'part').length,
     selected: [..._s.sel], primary: _s.primary,
     tree: _s.rootIds.map(id => row(id, 0)),
-    canUndo: undoManager.undoScope?.() === SCOPE,
+    canUndo: polySessionUndoOk(false),
     reedit: _s.reedit ? { file: _s.reedit.file } : null,   // this session edits an asset that is already in the project
     // ⬚ V0.3.5.22 — the panel's tabs: the scene's colours, the editor's own background
     tab: _s.tab || 'model', bg: _s.bg || null,
-    colors: (state.get('colorPresets') || []).filter(p => p && p.id && typeof p.color === 'string').map(p => ({ id: p.id, name: p.name || p.color, color: p.color })),
-    selParts: selParts.length, selPreset: prim?.presetId || null,
+    selParts: selParts.length,
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
     scale: _s.scale?.mode || null,                           // ⬚ V0.3.5.26 — the scale box: '2d' | '3d' | off
   };
@@ -370,7 +374,10 @@ async function _start(nodeIds, opts = {}) {
     const pf = _readFrame(src.frame);
     const frame0 = pf && pf.pos ? pf : { pos: _polyCentre(poly), quat: new Th.Quaternion() };
     _polyApply(poly, new Th.Matrix4().compose(frame0.pos, frame0.quat, new Th.Vector3(1, 1, 1)).invert());
-    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true, frame0 };
+    // the project colour it wears (this step's, else its default): the Colours tab shows it as used, and a
+    // NEW asset made from it wears that same colour — not a look-alike
+    const srcPid = src.node?.id ? (materials.meshColorAssignments[src.node.id] ?? materials.meshDefaultColors[src.node.id] ?? null) : null;
+    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true, frame0, presetId: srcPid || null };
     sess.items.set(it.id, it);
     if (src.srcId) okSources.add(src.srcId);
     return it.id;
@@ -441,6 +448,7 @@ function _buildPartMesh(part) {
   const mesh = new Th.Mesh(new Th.BufferGeometry(), mat);
   mesh.name = part.name; mesh.userData.polyPartId = part.id;
   part.mesh = mesh;
+  _paintPart(part);
   _refreshPartMesh(part);
   _s.group.add(mesh);
 }
@@ -583,6 +591,89 @@ export function setPolyBackground(hex, { quiet = false } = {}) {
 // Colours come FROM the scene: the project's colour presets. A part coloured here wears that same preset in
 // the scene after Apply (no look-alike copy is made), and a colour made here is added to the project's too.
 const _hexOf = (c) => '#' + new (T().Color)(c[0], c[1], c[2]).getHexString();
+/**
+ * ⬚ V0.3.5.27 — a part shows the project colour it wears: its colour, metalness, roughness and solidness
+ * (a plain see-through here; the project's X-ray falloff, outline and reflections show after Apply). A part
+ * with no colour of the project (or one that was deleted) keeps its own plain colour.
+ */
+function _paintPart(it) {
+  const m = it?.mesh?.material; if (!m?.color) return;
+  const p = it.presetId ? (state.get('colorPresets') || []).find(x => x.id === it.presetId) : null;
+  if (p && typeof p.color === 'string') { const c = new (T().Color)(p.color); it.color = [c.r, c.g, c.b]; }
+  m.color.setRGB(it.color[0], it.color[1], it.color[2]);
+  const num = (v, d) => (Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : d);
+  m.metalness = p ? num(p.metalness, 0.05) : 0;
+  m.roughness = p ? num(p.roughness, 0.45) : 0.6;
+  const sol = p ? num(p.solidness, 1) : 1, opaque = sol >= 0.999;
+  if (m.transparent !== !opaque) { m.transparent = !opaque; m.needsUpdate = true; }
+  m.opacity = opaque ? 1 : 0.15 + 0.85 * sol;
+  m.depthWrite = opaque;
+}
+// a colour edited (here or by an undo), deleted or brought back: the parts that wear it follow
+state.on('change:colorPresets', () => {
+  if (!_s) return;
+  for (const it of _s.items.values()) if (it.kind === 'part' && it.presetId) _paintPart(it);
+  sceneCore.requestRender?.(120);
+});
+
+/** What the project's Colours panel needs to work on the editor's parts (ui/sidebar-left.js mountColorsPanel). */
+export function polyColorsHost() {
+  const usage = () => {
+    const m = new Map(); if (!_s) return m;
+    const alive = _aliveIds();
+    for (const it of _s.items.values()) {
+      if (it.kind !== 'part' || !it.presetId || !alive.has(it.id)) continue;
+      if (!m.has(it.presetId)) m.set(it.presetId, new Set());
+      m.get(it.presetId).add(it.id);
+    }
+    return m;
+  };
+  let lastKey = null;
+  return {
+    undoScope: SCOPE_PROJ,                                   // the panel's own colour edits are tagged with it (and only those)
+    selectedIds: () => _selectedPartIds(),
+    usage,
+    assign: (presetId) => polyApplyPreset(presetId),
+    /** "Select by colour": plain = these parts, Ctrl = add them, Alt = take them out. */
+    select: (ids, mods) => {
+      if (!_s) return;
+      const cur = _selectedPartIds(), hit = new Set(ids || []);
+      const next = mods?.alt ? cur.filter(id => !hit.has(id)) : (mods?.ctrl || mods?.meta) ? [...new Set([...cur, ...hit])] : [...hit];
+      polySelect(next);
+      setStatus(`${mods?.alt ? 'Removed' : (mods?.ctrl || mods?.meta) ? 'Added' : 'Selected'} ${hit.size} part${hit.size === 1 ? '' : 's'}.`, 'info', 2500);
+    },
+    // called right after the project action that merged / replaced the colours pushed its undo entry: the
+    // parts' half joins it — ONE undo step, and it stays the project's (the parts' half is a no-op once the editor is closed)
+    remap: (fromIds, toId, label) => { const n = polyRemapPreset(fromIds, toId, label); if (n) undoManager.mergeLast(2, label || 'Unify colours', SCOPE_PROJ); return n; },
+    /** Selecting parts selects the colours they wear in the list (adds, never removes — as in the project). */
+    syncSelection: () => {
+      if (!_s) return;
+      const sel = _selectedPartIds(), key = sel.join(',');
+      if (key === lastKey) return;
+      lastKey = key;
+      const have = new Set((state.get('colorPresets') || []).map(p => p.id)), next = new Set(state.get('selectedColorPresetIds') || []);
+      for (const id of sel) { const pid = _s.items.get(id)?.presetId; if (pid && have.has(pid)) next.add(pid); }
+      try { actions.setColorSelection(next, { silent: true }); } catch (err) { console.warn('[poly session] colour selection', err); }
+    },
+  };
+}
+/**
+ * Colours were unified (or one was replaced) in the project: the editor's parts that wore a merged one wear
+ * the survivor. NOT a recolouring by the user: the part's "edited" mark stays as it was — the project side
+ * was already remapped, and a Replace must not turn one step's colour into the part's default.
+ */
+export function polyRemapPreset(fromIds, toId, label = '') {
+  if (!_s) return 0;
+  const from = new Set(fromIds || []);
+  const rows = [..._s.items.values()].filter(it => it.kind === 'part' && it.presetId && from.has(it.presetId)).map(it => ({ it, presetId: it.presetId, color: it.color.slice(), edited: !!it.colorEdited }));
+  if (!rows.length) return 0;
+  const to = () => { for (const r of rows) { r.it.presetId = toId; _paintPart(r.it); } };
+  const back = () => { for (const r of rows) { r.it.presetId = r.presetId; r.it.color = r.color.slice(); _paintPart(r.it); } };
+  to();
+  _push(label || 'Unify colours', back, to);
+  _syncScene(); _emit('tree');
+  return rows.length;
+}
 export function polyApplyPreset(presetId) {
   if (!_s) return false;
   const p = (state.get('colorPresets') || []).find(x => x.id === presetId);
@@ -591,7 +682,7 @@ export function polyApplyPreset(presetId) {
   if (!ids.length) { setStatus('Select the part(s) to colour first.', 'warn', 3500); return false; }
   const c = new (T().Color)(p.color), rgb = [c.r, c.g, c.b];
   const rows = ids.map(id => { const it = _s.items.get(id); return { it, color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited }; });
-  const paint = (it) => { if (it.mesh?.material?.color) it.mesh.material.color.setRGB(it.color[0], it.color[1], it.color[2]); };
+  const paint = _paintPart;
   const to = () => { for (const r of rows) { r.it.color = rgb.slice(); r.it.presetId = presetId; r.it.colorEdited = true; paint(r.it); } };
   const back = () => { for (const r of rows) { r.it.color = r.color.slice(); r.it.presetId = r.presetId; r.it.colorEdited = r.edited; paint(r.it); } };
   to();
@@ -600,18 +691,6 @@ export function polyApplyPreset(presetId) {
   setStatus(`${ids.length} part${ids.length === 1 ? '' : 's'}: ${p.name || p.color}.`, 'success', 2500);
   return true;
 }
-/** A new colour: it is added to the PROJECT's colours (unless that exact colour is already there) and put on the selection. */
-export function polyNewColor(hex, name = '') {
-  if (!_s || !/^#[0-9a-f]{6}$/i.test(hex || '')) return null;
-  const h = hex.toLowerCase(), nm = String(name || '').trim();
-  let p = (state.get('colorPresets') || []).find(x => typeof x.color === 'string' && x.color.toLowerCase() === h && (!nm || x.name === nm));
-  let made = false;
-  if (!p) { try { p = materials.createPreset({ color: h, name: nm || h }); made = true; } catch (err) { console.warn('[poly session] new colour', err); return null; } }
-  if (_selectedPartIds().length) polyApplyPreset(p.id);
-  else { _emit('tree'); setStatus(made ? `“${p.name || h}” was added to the scene's colours. Select a part and click it to use it.` : 'The scene already has that colour.', made ? 'success' : 'info', 5000); }
-  return p.id;
-}
-
 // ── undo (scope: polySession; a no-op once the session is over) ──────────────
 function _noteEdit() { if (!_s) return; _s.edits++; if (!state.get('polySessionDirty')) state.setState({ polySessionDirty: true }); }
 
@@ -1700,14 +1779,18 @@ function _detachInput() {
 }
 
 function _onKey(e) {
-  if (!_s || _typing() || document.querySelector('dialog[open]')) return;
+  if (!_s || document.querySelector('dialog[open]')) return;
+  // A focused <select> (the Colours panel's Outline list) is not a text field: the app's Ctrl+Z acts there,
+  // so the "only what was done in the editor" guard below must run for it too.
+  const undoKey = (e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || e.code === 'KeyY');
+  if (_typing() && !(undoKey && document.activeElement?.tagName === 'SELECT')) return;
   // the right-click menu closes on Esc through a listener this handler would cut off: close it here, and nothing else
   if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return; }
   const mod = e.ctrlKey || e.metaKey;
   // Undo / redo stay inside the editor: the shared stack also holds the project's entries underneath.
   if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
     const redo = e.code === 'KeyY' || e.shiftKey;
-    if ((redo ? undoManager.redoScope?.() : undoManager.undoScope?.()) !== SCOPE) {
+    if (!polySessionUndoOk(redo)) {
       e.preventDefault(); e.stopImmediatePropagation();
       setStatus(redo ? 'Nothing to redo in the Poly Editor.' : 'Nothing more to undo in the Poly Editor.', 'info', 3500);
     }
@@ -1766,6 +1849,9 @@ function _teardown(how = 'discard') {
   _s = null;
   clearStickyStatus('polySession');
   try { undoManager.dropScope?.(SCOPE); } catch { /* an older undo manager: the entries are no-ops anyway */ }
+  // colour edits made in here are edits of the PROJECT: after a Discard they stay undoable there; after an
+  // Apply they are settled (the new parts wear those colours — taking one back would leave them bare)
+  try { if (how === 'discard') undoManager.rescope?.(SCOPE_PROJ, undefined); else undoManager.dropScope?.(SCOPE_PROJ); } catch { /* as above */ }
   state.setState({ polySession: null, polySessionDirty: null });
   sceneCore.requestRender?.(300);
   _emit('close');

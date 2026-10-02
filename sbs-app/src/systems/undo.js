@@ -12,6 +12,7 @@ class UndoManager {
   constructor() {
     this._undo    = [];   // [ { label, undo, redo } ]
     this._redo    = [];
+    this.defaultScope = null;   // ⬚ V0.3.5.27 — the scope of a push that names none; set only AROUND one call (see sidebar-left.js _colorAct), never left on
     this._maxSize = 60;   // V0.3.1.48: lowered from 200 — each base64-changing edit's
                           // undo entry RETAINS that step's old overlay/frames/audio,
                           // so a deep stack pins gigabytes on big projects. Still
@@ -66,7 +67,7 @@ class UndoManager {
       this._undo.push({
         label, undo: undoFn, redo: redoFn,
         coalesceKey: opts.coalesceKey,
-        scope: opts.scope,          // 📄 e.g. 'document' — lets a takeover workspace undo only its own edits
+        scope: opts.scope ?? this.defaultScope ?? undefined,   // 📄 e.g. 'document' — lets a takeover workspace undo only its own edits
         _t: now,
       });
       if (this._undo.length > this._maxSize) this._undo.shift();
@@ -75,14 +76,14 @@ class UndoManager {
   }
 
   /** V0.3.4.181 — fold the last `count` entries into one (a wrap + the follow that needed it). */
-  mergeLast(count, label) {
+  mergeLast(count, label, scope) {
     if (count < 2 || this._undo.length < count) return false;
     const cmds = this._undo.splice(this._undo.length - count, count);
     this._undo.push({
       label,
       undo: () => { for (let i = cmds.length - 1; i >= 0; i--) cmds[i].undo(); },
       redo: () => { for (const c of cmds) c.redo(); },
-      scope: cmds[cmds.length - 1].scope,
+      scope: scope ?? cmds[cmds.length - 1].scope,
       _t: performance.now(),
     });
     state.emit('undo:change');
@@ -123,6 +124,14 @@ class UndoManager {
     this._undo = this._undo.filter(c => c.scope !== scope);
     this._redo = this._redo.filter(c => c.scope !== scope);
     if (this._undo.length !== u || this._redo.length !== r) state.emit('undo:change');
+  }
+
+  /** ⬚ V0.3.5.27 — the entries of one scope become another's (to = undefined: ordinary project entries). */
+  rescope(from, to) {
+    if (!from) return;
+    let n = 0;
+    for (const c of [...this._undo, ...this._redo]) if (c.scope === from) { c.scope = to; n++; }
+    if (n) state.emit('undo:change');
   }
 
   /** Clear both stacks (e.g. after project load). */

@@ -206,7 +206,7 @@ export function initSidebarLeft() {
   // element inside the tab — keeps the user's open <input type=color>
   // popup alive while they drag, and re-renders cleanly once they're done.
   document.addEventListener('focusout', () => {
-    if (_activeTab !== 'colors') return;
+    if (!_colorsHost && _activeTab !== 'colors') return;
     requestAnimationFrame(() => {
       if (_colorsRenderQueued && !_shouldDeferColorsRender()) {
         _colorsRenderQueued = false;
@@ -2167,15 +2167,16 @@ let _outlineCollapsed = false;
 let _colorMarqueeJustDragged = false;
 
 function _setupColorMarquee() {
-  const panel = _panel('colors');
-  if (!panel) return;
+  if (!_panel('colors')) return;
   let down = null;       // { x, y } on Ctrl+pointerdown
   let box  = null;       // the visual marquee div (created on first move)
+  let panel = null;      // the Colours panel the drag started in (the tab, or the Poly Editor's host)
 
-  panel.addEventListener('pointerdown', (e) => {
+  document.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
     if (!(e.ctrlKey || e.metaKey)) return;
-    const list = panel.querySelector('#color-list');
+    panel = _colorsEl();
+    const list = panel?.querySelector('#color-list');
     if (!list || !list.contains(e.target)) return;
     down = { x: e.clientX, y: e.clientY };
     e.preventDefault();
@@ -2202,7 +2203,7 @@ function _setupColorMarquee() {
       box.remove(); box = null;
       _colorMarqueeJustDragged = true;
       setTimeout(() => { _colorMarqueeJustDragged = false; }, 60);
-      const list = panel.querySelector('#color-list');
+      const list = panel?.querySelector('#color-list');
       const sel  = new Set(state.get('selectedColorPresetIds') || []);
       let changed = false;
       list?.querySelectorAll('.colorRow[data-preset-id]').forEach(row => {
@@ -2214,7 +2215,7 @@ function _setupColorMarquee() {
         changed = true;
       });
       if (changed) {
-        actions.setColorSelection(sel);
+        _colorAct.setColorSelection(sel);
         _renderColorsTab();
       }
     }
@@ -2229,6 +2230,7 @@ function _setupColorMarquee() {
  * color is expanded. Re-runs on selection / step / visibility changes.
  */
 function _syncExpandedColorHighlight() {
+  if (_colorsHost) { materials.clearExpandedColorHighlight(); return; }   // the Poly Editor's parts are not project meshes
   if (!_expandedPresetId) { materials.clearExpandedColorHighlight(); return; }
   const sceneSel = new Set();
   const sId = state.get('selectedId');
@@ -2283,7 +2285,7 @@ function _onColorRowClick(e, presetId, presets) {
     }
     _colorAnchorId = presetId;
   }
-  if (selChanged) actions.setColorSelection(sel);
+  if (selChanged) _colorAct.setColorSelection(sel);
   _renderColorsTab();
 }
 
@@ -2293,8 +2295,44 @@ function _onColorRowClick(e, presetId, presets) {
 // <input type=color> popup off-screen. So we DEFER renders triggered
 // by state changes during interaction and flush them on focusout.
 let _colorsRenderQueued = false;
+
+// ⬚ V0.3.5.27 — the SAME Colours panel, shown inside the Poly Editor. His ask: "exactly the same panel".
+// The editor hands in a host: where to draw and what "the selection" is there (its parts are not project
+// nodes). Everything about the colours themselves — the list, the edit card, add / rename / delete /
+// unify, the filters — is this one code path, on the project's own colours.
+//   host = { el, selectedIds() → part ids, usage() → Map(presetId → Set(part id)), assign(presetId),
+//            select(ids, mods), remap(fromPresetIds, toPresetId) }
+let _colorsHost = null;
+const _colorsEl = () => _colorsHost?.el || _panel('colors');
+// The colour edits made through the panel while it is hosted carry the host's undo scope (host.undoScope), so
+// the host's Ctrl+Z reaches them. Only the push made INSIDE that one call is tagged — nothing else that
+// happens while the host is open. With no host this is `actions`, unchanged.
+const _colorAct = new Proxy({}, {
+  get: (_, k) => (...a) => {
+    const scope = _colorsHost?.undoScope;
+    if (!scope) return actions[k](...a);
+    const prev = undoManager.defaultScope;
+    undoManager.defaultScope = scope;
+    try { return actions[k](...a); } finally { undoManager.defaultScope = prev; }
+  },
+});
+export function mountColorsPanel(host) {
+  _colorsHost = host?.el ? host : null;
+  _colorsRenderQueued = false;
+  _renderColorsTab();
+}
+export function unmountColorsPanel() {
+  if (!_colorsHost) return;
+  try { _colorsHost.el.innerHTML = ''; } catch { /* already gone */ }
+  _colorsHost = null;
+  _colorsRenderQueued = false;
+  if (_activeTab === 'colors') _renderColorsTab();        // the tab's own panel was not drawn meanwhile
+}
+/** The host's selection / parts changed: redraw (deferred while a field of the panel is in use). */
+export function refreshColorsPanel() { if (_colorsHost) _queueColorsRender(); }
+
 function _shouldDeferColorsRender() {
-  const el = _panel('colors');
+  const el = _colorsEl();
   if (!el) return false;
   const a  = document.activeElement;
   if (!a) return false;
@@ -2302,7 +2340,7 @@ function _shouldDeferColorsRender() {
   return ['INPUT', 'SELECT', 'TEXTAREA'].includes(a.tagName);
 }
 function _queueColorsRender() {
-  if (_activeTab !== 'colors') return;
+  if (!_colorsHost && _activeTab !== 'colors') return;
   if (_shouldDeferColorsRender()) {
     _colorsRenderQueued = true;
     return;
@@ -2312,8 +2350,9 @@ function _queueColorsRender() {
 }
 
 function _renderColorsTab() {
-  const el = _panel('colors');
+  const el = _colorsEl();
   if (!el) return;
+  const host = _colorsHost;                                // ⬚ the Poly Editor shows this panel: its parts are the selection
 
   const presets    = state.get('colorPresets') || [];
   // Tab multi-select (file-manager). The edit card shows only when exactly
@@ -2337,7 +2376,7 @@ function _renderColorsTab() {
   // cascades the color to every child copy inside the RM (B.2-NEW.2).
   // Folders / models / scene-root can't receive presets directly.
   const allSelIds = multiIds.size ? Array.from(multiIds) : (selId ? [selId] : []);
-  const meshIds   = allSelIds.filter(id => {
+  const meshIds   = host ? host.selectedIds() : allSelIds.filter(id => {
     const t = nodeById.get(id)?.type;
     // V0.2.22.45 — hardwareInstance recognised as colour-target. Same
     // registration path as flatShape (materials.registerMesh in
@@ -2364,6 +2403,10 @@ function _renderColorsTab() {
     if (!meshesUsingPreset.has(pid)) meshesUsingPreset.set(pid, new Set());
     meshesUsingPreset.get(pid).add(mid);
   };
+  if (host) {
+    // in the editor "in use / in view" = worn by the editor's own parts
+    for (const [pid, ids] of host.usage()) { for (const id of ids) _addUse(id, pid); usedByVisible.add(pid); }
+  } else {
   for (const [mid, pid] of Object.entries(materials.meshColorAssignments)) _addUse(mid, pid);
   for (const [mid, pid] of Object.entries(materials.meshDefaultColors))    _addUse(mid, pid);
   for (const [mid, mesh] of materials.meshById) {
@@ -2373,10 +2416,14 @@ function _renderColorsTab() {
     const pid = materials.meshColorAssignments[mid] ?? materials.meshDefaultColors[mid];
     if (pid) usedByVisible.add(pid);
   }
+  }
   // Scene-selected mesh ids (for state 1 / 2 detection).
   const sceneSelMeshIds = new Set();
-  if (selId) sceneSelMeshIds.add(selId);
-  if (multiIds instanceof Set) for (const id of multiIds) sceneSelMeshIds.add(id);
+  if (host) { for (const id of meshIds) sceneSelMeshIds.add(id); }
+  else {
+    if (selId) sceneSelMeshIds.add(selId);
+    if (multiIds instanceof Set) for (const id of multiIds) sceneSelMeshIds.add(id);
+  }
 
   /**
    * Scene-only state for a preset's background fill (V0.2.9). Independent
@@ -2416,10 +2463,11 @@ function _renderColorsTab() {
         <div class="grid2">
           <button class="btn" id="btn-add-preset">+ Add Color</button>
           <button class="btn" id="btn-assign-preset">Assign to Selected</button>
-          <button class="btn" id="btn-assign-default" title="Set as permanent default for selected meshes">★ Set as Default</button>
-          <button class="btn" id="btn-revert-default" title="Restore each selected mesh to its default color">↩ Revert to Default</button>
+          ${host ? '' : `<button class="btn" id="btn-assign-default" title="Set as permanent default for selected meshes">★ Set as Default</button>
+          <button class="btn" id="btn-revert-default" title="Restore each selected mesh to its default color">↩ Revert to Default</button>`}
         </div>
 
+        ${host ? `<div class="small muted" style="margin-top:6px;line-height:1.4">These are the project's colours — an edit here changes the colour in the project too. Colour, solidness, metalness and roughness show here; outline and reflections show after Apply.</div>` : `
         <div class="card" style="margin-top:8px">
           <div class="row" id="outline-header" style="margin-top:0;cursor:pointer">
             <span id="outline-collapse-arrow" style="font-size:10px;opacity:0.7;margin-right:4px;width:10px;display:inline-block;text-align:center">${(!outline.enabled || _outlineCollapsed) ? '▶' : '▼'}</span>
@@ -2440,7 +2488,7 @@ function _renderColorsTab() {
               <input id="outline-crease" type="number" min="1" max="180" step="1" value="${crease0}" style="margin-top:6px" />
             </label>
           </div>` : ''}
-        </div>
+        </div>`}
         <div class="small muted" style="margin-top:6px">
           Click to expand • Ctrl-click toggles selection • Shift range • R-click for unify / delete / invert
         </div>
@@ -2460,7 +2508,7 @@ function _renderColorsTab() {
     const after  = { ...(state.get('geometryOutline') || {}) };
     actions.pushSetterUndo(label, _applyOutline, before, after, 'geomOutline');
   };
-  el.querySelector('#outline-toggle').addEventListener('click', function(e) {
+  el.querySelector('#outline-toggle')?.addEventListener('click', function(e) {
     e.stopPropagation();   // don't let the outline-header collapse toggle fire
     this.classList.toggle('on');
     const enabled = this.classList.contains('on');
@@ -2485,7 +2533,7 @@ function _renderColorsTab() {
 
   // ── Add preset ────────────────────────────────────────────────────────────
   el.querySelector('#btn-add-preset').addEventListener('click', () => {
-    const p = actions.addColorPreset({ name: `Color ${presets.length + 1}` });
+    const p = _colorAct.addColorPreset({ name: `Color ${presets.length + 1}` });
     if (p) {
       _colorAnchorId = p.id;
       state.setState({ selectedColorPresetIds: new Set([p.id]) });
@@ -2511,13 +2559,14 @@ function _renderColorsTab() {
   // ── Assign to selected (step override) ───────────────────────────────────
   el.querySelector('#btn-assign-preset').addEventListener('click', () => {
     if (!_expandedPresetId) { setStatus('Expand a color preset first.'); return; }
+    if (host) { host.assign(_expandedPresetId); return; }   // the editor paints its selected parts (and says so)
     if (!meshIds.length)    { setStatus('Select mesh objects first.'); return; }
     actions.assignPreset(meshIds, _expandedPresetId);
     setStatus(`Applied color to ${meshIds.length} mesh(es).`);
   });
 
   // ── Set as default ────────────────────────────────────────────────────────
-  el.querySelector('#btn-assign-default').addEventListener('click', () => {
+  el.querySelector('#btn-assign-default')?.addEventListener('click', () => {
     if (!_expandedPresetId) { setStatus('Expand a color preset first.'); return; }
     if (!meshIds.length)    { setStatus('Select mesh objects first.'); return; }
     const preset = presets.find(p => p.id === _expandedPresetId);
@@ -2531,7 +2580,7 @@ function _renderColorsTab() {
   });
 
   // ── Revert to default ─────────────────────────────────────────────────────
-  el.querySelector('#btn-revert-default').addEventListener('click', () => {
+  el.querySelector('#btn-revert-default')?.addEventListener('click', () => {
     if (!meshIds.length) { setStatus('Select mesh objects first.'); return; }
     actions.revertToDefault(meshIds);
     setStatus(`Reverted ${meshIds.length} mesh(es) to default color.`);
@@ -2642,9 +2691,9 @@ function _renderColorsTab() {
     // and expanded states. begin/commit bracket the undo entry.
     const sw = row.querySelector('.cp-color');
     sw.addEventListener('click',  e => e.stopPropagation());   // don't toggle the row
-    sw.addEventListener('focus',  () => actions.beginPresetEdit(preset.id));
+    sw.addEventListener('focus',  () => _colorAct.beginPresetEdit(preset.id));
     sw.addEventListener('input',  e => { materials.updatePreset(preset.id, { color: e.target.value }); });
-    sw.addEventListener('change', () => actions.commitPresetEdit(preset.id));
+    sw.addEventListener('change', () => _colorAct.commitPresetEdit(preset.id));
 
     // Rename via the ✎ icon (expanded only). Click ✎ → swap the name span
     // for an editable input + focus it. Enter / blur commits; Esc cancels.
@@ -2670,7 +2719,7 @@ function _renderColorsTab() {
         input.addEventListener('blur', () => {
           if (done) return; done = true;
           const v = input.value.trim() || preset.name;
-          if (v !== preset.name) actions.updatePreset(preset.id, { name: v });
+          if (v !== preset.name) _colorAct.updatePreset(preset.id, { name: v });
           _renderColorsTab();
         });
         span.replaceWith(input);
@@ -2774,15 +2823,15 @@ function _renderColorsTab() {
       // live update (no undo entry) — undo entry created on commit.
       // Name + Color now live on the bar (cp-row-name + cp-color swatch).
       const _live = (key, val) => materials.updatePreset(preset.id, { [key]: val });
-      const _upd  = (key, val) => actions.updatePreset(preset.id, { [key]: val });
+      const _upd  = (key, val) => _colorAct.updatePreset(preset.id, { [key]: val });
 
       const _wireSliderUndo = (slider, valEl, key, fmt = v => Number(v).toFixed(2)) => {
-        slider.addEventListener('pointerdown', () => actions.beginPresetEdit(preset.id));
+        slider.addEventListener('pointerdown', () => _colorAct.beginPresetEdit(preset.id));
         slider.addEventListener('input', e => {
           valEl.textContent = fmt(e.target.value);
           _live(key, Number(e.target.value));
         });
-        slider.addEventListener('pointerup', () => actions.commitPresetEdit(preset.id));
+        slider.addEventListener('pointerup', () => _colorAct.commitPresetEdit(preset.id));
       };
 
       _wireSliderUndo(pane.querySelector('.cp-solidness'),   pane.querySelector('.cp-sol-val'), 'solidness');
@@ -2793,6 +2842,7 @@ function _renderColorsTab() {
       pane.querySelector('.cp-outline').addEventListener('change', e => {
         const v = e.target.value;
         _upd('outlineEnabled', v === 'null' ? null : v === 'true');
+        e.target.blur();   // let the held-back redraw run (as the filter boxes do): the list would show a stale value after an undo
       });
       pane.querySelector('.cp-remove-textures').addEventListener('change', e => {
         _upd('removeTextures', e.target.checked);
@@ -2852,6 +2902,7 @@ function _getMissingAssetPresets(missingMeshIds) {
 
 // ── Color right-click context menu ────────────────────────────────────────────
 function _showColorContextMenu(preset, x, y, selectedMeshIds, selIds, srcEvent) {
+  if (_colorsHost) return _showColorContextMenuHosted(_colorsHost, preset, x, y, selIds, srcEvent);
   const activeMatches  = Object.entries(materials.meshColorAssignments)
     .filter(([, pid]) => pid === preset.id).map(([id]) => id);
   const defaultMatches = Object.entries(materials.meshDefaultColors)
@@ -2985,6 +3036,81 @@ function _showColorContextMenu(preset, x, y, selectedMeshIds, selIds, srcEvent) 
   ], x, y, srcEvent ? { initialMods: srcEvent } : undefined);
 }
 
+/** ⬚ V0.3.5.27 — the same menu inside the Poly Editor: "the scene" is the editor's parts; no defaults there. */
+function _showColorContextMenuHosted(host, preset, x, y, selIds, srcEvent) {
+  const sel   = selIds instanceof Set ? selIds : new Set([preset.id]);
+  const use   = host.usage();
+  const wear  = [...(use.get(preset.id) || [])];
+  const nSel  = host.selectedIds().length;
+  const items = [];
+  if (sel.size >= 2) {
+    const n = sel.size;
+    items.push({
+      label: `🔗 Unify ${n} colors → "${preset.name}"`,
+      action: () => {
+        const merged = [...sel].filter(id => id !== preset.id);
+        if (_colorAct.unifyPresets(preset.id, [...sel])) {
+          host.remap(merged, preset.id, `Unify ${n} colors`);   // the editor's parts that wore a merged colour wear the survivor (same undo step)
+          state.setState({ selectedColorPresetIds: new Set([preset.id]) });
+          _colorAnchorId = preset.id;
+          setStatus(`Unified ${n} colors into "${preset.name}".`);
+          _renderColorsTab();
+        }
+      },
+    });
+    items.push({
+      label: `🗑 Delete ${n} colors`,
+      action: () => {
+        const r = _colorAct.deletePresets([...sel]);
+        state.setState({ selectedColorPresetIds: new Set() });
+        if (r.skipped > 0) setStatus(`Deleted ${r.deleted}; skipped ${r.skipped} still used as a default — unify or reassign those first.`, 'warning');
+        else setStatus(`Deleted ${r.deleted} color${r.deleted === 1 ? '' : 's'}.`);
+        _renderColorsTab();
+      },
+    });
+    const all = new Set();
+    for (const pid of sel) for (const id of (use.get(pid) || [])) all.add(id);
+    items.push({
+      label: `🎨☑ Select by all selected colors (${all.size})`,
+      liveLabel: (m) => `🎨☑ ${_selectVerb(m)} all selected colors (${all.size})`,
+      disabled: all.size === 0,
+      action: (m) => host.select([...all], m),
+    });
+    items.push({ separator: true });
+  }
+  showContextMenu([
+    ...items,
+    {
+      label:    `🎨 Select by color (${wear.length})`,
+      liveLabel:(m) => `🎨 ${_selectVerb(m)} color (${wear.length})`,
+      disabled: wear.length === 0,
+      action:   (m) => host.select(wear, m),
+    },
+    { separator: true },
+    {
+      label:    `🔄 Invert color selection (${(state.get('colorPresets') || []).length - sel.size})`,
+      disabled: (state.get('colorPresets') || []).length === 0,
+      action:   () => {
+        const inv = new Set();
+        for (const p of (state.get('colorPresets') || [])) if (!sel.has(p.id)) inv.add(p.id);
+        _colorAct.setColorSelection(inv);
+        setStatus(`Inverted color selection (${inv.size}).`);
+      },
+    },
+    {
+      label:    `✦ Deselect all colors (${sel.size})`,
+      disabled: sel.size === 0,
+      action:   () => { _colorAct.setColorSelection(new Set()); setStatus('Color selection cleared.'); },
+    },
+    { separator: true },
+    {
+      label:    `🎨 Assign "${preset.name}" to selected (${nSel})`,
+      disabled: nSel === 0,
+      action:   () => host.assign(preset.id),
+    },
+  ], x, y, srcEvent ? { initialMods: srcEvent } : undefined);
+}
+
 // ── Delete with default-color + missing-asset protection ─────────────────────
 function _deletePresetWithProtection(preset, allPresets, missingMeshIds) {
   const defaultCount  = materials.defaultColorMeshCount(preset.id);
@@ -3006,7 +3132,7 @@ function _deletePresetWithProtection(preset, allPresets, missingMeshIds) {
 
   if (!confirm(`Delete "${preset.name}"?`)) return;
   if (_expandedPresetId === preset.id) _expandedPresetId = null;
-  actions.deletePreset(preset.id);
+  _colorAct.deletePreset(preset.id);
 }
 
 function _showReplacementPicker(preset, allPresets, defaultCount, missingCount = 0) {
@@ -3068,7 +3194,9 @@ function _showReplacementPicker(preset, allPresets, defaultCount, missingCount =
     // snapshot recolored. All the reassign/phantom/snapshot logic
     // (including the tracking-default strip rule) now lives in
     // actions.replaceAndDeletePreset.
-    actions.replaceAndDeletePreset(preset.id, newId, Array.from(_collectPhantomMeshIds()));
+    if (_colorAct.replaceAndDeletePreset(preset.id, newId, Array.from(_collectPhantomMeshIds()))) {
+      _colorsHost?.remap([preset.id], newId, `Replace & delete color "${preset.name || ''}"`);   // ⬚ the host's parts follow, as the project's do
+    }
     dlg.close(); dlg.remove();
     setStatus(`Replaced color and deleted "${preset.name}".`);
   });

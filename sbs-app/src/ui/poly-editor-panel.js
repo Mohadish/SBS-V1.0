@@ -11,16 +11,17 @@ import { undoManager } from '../systems/undo.js';
 import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
-  applyPolySession, discardPolySession, polySessionUndoScope, polyPrimitiveKinds, polyAddPrimitive,
+  applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode,
-  setPolyTab, setPolyBackground, polyApplyPreset, polyNewColor,
+  setPolyTab, setPolyBackground, polyColorsHost,
 } from '../systems/poly-session.js';
+import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
 import { REF_VIEWS, addPolyRef, removePolyRef, squarePolyRef, selectPolyRef, setPolyRefsEdit, setPolyRefProps, movePolyRefOrder } from '../systems/poly-refs.js';   // ⬚ V0.3.5.25
 
 let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null;
 const _collapsed = new Set();
 let _dragIds = null;
-let _newHex = '#8fa3b8', _newName = '';   // the "new colour" row survives the panel's re-renders
+let _coloursMount = null, _coloursHost = null;   // ⬚ V0.3.5.27 — the project's Colours panel lives in this element while its tab shows
 
 const VIEWS = [['persp', 'Persp'], ['top', 'Top'], ['front', 'Front'], ['left', 'Left'], ['right', 'Right'], ['bottom', 'Bottom'], ['back', 'Back']];
 
@@ -43,28 +44,41 @@ export function openPolyEditorPanel() {
   _root = el('div', 'flex:1;min-height:0;display:flex;flex-direction:column;padding:12px;gap:2px;overflow:hidden;color:var(--text,#e5e7eb);');
   _root.id = 'poly-editor-panel';
   host.appendChild(_root);
-  _unsub = onPolySession((what) => { if (what === 'close') return; _render(); });
+  _unsub = onPolySession((what) => { if (what === 'close') return; _render(what); });
   _render();
 }
 
 export function closePolyEditorPanel() {
   _unsub?.(); _unsub = null;
+  _dropColours();
   if (_root) { _root.remove(); _root = null; _treeEl = null; }
   if (_hiddenContent) { for (const [c, d] of _hiddenContent) c.style.display = d; _hiddenContent = null; }
   _collapsed.clear();
 }
 
-function _render() {
+function _dropColours() {
+  if (_coloursHost) { try { unmountColorsPanel(); } catch (err) { console.warn('[poly editor] colours panel', err); } }
+  _coloursHost = null; _coloursMount = null;
+}
+
+function _render(what) {
   if (!_root) return;
   const info = polySessionInfo();
   if (!info) return;
+  // The Colours tab holds the project's own panel: it redraws itself (and waits while one of its fields is in
+  // use). A selection / tree / undo event must not tear it down — only a change of what is around it does.
+  if (info.tab === 'colors' && _coloursHost && _coloursMount?.isConnected && (what === 'select' || what === 'tree' || what === 'undo')) {
+    _coloursHost.syncSelection(); refreshColorsPanel();
+    return;
+  }
+  if (info.tab !== 'colors') _dropColours();
   const keepName = document.activeElement?.id === 'poly-editor-name';
-  const scroll = _treeEl?.scrollTop || 0;
+  const scroll = _treeEl?.scrollTop || 0, coloursScroll = _coloursMount?.scrollTop || 0;   // an element taken out of the page forgets its scroll
   _root.innerHTML = '';
 
   const head = el('div', 'display:flex;align-items:center;gap:8px;');
   head.append(el('div', 'font-size:16px;font-weight:700;', '⬚ Poly Editor'), el('div', 'flex:1;'));
-  const scopeOk = (redo) => (redo ? undoManager.redoScope?.() : undoManager.undoScope?.()) === polySessionUndoScope;
+  const scopeOk = (redo) => polySessionUndoOk(redo);
   head.append(btn('↶', 'Undo (Ctrl+Z)', () => { if (scopeOk(false)) undoManager.undo(); }), btn('↷', 'Redo (Ctrl+Y)', () => { if (scopeOk(true)) undoManager.redo(); }));
   _root.append(head);
 
@@ -108,7 +122,7 @@ function _render() {
   }
   _root.append(tabs);
   if (info.tab === 'refs') { _renderRefs(info); return; }
-  if (info.tab === 'colors') { _renderColours(info); return; }
+  if (info.tab === 'colors') { _renderColours(coloursScroll); return; }
   if (info.tab === 'env') { _renderEnv(info); return; }
 
   _root.append(section('Level'));
@@ -163,35 +177,13 @@ function _render() {
 
 const _note = (text) => el('div', 'font-size:11px;opacity:.65;margin-top:8px;line-height:1.4;', text);
 
-/** 🎨 the scene's colours: click one = the selected parts wear it; a new one is added to the scene too. */
-function _renderColours(info) {
-  _root.append(section("The scene's colours"));
-  _root.append(el('div', 'font-size:12px;opacity:.8;margin-bottom:7px;', info.selParts
-    ? `Click a colour to put it on the ${info.selParts === 1 ? 'selected part' : `${info.selParts} selected parts`}.`
-    : 'Select a part in the view (or in the Model tab), then click a colour.'));
-  const grid = el('div', 'display:flex;flex-wrap:wrap;gap:6px;max-height:42vh;overflow:auto;padding:2px;');
-  for (const p of info.colors) {
-    const b = el('button', `width:30px;height:30px;padding:0;border-radius:7px;cursor:pointer;background:${p.color};border:2px solid ${info.selPreset === p.id ? '#ffffff' : 'rgba(255,255,255,.2)'};${info.selPreset === p.id ? 'box-shadow:0 0 0 2px #2563eb;' : ''}`);
-    b.title = p.name;
-    b.addEventListener('click', (e) => { e.preventDefault(); polyApplyPreset(p.id); b.blur(); });
-    grid.append(b);
-  }
-  if (!info.colors.length) grid.append(el('div', 'font-size:12px;opacity:.6;', 'The scene has no colours yet — make one below.'));
-  _root.append(grid);
-
-  _root.append(section('New colour'));
-  const nr = el('div', 'display:flex;align-items:center;gap:6px;');
-  const pick = el('input', 'width:40px;height:32px;padding:0;border:1px solid var(--line,#334155);border-radius:7px;background:transparent;cursor:pointer;flex:0 0 auto;');
-  pick.type = 'color'; pick.value = _newHex; pick.title = 'Choose the colour';
-  pick.addEventListener('input', () => { _newHex = pick.value; });
-  const nm = el('input', 'flex:1;min-width:0;padding:6px 8px;border-radius:8px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:13px;');
-  nm.placeholder = 'Name (optional)'; nm.value = _newName;
-  nm.addEventListener('input', () => { _newName = nm.value; });
-  nm.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); add(); } });
-  const add = () => { const name = _newName.trim(); _newName = ''; polyNewColor(_newHex, name); };
-  nr.append(pick, nm, btn('＋ Add', "Add this colour to the scene's colours — and put it on the selected part(s)", add));
-  _root.append(nr);
-  _root.append(_note("A colour made here is added to the project's colours as well. After Apply, the parts wear these same colours in the scene."));
+/** 🎨 the project's own Colours panel (ui/sidebar-left.js), with the editor's parts as "the selection". */
+function _renderColours(scroll = 0) {
+  if (!_coloursMount) _coloursMount = el('div', 'flex:1;min-height:0;overflow:auto;margin-top:8px;');
+  _root.append(_coloursMount);                             // the same element across re-renders: a field in use is not rebuilt under the hand
+  if (!_coloursHost) { _coloursHost = { el: _coloursMount, ...polyColorsHost() }; _coloursHost.syncSelection(); mountColorsPanel(_coloursHost); }
+  else { _coloursHost.syncSelection(); refreshColorsPanel(); }
+  _coloursMount.scrollTop = scroll;
 }
 
 /** 🖼 reference pictures: one set per flat view, standing on the object's centre. */
