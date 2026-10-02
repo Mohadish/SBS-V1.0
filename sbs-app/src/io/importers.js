@@ -153,12 +153,21 @@ function _geomFingerprint(geom) {
  */
 function _remapToStableIds(innerRoot, assetId, obj3dMap) {
   let _dfsCounter = 0;
+  const _seenPartIds = new Set();
 
   function visit(node) {
     const oldId = node.id;
     let newId;
 
-    if (node.type === 'mesh') {
+    // ⬚ V0.3.5.15 — a Poly Editor asset names every part and folder itself (glTF node
+    // extras.sbsId → userData.sbsId). The id is then that name, not the shape or the
+    // position in the file: an edited part, or one moved to another folder, is still
+    // the same node for every step that knows it. Files without it use the rules below.
+    const partId = obj3dMap.get(oldId)?.userData?.sbsId;
+    if (typeof partId === 'string' && partId && !_seenPartIds.has(partId)) {
+      _seenPartIds.add(partId);
+      newId = `${node.type === 'mesh' ? 'ms' : 'fd'}_${_stableHash(assetId + ':sbs:' + partId)}`;
+    } else if (node.type === 'mesh') {
       // ── Geometry-content hash (primary identity) ──────────────────────
       const obj3d = obj3dMap.get(oldId);
       const fp    = _geomFingerprint(obj3d?.geometry);
@@ -1720,6 +1729,7 @@ async function loadGltfFile(file, assetEntry = null) {
         // model space — so the folders stay folders.
         const polyEditorAsset = !!(gltf.userData?.sbsPolyEditor || gltf.asset?.extras?.sbsPolyEditor || gltf.parser?.json?.asset?.extras?.sbsPolyEditor);
         if (polyEditorAsset) {
+          group3d.userData.sbsPolyEditorAsset = true;   // the model node's object: "this model is an asset the Poly Editor wrote"
           // GLTFLoader rewrites node names for its animation bindings ('Box 1' → 'Box_1', a
           // duplicate → '_1') and keeps the original in userData.name: the tree shows what was designed.
           (function names(n) { const o = n.object3d; if (o && typeof o.userData?.name === 'string' && o.userData.name) n.name = o.userData.name; (n.children || []).forEach(names); })(innerRoot);

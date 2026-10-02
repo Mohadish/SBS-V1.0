@@ -48,6 +48,15 @@ const HIDE_DOM = ['sidebar-right', 'step-nav-bar', 'overlay-stage', 'notes-overl
 let _s = null;
 let _sidSeq = 0;
 let _starting = false;
+let _uidSeq = 0;
+/**
+ * ⬚ V0.3.5.15 — every part and folder has a permanent id that travels in the .glb
+ * (node extras.sbsId). The importer derives the project's node ids from it, so a
+ * part keeps its identity in the project however its shape or its place in the
+ * tree changes — the ground an "update this asset in place" stands on.
+ */
+const _newUid = () => `${Date.now().toString(36)}${(++_uidSeq).toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+const _uidOf = (obj) => { const u = obj?.userData?.sbsId; return typeof u === 'string' && u ? u : null; };
 const _subs = new Set();
 
 export const isPolySession = () => !!_s;
@@ -90,20 +99,20 @@ function _collectSources(nodeIds) {
   const meshOf = (n) => (n.object3d?.isMesh && n.object3d.geometry?.attributes?.position ? n.object3d : null);
   const build = (n) => {
     if (!n || n.archived === true) return null;
-    if (n.type === 'mesh') { const m = meshOf(n); if (!m) { skipped++; return null; } tris += geometryTriangles(m.geometry); parts++; return { kind: 'part', name: n.name || 'Part', mesh: m, node: n }; }
+    if (n.type === 'mesh') { const m = meshOf(n); if (!m) { skipped++; return null; } tris += geometryTriangles(m.geometry); parts++; return { kind: 'part', name: n.name || 'Part', mesh: m, node: n, uid: _uidOf(m) }; }
     if (n.type === 'primitive') {
       const m = meshOf(n);
       const kids = (n.children || []).map(build).filter(Boolean);
       const self = m ? { kind: 'part', name: n.name || 'Primitive', mesh: m, node: n } : null;
       if (self) { tris += geometryTriangles(m.geometry); parts++; } else skipped++;
       if (!kids.length) return self;
-      return { kind: 'folder', name: n.name || 'Group', children: [self, ...kids].filter(Boolean) };
+      return { kind: 'folder', name: n.name || 'Group', children: [self, ...kids].filter(Boolean), uid: null };
     }
     if (n.type === 'folder' || n.type === 'model' || n.type === 'replaceModel') {
       const kids = (n.children || []).map(build).filter(Boolean);
       // an imported model wraps its content in one inner folder of the same name: do not nest it twice
-      if (n.type === 'model' && kids.length === 1 && kids[0].kind === 'folder') return { kind: 'folder', name: n.name || kids[0].name, children: kids[0].children };
-      return kids.length ? { kind: 'folder', name: n.name || 'Folder', children: kids } : null;
+      if (n.type === 'model' && kids.length === 1 && kids[0].kind === 'folder') return { kind: 'folder', name: n.name || kids[0].name, children: kids[0].children, uid: null };
+      return kids.length ? { kind: 'folder', name: n.name || 'Folder', children: kids, uid: n.type === 'folder' ? _uidOf(n.object3d) : null } : null;
     }
     skipped++;                                            // shapes, hardware, hands, notes: not meshes the editor can take (yet)
     return null;
@@ -167,10 +176,12 @@ async function _start(nodeIds) {
   };
   sess.group.name = 'PolyEditorSession';
   const newId = (p) => `${p}${(++sess.seq).toString(36)}`;
+  const seenUid = new Set();
+  const uidFor = (src) => { const u = src.uid && !seenUid.has(src.uid) ? src.uid : _newUid(); seenUid.add(u); return u; };   // a part that came from this editor keeps its id
   let done = 0, failed = 0;
   const add = async (src, parent) => {
     if (src.kind === 'folder') {
-      const it = { id: newId('f'), kind: 'folder', name: src.name, parent, children: [] };
+      const it = { id: newId('f'), kind: 'folder', name: src.name, parent, children: [], uid: uidFor(src) };
       sess.items.set(it.id, it);
       for (const c of src.children) { const cid = await add(c, it.id); if (cid) it.children.push(cid); }
       if (!it.children.length) { sess.items.delete(it.id); return null; }
@@ -185,7 +196,7 @@ async function _start(nodeIds) {
     const mat = Array.isArray(src.mesh.material) ? src.mesh.material[0] : src.mesh.material;
     const col = mat?.uniforms?.uColor?.value?.isColor ? mat.uniforms.uColor.value : (mat?.color?.isColor ? mat.color : null);
     const c = col ? [col.r, col.g, col.b] : [0.75, 0.79, 0.83];
-    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null };
+    const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src) };
     sess.items.set(it.id, it);
     return it.id;
   };
@@ -355,7 +366,7 @@ export function polyNewFolder() {
     _s.rootIds.forEach(walk);
     const tops = order.filter(x => sel.has(x) && !_hasSelectedAncestor(x, sel));   // what gets wrapped: top-most only, in tree order
     const parent = tops.length ? (_s.items.get(tops[0]).parent || null) : null;
-    const it = { id: `f${(++_s.seq).toString(36)}`, kind: 'folder', name: 'Folder', parent, children: [] };
+    const it = { id: `f${(++_s.seq).toString(36)}`, kind: 'folder', name: 'Folder', parent, children: [], uid: _newUid() };
     _s.items.set(it.id, it); id = it.id;
     const listOf = () => (parent ? _s.items.get(parent).children : _s.rootIds);
     let at = tops.length ? listOf().indexOf(tops[0]) : listOf().length;   // nothing selected before tops[0] sits in this list
@@ -409,9 +420,9 @@ export function polyDuplicateSelected() {
   const copy = (id, parent) => {
     const it = _s.items.get(id);
     const nid = `${it.kind === 'folder' ? 'f' : 'p'}${(++_s.seq).toString(36)}`;
-    if (it.kind === 'folder') { const f = { id: nid, kind: 'folder', name: it.name, parent, children: [] }; _s.items.set(nid, f); f.children = it.children.map(c => copy(c, nid)); }
+    if (it.kind === 'folder') { const f = { id: nid, kind: 'folder', name: it.name, parent, children: [], uid: _newUid() }; _s.items.set(nid, f); f.children = it.children.map(c => copy(c, nid)); }
     else {
-      const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null };
+      const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null, uid: _newUid() };   // a copy is a new object
       _s.items.set(nid, p); _buildPartMesh(p);
       p.mesh.position.copy(it.mesh.position); p.mesh.quaternion.copy(it.mesh.quaternion); p.mesh.scale.copy(it.mesh.scale);
     }
@@ -758,7 +769,7 @@ function _glbRoots() {
   const rootInv = sceneCore.rootGroup.matrixWorld.clone().invert();
   const node = (id) => {
     const it = _s.items.get(id);
-    if (it.kind === 'folder') { const kids = it.children.map(node).filter(Boolean); return kids.length ? { name: it.name, children: kids } : null; }
+    if (it.kind === 'folder') { const kids = it.children.map(node).filter(Boolean); return kids.length ? { name: it.name, children: kids, extras: { sbsId: it.uid || (it.uid = _newUid()) } } : null; }
     const M = new Th.Matrix4().multiplyMatrices(rootInv, it.mesh.matrixWorld);
     const baked = clonePoly(it.poly), v = new Th.Vector3();
     for (let i = 0; i < baked.v.length; i += 3) { v.set(baked.v[i], baked.v[i + 1], baked.v[i + 2]).applyMatrix4(M); baked.v[i] = v.x; baked.v[i + 1] = v.y; baked.v[i + 2] = v.z; }
@@ -766,7 +777,7 @@ function _glbRoots() {
     const { positions, normals } = polyToArrays(baked);
     const indices = new Uint32Array(positions.length / 3); for (let i = 0; i < indices.length; i++) indices[i] = i;
     const r4 = (x) => Math.round(x * 1e5) / 1e5;
-    return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
+    return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsId: it.uid || (it.uid = _newUid()), sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
   };
   return _s.rootIds.map(node).filter(Boolean);
 }
