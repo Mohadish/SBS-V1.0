@@ -11,7 +11,7 @@ import { undoManager } from '../systems/undo.js';
 import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
-  applyPolySession, discardPolySession, polySessionUndoScope,
+  applyPolySession, discardPolySession, polySessionUndoScope, polyPrimitiveKinds, polyAddPrimitive,
 } from '../systems/poly-session.js';
 
 let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null;
@@ -107,6 +107,12 @@ function _render() {
   );
   const edges = btn('Edges (2)', 'Not built yet', () => {}); edges.disabled = true; lv.append(edges);
   _root.append(lv);
+
+  // ⬚ V0.3.5.18 — primitives made inside the editor: editable polys from the first moment
+  _root.append(section('Add'));
+  const add = row();
+  for (const p of polyPrimitiveKinds()) add.append(btn(`${p.icon} ${p.label}`, `Add a ${p.label.toLowerCase()} where you are looking — an editable poly: 1 / 4 go into its vertices / faces`, () => polyAddPrimitive(p.kind)));
+  _root.append(add);
 
   _root.append(section('Tools'));
   const tools = row();

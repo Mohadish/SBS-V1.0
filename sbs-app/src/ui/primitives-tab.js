@@ -105,8 +105,15 @@ export function renderPrimitivesTab(panel) {
   panel.innerHTML = `
     <div class="small muted" style="padding:8px 10px 0">Click a shape to create it — then tweak its parameters and place it on a surface (or move it with the gizmo).</div>
     <div class="prim-grid">${grid}</div>
+    <div style="padding:2px 10px 8px">
+      <button class="btn" id="prim-new-poly-asset" style="width:100%;padding:7px 9px;font-size:12px;border-radius:8px" title="Open the Poly Editor empty: build an object from primitives there, model it, and save it as one .glb file that loads into the scene">⬚ New asset in the Poly Editor…</button>
+    </div>
     ${editor}
   `;
+  // ⬚ V0.3.5.18 — an object that is not in the scene yet is made in the Poly Editor and kept as an external .glb
+  panel.querySelector('#prim-new-poly-asset')?.addEventListener('click', () => {
+    import('../systems/poly-session.js').then(m => m.startPolySession([], { empty: true })).catch(err => console.warn('[poly editor] open', err));
+  });
 
   panel.querySelectorAll('.prim-btn').forEach(b =>
     b.addEventListener('click', () => {

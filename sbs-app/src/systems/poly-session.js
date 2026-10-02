@@ -34,7 +34,8 @@ import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import { matches as keyMatches, keyLabel } from '../core/keymap.js';
 import { setIsolateKeepSet, clearIsolate, getIsolateKeepSet } from '../core/isolate-state.js';
 import { subDir, joinPath } from '../core/project-paths.js';
-import { isPoly, clonePoly, polyToArrays } from './poly-core.js';
+import { isPoly, clonePoly, polyToArrays, makeBoxPoly } from './poly-core.js';
+import { PRIMITIVE_DEFS, defaultPrimitiveParams, buildPrimitiveGeometry } from './primitives.js';   // ⬚ V0.3.5.18 — primitives added inside the editor
 import { geometryToPoly, geometryTriangles } from './poly-convert.js';
 import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost } from './poly-edit.js';
 import { sceneGlb } from '../io/glb-write.js';
@@ -263,7 +264,8 @@ export async function startPolySession(nodeIds, opts = {}) {
 async function _start(nodeIds, opts = {}) {
   if (isPolyEditing()) exitPolyEdit();
   const plan = _collectSources(nodeIds, opts);
-  if (!plan.parts) { setStatus('Nothing in the selection has a mesh the Poly Editor can take.', 'warn', 5000); return false; }
+  const empty = !!opts.empty && !plan.parts;               // ⬚ V0.3.5.18 — a new asset from scratch: nothing comes in, primitives are added inside
+  if (!plan.parts && !empty) { setStatus('Nothing in the selection has a mesh the Poly Editor can take.', 'warn', 5000); return false; }
   if (plan.tris > TRI_WARN && !confirm(`These ${plan.parts} objects have ${plan.tris.toLocaleString()} triangles. Converting and editing that much is slow.\n\nGo on?`)) return false;
   const Th = T();
   setStickyStatus(`⬚ Poly Editor — converting ${plan.parts} object${plan.parts === 1 ? '' : 's'}…`, 'info', 'polySession');
@@ -322,7 +324,7 @@ async function _start(nodeIds, opts = {}) {
   for (let i = 0; i < plan.roots.length; i++) { const id = await add(plan.roots[i], null); if (id) { sess.rootIds.push(id); okSources.add(plan.rootSource[i]); } }
   sess.sourceIds = [...okSources];
   clearStickyStatus('polySession');
-  if (![...sess.items.values()].some(it => it.kind === 'part')) { setStatus('None of those objects could be converted.', 'warn', 5000); return false; }
+  if (!empty && ![...sess.items.values()].some(it => it.kind === 'part')) { setStatus('None of those objects could be converted.', 'warn', 5000); return false; }
   // Saving over the asset needs ALL of it in the editor: a part that did not come in would be read as deleted.
   let noUpdate = plan.reeditBroken || null;
   if (sess.reedit && nativeFailed) { noUpdate = sess.reedit.file; sess.reedit = null; }
@@ -337,6 +339,7 @@ async function _start(nodeIds, opts = {}) {
   _emit('open');
   setPolyView('persp');
   _hint();
+  if (empty) { setStatus('Poly Editor: a new, empty asset — add a primitive from the panel on the left.', 'success', 7000); return true; }
   setStatus(`Poly Editor: ${sess.reedit ? `editing ${sess.reedit.file} (the whole asset) — ` : ''}${[...sess.items.values()].filter(i => i.kind === 'part').length} part(s)${failed ? `, ${failed} could not be converted` : ''}${plan.skipped ? `, ${plan.skipped} skipped (not meshes)` : ''}.${noUpdate ? ` Not every part of ${noUpdate} could come in — this edit can only be saved as a NEW asset.` : ''}`, failed || noUpdate ? 'warn' : 'success', noUpdate ? 11000 : 6000);
   return true;
 }
@@ -559,6 +562,66 @@ export function polyDuplicateSelected() {
   });
   if (ok) { _s.sel = new Set(made); _s.primary = made[0] || null; _syncScene(); _emit('select'); }
   return ok;
+}
+
+// ── add a primitive (V0.3.5.18) ──────────────────────────────────────────────
+// A primitive added here is a part like any other: an editable poly from the first moment (1 / 4 go
+// straight into its vertices / faces). It is made with few sides (16) — faces one can model with — and
+// every kind comes out CLOSED (node-tested), so joins and cuts work on it. A flat plane is not offered:
+// it is not a solid (it comes with the shapes-to-extrude step).
+const ADD_KINDS = ['box', 'cylinder', 'sphere', 'cone', 'pyramid', 'tube', 'torus', 'capsule', 'geosphere'];
+const ADD_QUALITY = 2;
+export const polyPrimitiveKinds = () => ADD_KINDS.filter(k => PRIMITIVE_DEFS[k]).map(k => ({ kind: k, label: PRIMITIVE_DEFS[k].label, icon: PRIMITIVE_DEFS[k].icon || '⬡' }));
+/** 1 / 2 / 5 × 10ⁿ, at or below x. */
+const _nice = (x) => { if (!(x > 0) || !isFinite(x)) return 20; const e = Math.pow(10, Math.floor(Math.log10(x))), m = x / e; return (m >= 5 ? 5 : m >= 2 ? 2 : 1) * e; };
+
+export function polyAddPrimitive(kind) {
+  if (!_s || !ADD_KINDS.includes(kind) || !PRIMITIVE_DEFS[kind]) return null;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return null;
+  const Th = T(), label = PRIMITIVE_DEFS[kind].label, params = defaultPrimitiveParams(kind);
+  let poly = null;
+  try {
+    if (kind === 'box') poly = makeBoxPoly(params.width, params.height, params.depth, true);
+    else { const g = buildPrimitiveGeometry(kind, params, ADD_QUALITY, true); if (g) { poly = geometryToPoly(g, { heal: true }); g.dispose?.(); } }
+  } catch (err) { console.warn('[poly session] primitive', kind, err); }
+  if (!isPoly(poly)) { setStatus(`The ${label.toLowerCase()} could not be made.`, 'warn', 4000); return null; }
+  // Size: about a fifth of what the view shows, as a round number. Place: where the camera is looking.
+  let size = 20; const at = new Th.Vector3();
+  try {
+    const cam = sceneCore.camera, cs = sceneCore.getCameraState?.();
+    _s.group.updateWorldMatrix(true, false);
+    const ws = _s.group.getWorldScale(new Th.Vector3()), gs = Math.max(Math.abs(ws.x), Math.abs(ws.y), Math.abs(ws.z)) || 1;
+    if (cam && Array.isArray(cs?.position) && Array.isArray(cs?.pivot)) {
+      const pos = new Th.Vector3().fromArray(cs.position), piv = new Th.Vector3().fromArray(cs.pivot);
+      const dir = cam.getWorldDirection(new Th.Vector3());
+      let depth = piv.clone().sub(pos).dot(dir);            // the pivot's depth — but on the view axis: the middle of the screen
+      if (!(depth > 1e-6)) depth = pos.distanceTo(piv) || 100;
+      const visH = 2 * depth * Math.tan((cam.fov || 35) * Math.PI / 360);
+      size = _nice(0.2 * visH / gs);
+      at.copy(_s.group.worldToLocal(pos.clone().addScaledVector(dir, depth)));
+    }
+  } catch (err) { console.warn('[poly session] primitive placement', err); }
+  const k = size / (kind === 'box' ? params.width : 20);  // every kind's default is about 20 across
+  if (isFinite(k) && k > 0 && Math.abs(k - 1) > 1e-9) for (let i = 0; i < poly.v.length; i++) poly.v[i] = Math.round(poly.v[i] * k * 1e6) / 1e6;
+  const alive0 = _aliveIds(), names = new Set([...alive0].map(x => _s.items.get(x).name));
+  let name = label; for (let n = 2; names.has(name); n++) name = `${label} ${n}`;
+  let id = null;
+  const ok = _treeOp(`Add ${label.toLowerCase()}`, () => {
+    const sel = _s.primary && alive0.has(_s.primary) ? _s.items.get(_s.primary) : null;   // lands in the selected folder, or right after the selected part
+    const parent = sel ? (sel.kind === 'folder' ? sel.id : (sel.parent || null)) : null;
+    const it = { id: `p${(++_s.seq).toString(36)}`, kind: 'part', name, parent, poly, color: [0.75, 0.79, 0.83], mesh: null, uid: _newUid() };
+    _s.items.set(it.id, it); id = it.id;
+    _buildPartMesh(it);
+    it.mesh.position.copy(at);
+    const list = parent ? _s.items.get(parent).children : _s.rootIds;
+    const k2 = sel && sel.kind !== 'folder' ? list.indexOf(sel.id) : -1;
+    list.splice(k2 >= 0 ? k2 + 1 : list.length, 0, it.id);
+  });
+  if (!ok || !id) return null;
+  _s.sel = new Set([id]); _s.primary = id; _syncScene(); _emit('select');
+  setStatus(`${name} added (${size} across) — the gizmo moves it; ${keyLabel('polyVertices')} / ${keyLabel('polyFaces')} edit its vertices / faces.`, 'success', 6000);
+  return id;
 }
 
 // ── a part's poly (the sub-object editor commits here) ───────────────────────
@@ -827,7 +890,7 @@ function _onKey(e) {
 
 function _hint() {
   if (!_s) return;
-  setStickyStatus(`⬚ Poly Editor · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
+  setStickyStatus(`⬚ Poly Editor · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
 }
 
 // ── the end ──────────────────────────────────────────────────────────────────
@@ -965,6 +1028,7 @@ export async function applyPolySession() {
       if (copy.action === 'swap') return await _applyUpdate({ swapName: _s.name });
       return await _applyNew({ oldModel: copy.action === 'remove' ? 'remove' : 'keep' });
     }
+    if (![..._aliveIds()].some(id => _s.items.get(id).kind === 'part')) { setStatus('There is nothing in the tree to save — add a primitive first.', 'warn', 5000); return false; }
     const name = await panel.askPolyName({ name: _s.name });
     if (!_s || !name) return false;
     _s.name = _safeName(name);
