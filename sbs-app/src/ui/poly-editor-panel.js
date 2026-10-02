@@ -15,6 +15,7 @@ import {
   polyShowMenu, polySetPivotMode, isPolyPivotMode,
   setPolyTab, setPolyBackground, polyApplyPreset, polyNewColor,
 } from '../systems/poly-session.js';
+import { REF_VIEWS, addPolyRef, removePolyRef, squarePolyRef, selectPolyRef, setPolyRefsEdit, setPolyRefProps, movePolyRefOrder } from '../systems/poly-refs.js';   // ⬚ V0.3.5.25
 
 let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null;
 const _collapsed = new Set();
@@ -102,10 +103,11 @@ function _render() {
 
   // ⬚ V0.3.5.22 — tabs: the model (add / level / tools / tree) · the scene's colours · the editor's background
   const tabs = row(); tabs.style.marginTop = '10px';
-  for (const [id, label, tip] of [['model', '⬚ Model', 'Add, edit and arrange the parts'], ['colors', '🎨 Colours', "Colour parts with the scene's colours"], ['env', '🌄 Environment', 'The background of this editor']]) {
+  for (const [id, label, tip] of [['model', '⬚ Model', 'Add, edit and arrange the parts'], ['refs', '🖼 Refs', 'Reference pictures — one set per flat view — to model against'], ['colors', '🎨 Colours', "Colour parts with the scene's colours"], ['env', '🌄 Env', 'The background of this editor']]) {
     tabs.append(btn(label, tip, () => setPolyTab(id), `flex:1;${info.tab === id ? 'background:#334155;border-color:#94a3b8;color:#fff;' : ''}`));
   }
   _root.append(tabs);
+  if (info.tab === 'refs') { _renderRefs(info); return; }
   if (info.tab === 'colors') { _renderColours(info); return; }
   if (info.tab === 'env') { _renderEnv(info); return; }
 
@@ -182,6 +184,126 @@ function _renderColours(info) {
   nr.append(pick, nm, btn('＋ Add', "Add this colour to the scene's colours — and put it on the selected part(s)", add));
   _root.append(nr);
   _root.append(_note("A colour made here is added to the project's colours as well. After Apply, the parts wear these same colours in the scene."));
+}
+
+/** 🖼 reference pictures: one set per flat view, standing on the object's centre. */
+function _renderRefs(info) {
+  const R = info.refs, flat = REF_VIEWS.includes(R.view), cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  _root.append(section('Reference pictures'));
+  const top = row();
+  top.append(
+    btn(`＋ Add a picture${flat ? ` to ${cap(R.view)}` : ' (to Front)'}`, 'Choose a picture, square it up with four corners, and put it on this view', () => addPolyRef(), 'flex:1;font-weight:600;'),
+    btn('✥ Move / scale', 'Grab a picture in the view and drag it, or pull one of its corners. Where you leave it is its home. (Esc ends it.)', () => setPolyRefsEdit(!R.edit), R.edit ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''),
+  );
+  _root.append(top);
+  if (!flat) _root.append(_note('You are in Persp: the pictures are hidden. They show only in the flat views — pick Top, Front, Left… above.'));
+  const list = el('div', 'flex:1;min-height:60px;overflow:auto;margin-top:8px;border:1px solid var(--line,#334155);border-radius:10px;padding:4px 0;');
+  let any = false;
+  for (const view of REF_VIEWS) {
+    const items = R.list.filter(r => r.view === view);
+    if (!items.length) continue;
+    any = true;
+    const head = el('div', `display:flex;align-items:center;gap:6px;padding:5px 8px 3px;font-size:11px;font-weight:700;letter-spacing:.5px;cursor:pointer;${R.view === view ? 'color:#60a5fa;' : 'opacity:.7;'}`, `${cap(view).toUpperCase()}${R.view === view ? ' — this view' : ''}`);
+    head.title = `Go to the ${cap(view)} view`;
+    head.addEventListener('click', () => setPolyView(view, { fit: false }));
+    list.append(head);
+    for (const r of items.slice().reverse()) {              // the top of the stack first
+      const on = R.sel === r.id;
+      const box = el('div', `padding:4px 8px;${on ? 'background:rgba(56,189,248,.12);' : ''}`);
+      const line = el('div', 'display:flex;align-items:center;gap:4px;');
+      const eye = btn(r.visible ? '👁' : '🚫', r.visible ? 'Hide this picture' : 'Show this picture', () => setPolyRefProps(r.id, { visible: !r.visible }), 'padding:2px 6px;');
+      const name = el('span', `flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;cursor:pointer;${r.missing ? 'color:#f87171;' : ''}`, r.missing ? `${r.name} — file not found` : r.name);
+      name.title = 'Select it (and go to its view)';
+      name.addEventListener('click', () => selectPolyRef(r.id));
+      line.append(eye, name,
+        btn('▲', 'Bring it forward (over the other pictures of this view)', () => movePolyRefOrder(r.id, 1), 'padding:2px 6px;'),
+        btn('▼', 'Send it back', () => movePolyRefOrder(r.id, -1), 'padding:2px 6px;'),
+        btn('⌗', 'Square it up again — four corners onto what should be a rectangle', () => squarePolyRef(r.id), 'padding:2px 6px;'),
+        btn('🗑', 'Remove this picture', () => removePolyRef(r.id), 'padding:2px 6px;'));
+      box.append(line);
+      if (on && !r.missing) {
+        const opt = el('div', 'display:flex;align-items:center;gap:8px;margin-top:5px;font-size:12px;');
+        const sl = el('input', 'flex:1;min-width:0;'); sl.type = 'range'; sl.min = '0.05'; sl.max = '1'; sl.step = '0.05'; sl.value = String(r.opacity); sl.title = 'How solid the picture is';
+        sl.addEventListener('input', () => setPolyRefProps(r.id, { opacity: Number(sl.value) }, { live: true }));
+        sl.addEventListener('change', () => setPolyRefProps(r.id, { opacity: Number(sl.value) }));
+        const fr = el('label', 'display:flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;');
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = r.front;
+        cb.addEventListener('change', () => setPolyRefProps(r.id, { front: cb.checked }));
+        fr.title = 'Draw the picture OVER the model (see-through), to trace on top of it. Off = behind the model.';
+        fr.append(cb, el('span', '', 'over the model'));
+        opt.append(el('span', 'opacity:.7;', 'Opacity'), sl, fr);
+        box.append(opt);
+        const sz = el('div', 'display:flex;align-items:center;gap:6px;margin-top:5px;font-size:12px;');
+        const w = el('input', 'width:90px;padding:3px 6px;border-radius:6px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:12px;');
+        w.value = String(Math.round(r.size * 1000) / 1000); w.title = 'The width of the picture in the scene';
+        let wLast = r.size;                                   // what was committed last (Enter then the trailing "change" commit once; the field keeps working without a redraw)
+        const commitW = (quiet) => { const v = parseFloat(w.value); if (!(v > 0) || Math.abs(v - wLast) <= 1e-9) return; wLast = v; setPolyRefProps(r.id, { size: v }, { quiet }); };
+        w.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); commitW(false); } });
+        w.addEventListener('change', () => commitW(true));   // left by a click elsewhere: no redraw under that click
+        sz.append(el('span', 'opacity:.7;', 'Width'), w, el('span', 'opacity:.55;', r.squared ? '· squared up' : '· as it is'));
+        box.append(sz);
+      }
+      list.append(box);
+    }
+  }
+  if (!any) list.append(el('div', 'padding:10px;font-size:12px;opacity:.6;line-height:1.45;', 'No pictures yet. Go to a flat view (Front, Top, Left…) and add the picture of the object seen from there.'));
+  _root.append(list);
+  _root.append(_note("A picture stands in the scene on the object's centre: it grows and shrinks with the zoom, and shows only in its own flat view. It is kept with the asset by its file's path."));
+}
+
+/**
+ * ⌗ Square a picture up: four corners dragged onto what should be a rectangle (a face of the object, a
+ * drawing's frame). → { quad: [tl, tr, br, bl] as fractions of the picture, aspect: w / h | null } | 'asis' | null.
+ */
+export function askPolySquareUp(src, { title = 'Reference picture', quad = null, aspect = null } = {}) {
+  return new Promise((resolve) => {
+    const dlg = el('dialog', 'max-width:94vw;border-radius:14px;border:1px solid var(--line,#334155);background:var(--panel,#0f172a);color:var(--text,#e5e7eb);padding:16px 18px;');
+    dlg.append(el('div', 'font-size:16px;font-weight:700;margin-bottom:4px;', `⌗ ${title}`));
+    dlg.append(el('div', 'font-size:12px;opacity:.75;line-height:1.45;margin-bottom:8px;max-width:760px;', 'A photo is never square-on. Drag the four corners onto what SHOULD be a rectangle — a face of the object, the frame of a drawing — and the picture is re-formed so that it is one. A drawing or a clean front shot can be used as it is.'));
+    const k = Math.min((window.innerWidth * 0.84) / src.width, (window.innerHeight * 0.6) / src.height, 1);
+    const W = Math.max(60, Math.round(src.width * k)), H = Math.max(60, Math.round(src.height * k));
+    const wrap = el('div', `position:relative;width:${W}px;height:${H}px;margin:0 auto;user-select:none;touch-action:none;`);
+    const cv = el('canvas', 'display:block;border-radius:6px;'); cv.width = W; cv.height = H;
+    cv.getContext('2d').drawImage(src, 0, 0, W, H);
+    const ov = el('canvas', 'position:absolute;left:0;top:0;pointer-events:none;'); ov.width = W; ov.height = H;
+    wrap.append(cv, ov);
+    const pts = (Array.isArray(quad) && quad.length === 4 ? quad : [{ x: 0.12, y: 0.12 }, { x: 0.88, y: 0.12 }, { x: 0.88, y: 0.88 }, { x: 0.12, y: 0.88 }]).map(p => ({ x: p.x, y: p.y }));
+    const dots = [];
+    const draw = () => {
+      const c = ov.getContext('2d'); c.clearRect(0, 0, W, H);
+      c.beginPath(); pts.forEach((p, i) => (i ? c.lineTo(p.x * W, p.y * H) : c.moveTo(p.x * W, p.y * H))); c.closePath();
+      c.fillStyle = 'rgba(56,189,248,0.10)'; c.fill();
+      c.lineWidth = 2; c.strokeStyle = '#38bdf8'; c.setLineDash([8, 5]); c.stroke();
+      dots.forEach((d, i) => { d.style.left = `${pts[i].x * W - 9}px`; d.style.top = `${pts[i].y * H - 9}px`; });
+    };
+    pts.forEach((p, i) => {
+      const d = el('div', 'position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #38bdf8;box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:grab;touch-action:none;');
+      d.title = ['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left'][i];
+      d.addEventListener('pointerdown', (e) => {
+        e.preventDefault(); e.stopPropagation();
+        try { d.setPointerCapture(e.pointerId); } catch { /* fine */ }
+        const move = (ev) => { const r = wrap.getBoundingClientRect(); p.x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)); p.y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height)); draw(); };
+        const up = () => { d.removeEventListener('pointermove', move); d.removeEventListener('pointerup', up); d.removeEventListener('pointercancel', up); };
+        d.addEventListener('pointermove', move); d.addEventListener('pointerup', up); d.addEventListener('pointercancel', up);
+      });
+      dots.push(d); wrap.append(d);
+    });
+    dlg.append(wrap);
+    const bar = el('div', 'display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;');
+    const sel = el('select', 'height:28px;font-size:12px;border-radius:6px;background:var(--panel,#0f172a);color:inherit;border:1px solid var(--line,#334155);');
+    sel.title = "The rectangle's width : height. Auto measures it from the corners.";
+    for (const [v, l] of [['', 'Proportion: auto'], ['1', '1 : 1'], ['1.3333', '4 : 3'], ['1.5', '3 : 2'], ['1.7778', '16 : 9'], ['0.75', '3 : 4'], ['0.6667', '2 : 3']]) { const o = el('option', '', l); o.value = v; if (aspect && Math.abs(Number(v) - aspect) < 1e-3) o.selected = true; sel.append(o); }
+    const done = (v) => { try { dlg.close(); } catch { /* fine */ } dlg.remove(); resolve(v); };
+    bar.append(sel, el('div', 'flex:1;'),
+      btn('⌗ Square it up', 'Re-form the picture so the four corners make a rectangle', () => done({ quad: pts.map(p => ({ x: p.x, y: p.y })), aspect: Number(sel.value) || null }), 'font-weight:600;background:#14532d;border-color:#22c55e;color:#dcfce7;'),
+      btn('Use the picture as it is', 'No correction', () => done('asis')),
+      btn('Cancel', '', () => done(null)));
+    dlg.append(bar);
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); done(null); });
+    document.body.appendChild(dlg);
+    try { dlg.showModal(); } catch { done(null); return; }
+    draw();
+  });
 }
 
 /** 🌄 the background of the editor: for seeing things here only. */

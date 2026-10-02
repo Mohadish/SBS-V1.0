@@ -45,6 +45,7 @@ import { sourceMatrixOfModel } from '../core/transforms.js';
 import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
 import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's colours, used (and added to) from the editor
+import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
@@ -91,6 +92,7 @@ export function polySessionInfo() {
     tab: _s.tab || 'model', bg: _s.bg || null,
     colors: (state.get('colorPresets') || []).filter(p => p && p.id && typeof p.color === 'string').map(p => ({ id: p.id, name: p.name || p.color, color: p.color })),
     selParts: selParts.length, selPreset: prim?.presetId || null,
+    refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
   };
 }
 /** The ONE folder everything of a new object sits in (null when the tree's top level is anything else). */
@@ -383,12 +385,19 @@ async function _start(nodeIds, opts = {}) {
   if (sess.reedit && nativeFailed) { noUpdate = sess.reedit.file; sess.reedit = null; }
   _s = sess;
   if (!sess.reedit && plan.named && sess.rootIds.length === 1 && sess.items.get(sess.rootIds[0])?.kind === 'folder') sess.rootFolderId = sess.rootIds[0];   // the object's folder
+  // the folder the reference pictures stand on, for the whole session (a second top-level item must not unseat them)
+  sess.refAnchorId = sess.rootFolderId || (sess.rootIds.length === 1 && sess.items.get(sess.rootIds[0])?.kind === 'folder' ? sess.rootIds[0] : null);
   for (const it of sess.items.values()) if (it.kind === 'part') { _buildPartMesh(it); if (it.frame0) { it.mesh.position.copy(it.frame0.pos); it.mesh.quaternion.copy(it.frame0.quat); it.frame0 = null; } }
   sceneCore.rootGroup.add(sess.group);
   sess.group.updateMatrixWorld(true);                      // the first view frames the parts where the session group puts them
   for (const it of sess.items.values()) if (it.kind === 'folder' && !it.frame.p) it.frame.p = _pivotLocal(it);   // a folder's pivot is a fixed point: what sits in it is measured from there
+  if (empty) {                                             // a new, empty object: its centre is where the user is looking (pictures and the first primitive land there, and it never moves again)
+    const f = _rootFolder(), cs = sceneCore.getCameraState?.();
+    if (f && !f.frame.p) f.frame.p = Array.isArray(cs?.pivot) ? sess.group.worldToLocal(new Th.Vector3().fromArray(cs.pivot)) : new Th.Vector3();
+  }
   _hideProject();
   _attachInput();
+  try { initPolyRefs(_refsHost, plan.reedit ? state.get('nodeById')?.get(plan.reedit.modelId)?.polyManifest?.refs : null); } catch (err) { console.warn('[poly session] reference pictures', err); }
   const { openPolyEditorPanel } = await import('../ui/poly-editor-panel.js');
   openPolyEditorPanel();
   _emit('open');
@@ -472,6 +481,7 @@ function _syncScene() {
   if (_s.primary && !alive.has(_s.primary)) _s.primary = [..._s.sel][0] || null;
   _syncGizmo();
   if (_s.pick) _pickPivotMarks();                          // the diamonds follow an undo / a delete made while a tool waits for a click
+  syncPolyRefs();                                          // the reference pictures stand on the object's folder
   sceneCore.requestRender?.(120);
 }
 
@@ -522,7 +532,31 @@ function _showProject(how = 'discard') {
 }
 
 // ── the panel's tabs · the editor's own background · the scene's colours (V0.3.5.22) ──
-export function setPolyTab(tab) { if (!_s) return; _s.tab = tab === 'colors' || tab === 'env' ? tab : 'model'; _emit('view'); }
+export function setPolyTab(tab) {
+  if (!_s) return;
+  _s.tab = tab === 'colors' || tab === 'env' || tab === 'refs' ? tab : 'model';
+  if (_s.tab !== 'refs' && polyRefsEditing()) setPolyRefsEdit(false);   // "move / scale pictures" belongs to the Refs tab: elsewhere a click must reach the parts
+  _emit('view');
+}
+
+// ⬚ V0.3.5.25 — what the reference pictures need from the session (poly-refs.js). They stand on the OBJECT's
+// centre: the pivot of the object's folder (his rule), else the editor's origin.
+const _refsHost = {
+  get group() { return _s?.group || null; },
+  _folder() { if (!_s) return null; const it = _s.refAnchorId ? _s.items.get(_s.refAnchorId) : null; return it && it.kind === 'folder' && _aliveIds().has(it.id) ? it : _rootFolder(); },
+  anchor() { const f = this._folder(), p = f ? _pivotLocal(f) : null; return p || new (T().Vector3)(); },
+  pin() { const f = this._folder(); if (f && !f.frame.p) f.frame.p = this.anchor(); },   // an anchor that pictures hang on is a fixed point
+  view() { return _s?.view || 'persp'; },
+  goView(v) { setPolyView(v, { fit: false }); },
+  push(label, undo, redo) { if (_s) _push(label, undo, redo); },
+  changed() { _emit('view'); },
+  contentSize() {
+    if (!_s) return 0;
+    const b = _sessionBox(false); if (!b) return 0;
+    const s = b.getSize(new (T().Vector3)());
+    return Math.max(s.x, s.y, s.z) / (_sessionFrame().scale || 1);
+  },
+};
 
 // The background is the EDITOR's: it is only for seeing things here. The project's own background (state,
 // steps, exports) is never written; what the scene showed before comes back when the editor closes. The
@@ -865,6 +899,7 @@ export function setPolyView(view, { fit = true, selectionOnly = false } = {}) {
     }
   } catch (err) { console.warn('[poly session] view', err); }
   _s.view = view;
+  syncPolyRefs();                                          // a reference picture shows only in its own view
   sceneCore.requestRender?.(300);
   _emit('view');
 }
@@ -999,6 +1034,7 @@ const _target = {
     if (xf.pivotOnly) { xf.pivotOnly.pos.copy(xf.pivotOnly.pos0).add(d); sceneCore.requestRender?.(60); return; }
     for (const r of xf.rows) r.mesh.position.copy(r.pos).add(d);
     for (const r of xf.frows) if (r.p) r.it.frame.p.copy(r.p).add(d);
+    if (xf.frows.length) syncPolyRefs();                     // the pictures ride the object's folder
     sceneCore.requestRender?.(60);
   },
   commitMove() { _xfCommit('Move part'); },
@@ -1454,6 +1490,7 @@ function _attachInput() {
       if (e.button !== 0) return;
       if (_s.pick) { swallow(e); _pickClick(e); return; }
       if (isPolyEditing()) return;                         // the sub-object editor's own listener (added later) takes it
+      if (polyRefsEditing() && polyRefsPointerDown(e)) { swallow(e); return; }   // a reference picture (or one of its corners) was grabbed
       swallow(e);
       if (gizmo.activeTarget === _target && gizmo.onPointerDown(e.clientX, e.clientY, false)) { try { dom.setPointerCapture(e.pointerId); } catch { /* fine */ } return; }
       _clickSelect(_pickPart(e), e);
@@ -1476,7 +1513,7 @@ function _attachInput() {
     },
     key: (e) => _onKey(e),
     mode: () => { if (_s) _emit('mode'); },
-    std: (v) => { if (_s) { _s.view = v || 'persp'; _emit('view'); } },   // orbiting out of an axis view = perspective again
+    std: (v) => { if (_s) { _s.view = v || 'persp'; syncPolyRefs(); _emit('view'); } },   // orbiting out of an axis view = perspective again (the reference pictures go with the view)
     loaded: () => _forceClose('Another project was opened — the Poly Editor was closed without applying.', 'project'),
     exp: () => { if (state.get('_exporting')) _forceClose('An export started — the Poly Editor was closed without applying.'); },
   };
@@ -1535,8 +1572,13 @@ function _onKey(e) {
   if (mod && e.code === 'KeyD') { e.preventDefault(); e.stopImmediatePropagation(); polyDuplicateSelected(); return; }
   if (mod || e.altKey) return;
   if (keyMatches('polyVertices', e) || keyMatches('polyFaces', e)) { e.preventDefault(); e.stopImmediatePropagation(); polyEnterSub(keyMatches('polyVertices', e) ? 'vertex' : 'face'); return; }
-  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopImmediatePropagation(); polyDeleteSelected(); return; }
-  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (_s.pivotMode) polySetPivotMode(false); else if (_s.sel.size) polySelect([]); return; }
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    e.preventDefault(); e.stopImmediatePropagation();
+    const pic = polyRefsEditing() ? polyRefsInfo().sel : null;   // in "move / scale pictures" Del takes the picture that is selected there, not the parts
+    if (pic) removePolyRef(pic); else polyDeleteSelected();
+    return;
+  }
+  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (polyRefsEditing()) setPolyRefsEdit(false); else if (_s.pivotMode) polySetPivotMode(false); else if (_s.sel.size) polySelect([]); return; }
 }
 
 function _hint() {
@@ -1550,6 +1592,7 @@ function _teardown(how = 'discard') {
   if (!_s) return;
   if (isPolyEditing()) exitPolyEdit();
   _endPick(true);
+  try { disposePolyRefs(); } catch (err) { console.warn('[poly session] reference pictures', err); }
   try { hideContextMenu(); } catch { /* not up */ }
   if (gizmo.activeTarget === _target) gizmo.hide();
   try { gizmo._closePanel?.(); } catch { /* not open */ }
@@ -1699,8 +1742,9 @@ async function _applyUpdate() {
   const name = _safeName(_s.name), others = _s.sourceIds.filter(id => id !== re.modelId);
   try {
     setStickyStatus(`⬚ Poly Editor — updating ${re.file}…`, 'info', 'polySession');
-    const glb = sceneGlb({ roots, name: re.file.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1 } });
-    const r = await updatePolyAssetInPlace(re.modelId, parts, glb);   // the session stays open until this has worked
+    const refs = polyRefsForSave();
+    const glb = sceneGlb({ roots, name: re.file.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1, sbsRefs: refs } });
+    const r = await updatePolyAssetInPlace(re.modelId, parts, glb, { refs });   // the session stays open until this has worked
     if (!r.ok) {
       if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
       if (r.reason === 'attached') { await panel.showPolyBlocked(r.attached, re.file); return false; }
@@ -1748,7 +1792,10 @@ async function _applyNew({ oldModel = null } = {}) {
     const path = await _targetPath(name);
     if (!path) { _s.applying = false; return false; }
     setStickyStatus('⬚ Poly Editor — saving the asset…', 'info', 'polySession');
-    const glb = sceneGlb({ roots, name, extras: { sbsPolyEditor: 1 } });
+    // the reference pictures go through the same turn / scale as the geometry (session space → the scene's)
+    const Xr = new (T().Matrix4)().multiplyMatrices(sceneCore.rootGroup.matrixWorld.clone().invert(), _s.group.matrixWorld);
+    const refsOut = polyRefsForSave(Xr), refsLost = polyRefsInfo().list.length - refsOut.length;
+    const glb = sceneGlb({ roots, name, extras: { sbsPolyEditor: 1, sbsRefs: refsOut } });
     const res = await window.sbsNative.writeFile(path, _b64(glb), 'base64');
     if (!res?.ok) throw new Error(res?.error || 'write failed');
     written = path;
@@ -1756,7 +1803,7 @@ async function _applyNew({ oldModel = null } = {}) {
     const { importModelAtPath } = await import('../ui/sidebar-left.js');
     const modelNode = await importModelAtPath(path);
     if (!modelNode) throw new Error('the saved asset did not load back');
-    setStatus(`Poly Editor: saved ${path.split(/[\\/]/).pop()} (${Math.round(glb.byteLength / 1024)} KB) and loaded it into the scene.`, 'success', 7000);
+    setStatus(`Poly Editor: saved ${path.split(/[\\/]/).pop()} (${Math.round(glb.byteLength / 1024)} KB) and loaded it into the scene.${refsLost > 0 ? ` ${refsLost} reference picture(s) were left out: the model is turned in this step, so they fit no flat view of the new asset.` : ''}`, refsLost > 0 ? 'warn' : 'success', refsLost > 0 ? 12000 : 7000);
     // parts coloured from the scene's colours wear those same colours (not the look-alikes the import made)
     try { applyPolyPartColours(modelNode.assetId, parts, presetsBefore); } catch (err) { console.warn('[poly session] colours', err); }
     const { askPolyOriginals } = await import('../ui/poly-editor-panel.js');

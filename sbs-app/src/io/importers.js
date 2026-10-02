@@ -1811,7 +1811,13 @@ async function loadGltfFile(file, assetEntry = null) {
         }, obj3dMap, true, { globalDedup: false });
         // ⬚ V0.3.5.16 — what this project knows of the asset's own nodes (saved with the model node;
         // compared with the file on the next open, and on an "update in place").
-        if (polyEditorAsset && modelNode) { try { modelNode.polyManifest = polyManifestOfModel(modelNode); } catch (err) { console.warn('[poly asset] manifest', err); } }
+        if (polyEditorAsset && modelNode) {
+          try {
+            modelNode.polyManifest = polyManifestOfModel(modelNode);
+            const refs = gltf.parser?.json?.asset?.extras?.sbsRefs;      // ⬚ V0.3.5.25 — the reference pictures the asset was modelled against (paths)
+            if (modelNode.polyManifest && Array.isArray(refs) && refs.length) modelNode.polyManifest.refs = refs;
+          } catch (err) { console.warn('[poly asset] manifest', err); }
+        }
         resolve(modelNode);
       } catch (err) { reject(err); }
     }, reject);

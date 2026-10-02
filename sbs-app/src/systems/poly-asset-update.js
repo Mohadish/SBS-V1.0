@@ -343,6 +343,7 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
 
   // ── every step ─────────────────────────────────────────────────────────────
   const r = patchSteps(state.get('steps') || [], _reconcileCtx(modelId, oldM, newM, diff, reshaped));
+  if (Array.isArray(opts.refs) && opts.refs.length) newM.refs = opts.refs;   // ⬚ V0.3.5.25 — the reference pictures stay with the asset
   model.polyManifest = newM;
   if (relabel.size) for (const s of r.steps) (function w(n) { if (!n) return; if (relabel.has(n.id)) n.name = relabel.get(n.id); (n.children || []).forEach(w); })(s?.snapshot?.tree);   // a spec's name renames the live node when its step is opened
   const assets = (state.get('assets') || []).map(a => (a.id === assetId
