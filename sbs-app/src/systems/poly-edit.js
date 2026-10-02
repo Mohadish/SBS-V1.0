@@ -375,12 +375,18 @@ function _frameFromNormal(nWorld) {
 
 const _target = {
   isPoly: true,
-  spaces: ['local', 'world', 'parent'],
+  spaces: ['world', 'parent', 'local'],                    // his order (V0.3.5.20)
   defaultSpace: 'local',
   spaceLabel: (m) => (m === 'local' ? 'LOCAL' : m === 'parent' ? 'PARENT' : 'WORLD'),   // local = the selected faces' normal · parent = the object
   panelNudge: true,                                        // ⬚ V0.3.5.19 — right-click the gizmo: move / rotate by a typed amount
   panelTitle: () => (_ed?.mode === 'vertex' ? 'Vertices' : 'Faces'),
   panelHint: () => "LOCAL = the selected faces' normal · PARENT = the object's own axes.",
+  // where the selection's middle is: from the world's origin, or from the object's own pivot (parent)
+  panelFrame(mode) {
+    const Th = T(); if (!_ed || mode === 'local') return null;
+    if (mode === 'parent') return { pos: _ed.mesh.getWorldPosition(new Th.Vector3()), quat: _ed.mesh.getWorldQuaternion(new Th.Quaternion()), name: 'the object' };
+    return { pos: new Th.Vector3(), quat: new Th.Quaternion(), name: 'the world' };
+  },
   onSpaceChange(mode) { if (_ed) _ed.space = mode; },   // the user's choice (L / the badge) survives hide + show
   getWorldPos() { return _ed ? _centroidWorld(_selVertexIds()) : null; },
   getWorldQuat(mode = 'local') {

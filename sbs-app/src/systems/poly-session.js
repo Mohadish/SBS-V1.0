@@ -339,6 +339,7 @@ async function _start(nodeIds, opts = {}) {
   for (const it of sess.items.values()) if (it.kind === 'part') { _buildPartMesh(it); if (it.frame0) { it.mesh.position.copy(it.frame0.pos); it.mesh.quaternion.copy(it.frame0.quat); it.frame0 = null; } }
   sceneCore.rootGroup.add(sess.group);
   sess.group.updateMatrixWorld(true);                      // the first view frames the parts where the session group puts them
+  for (const it of sess.items.values()) if (it.kind === 'folder' && !it.frame.p) it.frame.p = _pivotLocal(it);   // a folder's pivot is a fixed point: what sits in it is measured from there
   _hideProject();
   _attachInput();
   const { openPolyEditorPanel } = await import('../ui/poly-editor-panel.js');
@@ -531,6 +532,8 @@ export function polyNewFolder() {
     if (at < 0 || at > listOf().length) at = listOf().length;
     listOf().splice(at, 0, it.id);
     for (const x of tops) { _s.items.get(x).parent = it.id; it.children.push(x); }
+    _s.group.updateWorldMatrix(true, true);
+    it.frame.p = _pivotLocal(it) || new (T().Vector3)();   // its pivot: the middle of what it wraps (an empty folder: the origin) — fixed from here on
   });
   if (id) { _s.sel = new Set([id]); _s.primary = id; _syncScene(); _emit('select'); }
   return id;
@@ -821,8 +824,19 @@ function _foldersInSelection() {
 
 const _target = {
   isPolySession: true,
-  spaces: ['world', 'local', 'parent'], defaultSpace: 'world',
+  spaces: ['world', 'parent', 'local'], defaultSpace: 'world',   // his order (V0.3.5.20)
   spaceLabel: (m) => `${_s?.pivotMode ? 'PIVOT · ' : ''}${m === 'local' ? 'LOCAL' : m === 'parent' ? 'PARENT' : 'WORLD'}`,
+  // V0.3.5.20 — what the panel's numbers are measured from: the world's origin, or the pivot + axes of the
+  // folder the object sits in (no folder = the world is its folder). LOCAL = the object itself: nothing to read.
+  panelFrame(mode) {
+    const Th = T(); if (!_s || mode === 'local') return null;
+    if (mode === 'parent') {
+      const sub = _subject(), f = sub ? _nearestFolder(sub) : null, p = f ? _pivotLocal(f) : null;
+      if (f && p) return { pos: _s.group.localToWorld(p), quat: _groupQuat().multiply(f.frame.q), name: `“${f.name}”` };
+    }
+    return { pos: new Th.Vector3(), quat: new Th.Quaternion(), name: 'the world' };
+  },
+  panelWorldQuat() { return _s && _subject() ? _target.getWorldQuat('local') : null; },
   panelNudge: true,
   panelTitle: () => { if (!_s) return 'Poly Editor'; const one = _singleTop(), n = _selectedPartIds().length; return `${_s.pivotMode ? 'Pivot of ' : ''}${one ? one.name : `${n} parts`}`; },
   panelHint: () => (_s?.pivotMode ? 'Pivot mode: only the pivot moves, the geometry stays where it is.' : "LOCAL = the object's own axes · PARENT = its folder's axes (no folder = the world)."),
@@ -992,7 +1006,7 @@ function _quatOnto(it, nW) {
 export function polyPivotToSurface() {
   const it = _singleTop();
   if (!it) { setStatus('Select ONE part or folder first.', 'warn', 3500); return false; }
-  _startPick({ need: 1, what: `Pivot of ${it.name} — click where it goes (its Y turns to the surface)`, done: ([h]) => _setFrame(it, _s.group.worldToLocal(h.p.clone()), _quatOnto(it, h.n), 'Pivot to surface') });
+  _startPick({ need: 1, what: `Pivot of ${it.name} — click the point it goes to (its Y turns to the surface)`, done: ([h]) => _setFrame(it, _s.group.worldToLocal(h.p.clone()), _quatOnto(it, h.n), 'Pivot to surface') });
   return true;
 }
 export function polyPivotBy3Points() {
@@ -1006,38 +1020,57 @@ export function polyPivotBy3Points() {
   return true;
 }
 
-// ── align (moves the object: its pivot onto the point, its Y onto the normal) ──
-function _alignSelectionTo(pW, nW, label) {
+// ── align (V0.3.5.20, the project's own way): pick ON THE OBJECT first, then where it goes ──
+// Surface: one point on a face of the object, one on a face of another part → the two faces meet
+// (the picked points touch, the normals oppose). 3 points: a circle on the object (a pin, a rim), a circle
+// on the other part (a hole) → the centres meet, the axes line up (the smaller of the two turns: the
+// object is not flipped over).
+function _alignRigid(srcP, srcDir, tgtP, tgtDir, label) {
   if (!_s) return;
   const Th = T();
   const wasPivot = _s.pivotMode; _s.pivotMode = false;
   try {
-    const P0 = _target.getWorldPos(); if (!P0) return;
-    const y0 = new Th.Vector3(0, 1, 0).applyQuaternion(_target.getWorldQuat('local'));
-    const Rw = nW ? new Th.Quaternion().setFromUnitVectors(y0, nW.clone().normalize()) : new Th.Quaternion();
     _xfBegin();
     const xf = _s.xf; if (!xf) return;
+    _s.group.updateWorldMatrix(true, false);
+    xf.pivot = srcP.clone().applyMatrix4(_s.group.matrixWorld.clone().invert());   // the turn is about the picked point
+    const Rw = new Th.Quaternion().setFromUnitVectors(srcDir.clone().normalize(), tgtDir.clone().normalize());
     const q = new Th.Quaternion(), s = Math.sqrt(Math.max(0, 1 - Rw.w * Rw.w)), ang = 2 * Math.acos(Math.min(1, Math.max(-1, Rw.w)));
     if (s > 1e-9 && ang > 1e-9) q.setFromAxisAngle(new Th.Vector3(Rw.x / s, Rw.y / s, Rw.z / s).applyMatrix3(xf.rootInv3).normalize(), ang);
-    _xfRigid(xf, q, pW.clone().sub(P0).applyMatrix3(xf.rootInv3));
+    _xfRigid(xf, q, tgtP.clone().sub(srcP).applyMatrix3(xf.rootInv3));
     _xfCommit(label);
   } finally { if (_s) { _s.pivotMode = wasPivot; _syncScene(); } }
 }
 const _otherParts = () => { const sel = new Set(_selectedPartIds()), alive = _aliveIds(); return [..._s.items.values()].filter(it => it.kind === 'part' && alive.has(it.id) && !sel.has(it.id)); };
-export function polyAlignToSurface() {
+function _alignReady() {
   if (!_s || !_selectedPartIds().length) { setStatus('Select what should be aligned first.', 'warn', 3500); return false; }
   if (!_otherParts().length) { setStatus('There is no other part to align to.', 'warn', 4000); return false; }
-  _startPick({ need: 1, exclude: new Set(_selectedPartIds()), what: 'Align — click the surface it should sit on (its pivot goes there, its Y along the surface)', done: ([h]) => _alignSelectionTo(h.p, h.n, 'Align to surface') });
+  return true;
+}
+export function polyAlignToSurface() {
+  if (!_alignReady()) return false;
+  const sel = new Set(_selectedPartIds());
+  _startPick({
+    need: 2, allow: (i) => (i === 0 ? { only: sel } : { not: sel }),
+    what: (i) => (i === 0 ? 'Align — click a face ON THE OBJECT you are aligning (the face that will touch)' : 'Align — now click the face it should sit on'),
+    miss: (i) => (i === 0 ? 'Click on the selected object — the face of it that should touch.' : 'Click on ANOTHER part — the surface to sit on.'),
+    done: ([a, b]) => _alignRigid(a.p, a.n, b.p, b.n.clone().negate(), 'Align to surface'),
+  });
   return true;
 }
 export function polyAlignBy3Points() {
-  if (!_s || !_selectedPartIds().length) { setStatus('Select what should be aligned first.', 'warn', 3500); return false; }
-  if (!_otherParts().length) { setStatus('There is no other part to align to.', 'warn', 4000); return false; }
-  _startPick({ need: 3, exclude: new Set(_selectedPartIds()), what: 'Align — 3 points on a circle (a hole, a rim): its pivot goes to the centre', done: (pts) => {
-    const c = _circle3(pts[0].p, pts[1].p, pts[2].p);
-    if (!c) { setStatus('Those 3 points are on one line — no circle goes through them.', 'warn', 5000); return; }
-    _alignSelectionTo(c.c, c.n, 'Align by 3 points');
-  } });
+  if (!_alignReady()) return false;
+  const sel = new Set(_selectedPartIds());
+  _startPick({
+    need: 6, allow: (i) => (i < 3 ? { only: sel } : { not: sel }),
+    what: (i) => (i < 3 ? `Align — point ${i + 1} of 3 on a circle of THE OBJECT (a rim, a pin)` : `Align — point ${i - 2} of 3 on the circle it should go to (a hole, a rim)`),
+    miss: (i) => (i < 3 ? 'Click on the selected object.' : 'Click on ANOTHER part — the one to align to.'),
+    done: (pts) => {
+      const s = _circle3(pts[0].p, pts[1].p, pts[2].p), g = _circle3(pts[3].p, pts[4].p, pts[5].p);
+      if (!s || !g) { setStatus('Three of those points are on one line — no circle goes through them.', 'warn', 5000); return; }
+      _alignRigid(s.c, s.n, g.c, s.n.dot(g.n) < 0 ? g.n.clone().negate() : g.n, 'Align by 3 points');
+    },
+  });
   return true;
 }
 
@@ -1055,16 +1088,21 @@ function _circle3(a, b, c) {
 }
 
 // ── picking points on the model (for the align / pivot tools) ────────────────
-function _startPick({ need, what, exclude = null, done }) {
+/**
+ * need = how many clicks; allow(i) → { only: Set } | { not: Set } | null — which parts click i may land on;
+ * what / miss = text, or (i) → text, for click i.
+ */
+function _startPick({ need, what, miss = null, allow = null, done }) {
   if (!_s) return;
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return;
   _endPick(true);
-  _s.pick = { need, what, exclude: exclude || new Set(), pts: [], marks: [], done };
+  _s.pick = { need, what, miss, allow, pts: [], marks: [], done };
   if (gizmo.activeTarget === _target) gizmo.hide();
   _pickHint();
 }
-function _pickHint() { const k = _s?.pick; if (k) setStickyStatus(`⬚ ${k.what} — click point ${k.pts.length + 1} of ${k.need} on the model (it snaps to a corner) · Esc or right-click cancels`, 'info', 'polySession'); }
+const _pickText = (x, i) => (typeof x === 'function' ? x(i) : x);
+function _pickHint() { const k = _s?.pick; if (k) setStickyStatus(`⬚ ${_pickText(k.what, k.pts.length)} — click ${k.pts.length + 1} of ${k.need} (it snaps to a corner) · Esc or right-click cancels`, 'info', 'polySession'); }
 function _endPick(quiet = false) {
   const k = _s?.pick; if (!k) return;
   for (const m of k.marks) { try { m.parent?.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch { /* gone */ } }
@@ -1077,7 +1115,9 @@ function _pickPoint(e) {
   const rc = _s.rc || (_s.rc = new Th.Raycaster());
   rc.setFromCamera(new Th.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
   const alive = _aliveIds();
-  const meshes = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id) && !k.exclude.has(it.id)).map(it => it.mesh);
+  const rule = k.allow ? k.allow(k.pts.length) : null;
+  const ok = (id) => (rule?.only ? rule.only.has(id) : rule?.not ? !rule.not.has(id) : true);
+  const meshes = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id) && ok(it.id)).map(it => it.mesh);
   const h = rc.intersectObjects(meshes, false)[0];
   if (!h) return null;
   const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
@@ -1098,20 +1138,21 @@ function _pickPoint(e) {
   }
   return { p, n };
 }
-function _pickMark(p) {
+function _pickMark(p, color = 0xfbbf24) {
   const Th = T(), cam = sceneCore.camera, scene = sceneCore.scene;
   if (!scene) return null;
   const r = Math.max(1e-6, cam.position.distanceTo(p) * Math.tan((cam.fov || 35) * Math.PI / 360) * 0.012);
-  const m = new Th.Mesh(new Th.SphereGeometry(r, 12, 8), new Th.MeshBasicMaterial({ color: 0xfbbf24, depthTest: false, transparent: true }));
+  const m = new Th.Mesh(new Th.SphereGeometry(r, 12, 8), new Th.MeshBasicMaterial({ color, depthTest: false, transparent: true }));
   m.renderOrder = 9999; m.position.copy(p);
   scene.add(m);
   return m;
 }
 function _pickClick(e) {
-  const k = _s.pick, h = _pickPoint(e);
-  if (!h) { setStatus('Click on a part of the model.', 'warn', 2500); return; }
+  const k = _s.pick, h = _pickPoint(e), i = k.pts.length;
+  if (!h) { setStatus(_pickText(k.miss, i) || 'Click on a part of the model.', 'warn', 3000); return; }
   k.pts.push(h);
-  const mk = _pickMark(h.p); if (mk) k.marks.push(mk);
+  const rule = k.allow ? k.allow(i) : null;                 // on the object = cyan · where it goes = orange (the project's colours)
+  const mk = _pickMark(h.p, rule?.only ? 0x55ddff : rule?.not ? 0xff8c1a : 0xfbbf24); if (mk) k.marks.push(mk);
   sceneCore.requestRender?.(120);
   if (k.pts.length < k.need) { _pickHint(); return; }
   const pts = k.pts.slice(), done = k.done;
@@ -1125,8 +1166,8 @@ export function polyShowMenu(x, y) {
   if (!_s || !_s.sel.size) return;
   const one = _singleTop(), nParts = _selectedPartIds().length, onePart = one?.kind === 'part';
   showContextMenu([
-    { label: '📍 Align to a surface…', disabled: !nParts, action: () => polyAlignToSurface() },
-    { label: '⊚ Align by 3 points…', disabled: !nParts, action: () => polyAlignBy3Points() },
+    { label: '📍 Align to a surface… (a face of it, then where it goes)', disabled: !nParts, action: () => polyAlignToSurface() },
+    { label: '⊚ Align by 3 points… (a circle on it, then the circle it goes to)', disabled: !nParts, action: () => polyAlignBy3Points() },
     { separator: true },
     { label: '✛ Pivot', disabled: !one, submenu: [
       { label: _s.pivotMode ? '✔ Moving the pivot only — click to finish' : '✛ Move the pivot only (with the gizmo)', action: () => polySetPivotMode(!_s.pivotMode) },

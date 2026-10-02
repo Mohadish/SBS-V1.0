@@ -175,7 +175,9 @@ class GizmoController {
       }
       if (cel.type === 'rotate' && this._cableTarget.applyRotateAroundAxis) {
         const rad    = (value * Math.PI) / 180;
-        const signed = (cel.axis === 'x' || cel.axis === 'y') ? -rad : rad;
+        // V0.3.5.20 — a target whose panel shows VALUES (the Poly Editor) reads every angle right-handed, so a
+        // number typed on a ring, the ring's readout and the panel's fields all agree. Cables keep the mirrored X / Y.
+        const signed = (!this._cableTarget.panelFrame && (cel.axis === 'x' || cel.axis === 'y')) ? -rad : rad;
         this._cableTarget.applyRotateAroundAxis(this._axisVec(cel.axis), signed);
         this._lastAmount = value;
         return true;
@@ -1256,8 +1258,9 @@ class GizmoController {
         const angle     = (el.axis === 'x' || el.axis === 'y') ? -rawDelta : rawDelta;
         const worldAxis = this._axisVec(el.axis);
         this._cableTarget.applyRotateAroundAxis(worldAxis, angle);
-        this._lastAmount = rawDelta * 180 / Math.PI;
-        if (this._onDragEvent) this._onDragEvent('move', { type: 'rotate', axis: el.axis, value: rawDelta * 180 / Math.PI, node: null, source: 'mouse' });
+        const shown = (this._cableTarget.panelFrame ? angle : rawDelta) * 180 / Math.PI;   // (see applyNumericAmount: one sign for a target with values)
+        this._lastAmount = shown;
+        if (this._onDragEvent) this._onDragEvent('move', { type: 'rotate', axis: el.axis, value: shown, node: null, source: 'mouse' });
       }
       return;
     }
@@ -1828,11 +1831,14 @@ class GizmoController {
     // … and, when it asks for it (panelNudge), move / rotate BY a typed amount along the gizmo's axes.
     const inp = (key, color, axis) => `<label style="display:flex;align-items:center;gap:4px;flex:1;min-width:0;"><span style="color:${color};font-weight:700;">${axis}</span><input data-nudge="${key}" type="text" value="0" autocomplete="off" spellcheck="false" style="width:100%;min-width:0;box-sizing:border-box;background:var(--panel);border:1px solid var(--line);border-radius:4px;color:var(--text,#e5e7eb);font-size:12px;padding:3px 5px;"></label>`;
     const row3 = (k) => `<div style="display:flex;gap:6px;margin-bottom:8px;">${inp(k + '0', '#f87171', 'X')}${inp(k + '1', '#4ade80', 'Y')}${inp(k + '2', '#60a5fa', 'Z')}</div>`;
-    const cap = (s) => `<div style="font-size:10px;font-weight:700;letter-spacing:.5px;color:#94a3b8;margin-bottom:4px;">${s}</div>`;
+    const cap = (k) => `<div data-cap="${k}" style="font-size:10px;font-weight:700;letter-spacing:.5px;color:#94a3b8;margin-bottom:4px;"></div>`;
+    // V0.3.5.20 — the fields show WHERE the object is in the chosen space (its pivot from the world's
+    // origin, or from its parent's): 0, 0, 0 brings it back there. In a space that is the object itself
+    // (LOCAL) they read 0 and a typed value is an AMOUNT along its own axes. (_refreshTargetFields fills them.)
     const body = t?.panelNudge
-      ? `${cap('MOVE BY')}${row3('m')}${t.applyRotateAroundAxis ? `${cap('ROTATE BY (°)')}${row3('r')}` : ''}
+      ? `${cap('m')}${row3('m')}${t.applyRotateAroundAxis ? `${cap('r')}${row3('r')}` : ''}
         <div style="font-size:11px;color:#94a3b8;line-height:1.55;">
-          Type an amount and press <b>Enter</b> — it is applied along the gizmo's axes (the space chosen above; the <b>L</b> key changes it too).<br>
+          Type a value and press <b>Enter</b>. <b>WORLD</b> / <b>PARENT</b> show where it is — 0, 0, 0 puts it back on that origin. <b>LOCAL</b> always reads 0: a value there moves / turns it by that amount along its own axes (<b>L</b> changes the space too).<br>
           <span style="color:#64748b;">${this._escHTML(t.panelHint?.() || '')}</span>
         </div>`
       : `<div style="font-size:11px;color:#94a3b8;line-height:1.55;">
@@ -1849,6 +1855,80 @@ class GizmoController {
     `;
   }
 
+  /**
+   * ⬚ V0.3.5.20 — what the target panel shows: the object's pivot (and axes) in the frame of the current
+   * space. The target says which frame that is (panelFrame(mode) → { pos, quat, name } in the world, or null =
+   * "the object itself": then there is nothing to read and the fields are amounts) and what its own axes are
+   * (panelWorldQuat(); absent = no orientation to read, the rotation fields are amounts).
+   */
+  _targetPanelState() {
+    const T = window.THREE, t = this._cableTarget, out = { pos: null, rot: null, frame: null, P: null, Q: null, name: '' };
+    if (!T || !t?.panelNudge || !t.panelFrame) return out;
+    const f = t.panelFrame(this._spaceMode);
+    if (!f) return out;
+    const P = t.getWorldPos();
+    if (!P) return out;
+    out.frame = f; out.P = P; out.name = f.name || '';
+    const inv = f.quat.clone().invert();
+    const v = P.clone().sub(f.pos).applyQuaternion(inv);
+    out.pos = [v.x, v.y, v.z];
+    const Q = t.panelWorldQuat ? t.panelWorldQuat() : null;
+    if (Q) {
+      const rel = inv.multiply(Q), k = 180 / Math.PI, m = this._typedRot;
+      out.Q = Q;
+      // The triple that was TYPED is shown for as long as the object still has exactly that orientation
+      // (three angles are not unique: Y = 180 would come back as -180, 0, -180 and "Y = 0" would do nothing).
+      if (m && m.t === t && m.mode === this._spaceMode && Math.abs(rel.dot(m.q)) > 1 - 1e-9) out.rot = m.e.slice();
+      else { this._typedRot = null; const e = new T.Euler().setFromQuaternion(rel, 'XYZ'); out.rot = [e.x * k, e.y * k, e.z * k]; }
+    }
+    return out;
+  }
+
+  /** The captions + the values of the target panel (skips the field being typed in). */
+  _refreshTargetFields() {
+    const panel = this._panel, t = this._cableTarget;
+    if (!panel || !t?.panelNudge) return;
+    const s = this._targetPanelState();
+    const num = (v, d) => { const x = parseFloat(Number(v).toFixed(d)); return x === 0 ? 0 : x; };
+    const setCap = (k, txt) => { const el = panel.querySelector(`[data-cap="${k}"]`); if (el && el.textContent !== txt) el.textContent = txt; };
+    setCap('m', s.pos ? `POSITION — from ${s.name || 'the origin'}` : 'MOVE BY — along its own axes');
+    setCap('r', s.rot ? `ROTATION (°) — from ${s.name || 'the origin'}` : 'ROTATE BY (°)');
+    for (let i = 0; i < 3; i++) {
+      const m = panel.querySelector(`[data-nudge="m${i}"]`), r = panel.querySelector(`[data-nudge="r${i}"]`);
+      if (m && document.activeElement !== m) { const v = String(s.pos ? num(s.pos[i], 4) : 0); if (m.value !== v) m.value = v; }
+      if (r && document.activeElement !== r) { const v = String(s.rot ? num(s.rot[i], 2) : 0); if (r.value !== v) r.value = v; }
+    }
+  }
+
+  /** A value typed into the target panel: a position / an angle in the current space — or an amount, where there is nothing to read. */
+  _applyTargetField(key, value) {
+    const T = window.THREE, t = this._cableTarget;
+    if (!T || !t || !isFinite(value) || this._dragging) return;
+    const s = this._targetPanelState(), i = Number(key[1]);
+    if (key[0] === 'm') {
+      if (!s.pos) { this._nudgeTarget(key, value); return; }
+      const np = s.pos.slice(); np[i] = value;
+      const d = new T.Vector3(np[0], np[1], np[2]).applyQuaternion(s.frame.quat).add(s.frame.pos).sub(s.P);
+      if (d.lengthSq() < 1e-20) return;
+      t.beginMove?.(); t.applyCumulativeDelta(d); t.commitMove?.();
+    } else {
+      if (!s.rot) { this._nudgeTarget(key, value); return; }
+      if (!t.applyRotateAroundAxis) return;
+      const ne = s.rot.slice(); ne[i] = value;
+      const k = Math.PI / 180;
+      const qe = new T.Quaternion().setFromEuler(new T.Euler(ne[0] * k, ne[1] * k, ne[2] * k, 'XYZ'));
+      const Q1 = s.frame.quat.clone().multiply(qe);
+      this._typedRot = { t, mode: this._spaceMode, e: ne.slice(), q: qe };   // what the fields show while it stays there
+      const dQ = Q1.multiply(s.Q.clone().invert()).normalize();     // the turn, in the world, that takes it there
+      if (dQ.w < 0) dQ.set(-dQ.x, -dQ.y, -dQ.z, -dQ.w);
+      const sn = Math.sqrt(Math.max(0, 1 - dQ.w * dQ.w)), ang = 2 * Math.acos(Math.min(1, dQ.w));
+      if (sn < 1e-9 || ang < 1e-9) return;
+      t.beginRotate?.(); t.applyRotateAroundAxis(new T.Vector3(dQ.x / sn, dQ.y / sn, dQ.z / sn), ang); t.commitRotate?.();
+    }
+    this._tick();
+    sceneCore.requestRender?.(120);
+  }
+
   /** ⬚ V0.3.5.19 — move / rotate a target BY a typed amount along one of the gizmo's current axes (one undo step of the target's). */
   _nudgeTarget(key, value) {
     const T = window.THREE, t = this._cableTarget;
@@ -1858,7 +1938,7 @@ class GizmoController {
       if (!t.applyRotateAroundAxis) return;
       const rad = value * Math.PI / 180;
       t.beginRotate?.();
-      t.applyRotateAroundAxis(axis, i < 2 ? -rad : rad);   // the same sign as a number typed on the ring (X / Y read mirrored there)
+      t.applyRotateAroundAxis(axis, (!t.panelFrame && i < 2) ? -rad : rad);   // the same sign as the ring of this target (see applyNumericAmount)
       t.commitRotate?.();
     } else {
       t.beginMove?.();
@@ -1887,17 +1967,29 @@ class GizmoController {
         });
       });
       panel.querySelectorAll('[data-nudge]').forEach(inp => {
+        // Only a field that was TYPED IN commits (Enter on an untouched field must not re-apply its rounded
+        // text), and it commits when it is left as well — 0, Tab, 0, Tab, 0 brings all three axes home.
+        let edited = false;
+        const commit = () => {
+          if (!edited) return;
+          edited = false;
+          let v = NaN;
+          try { v = parseExpression(inp.value); } catch { v = parseFloat(inp.value); }
+          if (isFinite(v)) this._applyTargetField(inp.dataset.nudge, v);
+        };
         inp.addEventListener('focus', () => inp.select());
+        inp.addEventListener('input', () => { edited = true; });
+        inp.addEventListener('change', commit);              // Tab / a click into the next field
         inp.addEventListener('keydown', (e) => {
           e.stopPropagation();
           if (e.key !== 'Enter') return;
           e.preventDefault();
-          let v = NaN;
-          try { v = parseExpression(inp.value); } catch { v = parseFloat(inp.value); }
-          if (isFinite(v) && v !== 0) this._nudgeTarget(inp.dataset.nudge, v);
-          inp.value = '0'; inp.blur();                      // "by": an amount, not a position — and the keys go back to the editor (Ctrl+Z undoes it)
+          commit();
+          inp.blur();                                       // the keys go back to the editor (Ctrl+Z undoes it); the field re-reads on the next frame
+          this._refreshTargetFields();
         });
       });
+      this._refreshTargetFields();
       panel.querySelector('[data-action="close"]')?.addEventListener('click', () => this._closePanel());
       this._wirePanelDragHandle(panel);
       return;
@@ -2525,6 +2617,7 @@ class GizmoController {
     // V0.3.0.173 — cable panel: keep the LOCAL/WORLD highlight in sync (e.g. L key).
     if (this._cableTarget) {
       this._panel.querySelectorAll('[data-space]').forEach(b => { b.style.cssText = this._spaceBtn(b.dataset.space === this._spaceMode); });
+      this._refreshTargetFields();                           // V0.3.5.20 — live: where the object is, in the chosen space
       return;
     }
     if (!this._node) return;
