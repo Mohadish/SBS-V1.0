@@ -93,6 +93,7 @@ export function polySessionInfo() {
     colors: (state.get('colorPresets') || []).filter(p => p && p.id && typeof p.color === 'string').map(p => ({ id: p.id, name: p.name || p.color, color: p.color })),
     selParts: selParts.length, selPreset: prim?.presetId || null,
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
+    scale: _s.scale?.mode || null,                           // ⬚ V0.3.5.26 — the scale box: '2d' | '3d' | off
   };
 }
 /** The ONE folder everything of a new object sits in (null when the tree's top level is anything else). */
@@ -535,6 +536,7 @@ function _showProject(how = 'discard') {
 export function setPolyTab(tab) {
   if (!_s) return;
   _s.tab = tab === 'colors' || tab === 'env' || tab === 'refs' ? tab : 'model';
+  if (_s.tab !== 'model' && _s.scale) { _scaleEnd(); _hint(); _syncScene(); }   // the scale box belongs to the Model tab
   if (_s.tab !== 'refs' && polyRefsEditing()) setPolyRefsEdit(false);   // "move / scale pictures" belongs to the Refs tab: elsewhere a click must reach the parts
   _emit('view');
 }
@@ -843,6 +845,7 @@ function _partHost(id) {
 /** Into the vertices / faces of the primary selected part (1 / 4, a double-click, the panel's level buttons). */
 export function polyEnterSub(mode = 'face', id = null) {
   if (!_s) return false;
+  _scaleEnd();
   const target = id || _s.primary || _selectedPartIds()[0];
   const it = _s.items.get(target);
   if (!it || it.kind !== 'part') { setStatus('Select ONE part first, then choose vertices or faces.', 'warn', 3500); return false; }
@@ -1135,6 +1138,7 @@ export function polySetPivotMode(on) {
   if (on && !_singleTop()) { setStatus('Select ONE part or folder first — a pivot belongs to one object.', 'warn', 4000); return false; }
   if (on && isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
+  if (on) _scaleEnd();
   _s.pivotMode = !!on;
   try { gizmo.setSpace(gizmo.spaceMode); } catch { /* the badge re-reads its name on the next show */ }
   _hint(); _syncScene(); _emit('mode');
@@ -1288,6 +1292,7 @@ function _startPick({ need, what, miss = null, allow = null, circles = false, do
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return;
   _endPick(true);
+  _scaleEnd();
   const Th = T(), group = new Th.Group(), marks = new Th.Group(), pivots = new Th.Group(), hover = new Th.Group();
   group.name = 'sbs:poly-pick';
   group.add(marks, pivots, hover);
@@ -1434,6 +1439,145 @@ function _pickClick(e) {
   if (_s) { _hint(); _syncScene(); }
 }
 
+// ── scale (V0.3.5.26) ────────────────────────────────────────────────────────
+// His ask: "we need a way to scale things, 2D and 3D". A box with eight handles is drawn around the
+// selection AS IT IS SEEN (the screen's own right / up), from any angle:
+//   2D   a side handle stretches it along that screen direction only (width, or height); a corner handle
+//        stretches both equally. Depth is not touched.
+//   3D   any handle scales it equally in ALL directions.
+// The opposite side (or corner) stays where it is. The scale is real: it goes into the vertices of every
+// selected part (a part has no "scale" of its own to carry), pivots and folder pivots move with it. One undo step.
+export const polyScaleMode = () => _s?.scale?.mode || null;
+/** '2d' | '3d' | null (off). */
+export function polySetScaleMode(mode) {
+  if (!_s) return false;
+  const m = mode === '2d' || mode === '3d' ? mode : null;
+  if (m && !_selectedPartIds().length) { setStatus('Select what should be scaled first.', 'warn', 3500); return false; }
+  if (m && isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  if (m) { if (_s.pick) _endPick(true); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); _s.scale.mode = m; }
+  else _scaleEnd();
+  _hint(); _syncScene(); _emit('mode');
+  return true;
+}
+const _SCALE_HANDLES = { tl: 'nwse-resize', t: 'ns-resize', tr: 'nesw-resize', r: 'ew-resize', br: 'nwse-resize', b: 'ns-resize', bl: 'nesw-resize', l: 'ew-resize' };
+function _scaleBegin() {
+  const wrap = document.createElement('div');             // the size of the viewport: the box never draws over the side panels
+  wrap.style.cssText = 'position:fixed;z-index:50;pointer-events:none;overflow:hidden;display:none;';
+  const box = document.createElement('div');
+  box.style.cssText = 'position:absolute;pointer-events:none;box-sizing:border-box;border:1px dashed #fbbf24;';
+  const hs = {};
+  for (const [k, cur] of Object.entries(_SCALE_HANDLES)) {
+    const h = document.createElement('div');
+    h.style.cssText = `position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;box-sizing:border-box;background:#fff;border:2px solid #b45309;border-radius:2px;pointer-events:auto;cursor:${cur};touch-action:none;`;
+    h.style.left = k.includes('l') ? '0%' : k.includes('r') ? '100%' : '50%';
+    h.style.top = k.includes('t') ? '0%' : k.includes('b') ? '100%' : '50%';
+    h.addEventListener('pointerdown', (e) => _scaleDown(e, k));
+    box.append(h); hs[k] = h;
+  }
+  wrap.appendChild(box); document.body.appendChild(wrap);
+  const sc = _s.scale = { mode: '2d', wrap, box, hs, raf: 0, drag: null };
+  const tick = () => { if (!_s || _s.scale !== sc) return; _scaleLayout(); sc.raf = requestAnimationFrame(tick); };
+  tick();
+}
+function _scaleEnd() {
+  const sc = _s?.scale; if (!sc) return;
+  if (sc.drag) _scaleFinish(false);
+  try { cancelAnimationFrame(sc.raf); sc.wrap.remove(); } catch { /* gone */ }
+  _s.scale = null;
+}
+/** Where the selection is on the screen: the box its parts' own boxes make, in client pixels. */
+function _scaleScreenRect() {
+  const Th = T(), cam = sceneCore.camera, r = sceneCore.renderer.domElement.getBoundingClientRect(), v = new Th.Vector3();
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const id of _selectedPartIds()) {
+    const m = _s.items.get(id)?.mesh, bb = m?.geometry?.boundingBox; if (!bb) continue;
+    for (let i = 0; i < 8; i++) {
+      v.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z).applyMatrix4(m.matrixWorld).project(cam);
+      if (!isFinite(v.x) || !isFinite(v.y) || v.z > 1) continue;
+      const x = (v.x * 0.5 + 0.5) * r.width + r.left, y = (-v.y * 0.5 + 0.5) * r.height + r.top;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  return isFinite(x0) && x1 - x0 > 1 && y1 - y0 > 1 ? { x0, y0, x1, y1, canvas: r } : null;
+}
+function _scaleLayout() {
+  const sc = _s?.scale; if (!sc) return;
+  const R = isPolyEditing() || _s.pick ? null : _scaleScreenRect();
+  if (!R) { sc.wrap.style.display = 'none'; return; }
+  const w = sc.wrap.style, s = sc.box.style, c = R.canvas;
+  w.display = 'block'; w.left = `${c.left}px`; w.top = `${c.top}px`; w.width = `${c.width}px`; w.height = `${c.height}px`;
+  s.left = `${R.x0 - c.left}px`; s.top = `${R.y0 - c.top}px`; s.width = `${R.x1 - R.x0}px`; s.height = `${R.y1 - R.y0}px`;
+}
+function _scaleDown(e, k) {
+  const sc = _s?.scale; if (!sc || sc.drag || e.button !== 0) return;
+  e.preventDefault(); e.stopPropagation();
+  const R = _scaleScreenRect(); if (!R) return;
+  const Th = T(), cam = sceneCore.camera;
+  cam.updateMatrixWorld(); _s.group.updateWorldMatrix(true, true);
+  const right = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 0).normalize(), up = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 1).normalize(), depth = new Th.Vector3().crossVectors(right, up).normalize();
+  const wb = new Th.Box3(); for (const id of _selectedPartIds()) { const m = _s.items.get(id)?.mesh; if (m) wb.expandByObject(m); }
+  const C = wb.getCenter(new Th.Vector3()), cp = C.clone().project(cam);                 // everything is measured at the depth of the selection's middle
+  const hx = k.includes('l') ? -1 : k.includes('r') ? 1 : 0, hy = k.includes('t') ? -1 : k.includes('b') ? 1 : 0;
+  const fx = hx < 0 ? R.x1 : hx > 0 ? R.x0 : (R.x0 + R.x1) / 2, fy = hy < 0 ? R.y1 : hy > 0 ? R.y0 : (R.y0 + R.y1) / 2;   // the side that stays
+  const d = sc.drag = {
+    hx, hy, fx, fy, sx0: hx < 0 ? R.x0 : R.x1, sy0: hy < 0 ? R.y0 : R.y1, right, up, depth, f: [1, 1, 1], M: new Th.Matrix4(),
+    F: new Th.Vector3(((fx - R.canvas.left) / R.canvas.width) * 2 - 1, -(((fy - R.canvas.top) / R.canvas.height) * 2 - 1), cp.z).unproject(cam),
+    Ginv: _s.group.matrixWorld.clone().invert(),
+    rows: _selectedPartIds().map(id => { const it = _s.items.get(id), m = it.mesh; return { it, m, W0: m.matrixWorld.clone() }; }),
+    frows: _foldersInSelection().filter(f => f.frame.p).map(f => ({ it: f, p0: f.frame.p.clone() })),
+  };
+  d.move = (ev) => _scaleMove(ev);
+  d.end = () => _scaleFinish(true);
+  window.addEventListener('pointermove', d.move, true);
+  window.addEventListener('pointerup', d.end, true);
+  window.addEventListener('pointercancel', d.end, true);
+}
+function _scaleMove(e) {
+  const sc = _s?.scale, d = sc?.drag; if (!d) return;
+  const Th = T();
+  let sx = d.hx ? (e.clientX - d.fx) / (d.sx0 - d.fx) : 1, sy = d.hy ? (e.clientY - d.fy) / (d.sy0 - d.fy) : 1;
+  sx = Math.max(0.01, sx); sy = Math.max(0.01, sy);                                      // never through itself (no mirror)
+  const both = d.hx && d.hy ? Math.max(sx, sy) : d.hx ? sx : sy;
+  d.f = sc.mode === '3d' ? [both, both, both] : (d.hx && d.hy ? [both, both, 1] : [d.hx ? sx : 1, d.hy ? sy : 1, 1]);
+  // x' = F + A (x − F), A = stretch along the screen's right / up / depth
+  const B = new Th.Matrix4().makeBasis(d.right, d.up, d.depth);
+  const A = B.clone().multiply(new Th.Matrix4().makeScale(d.f[0], d.f[1], d.f[2])).multiply(B.clone().transpose());
+  d.M.makeTranslation(d.F.x, d.F.y, d.F.z).multiply(A).multiply(new Th.Matrix4().makeTranslation(-d.F.x, -d.F.y, -d.F.z));
+  for (const r of d.rows) { r.m.matrixAutoUpdate = false; r.m.matrix.copy(d.Ginv).multiply(d.M).multiply(r.W0); r.m.matrixWorldNeedsUpdate = true; }   // shown as it will be; baked when the mouse is let go
+  const pc = (x) => `${Math.round(x * 1000) / 10}%`;
+  setStatus(sc.mode === '3d' ? `Scale (all directions): ${pc(d.f[0])}` : `Scale: width ${pc(d.f[0])} · height ${pc(d.f[1])}`, 'info', 1500);
+  sceneCore.requestRender?.(60);
+}
+/** The gesture ends: bake it (commit) or put everything back. */
+function _scaleFinish(commit) {
+  const sc = _s?.scale, d = sc?.drag; if (!d) return;
+  sc.drag = null;
+  window.removeEventListener('pointermove', d.move, true);
+  window.removeEventListener('pointerup', d.end, true);
+  window.removeEventListener('pointercancel', d.end, true);
+  const Th = T();
+  for (const r of d.rows) { r.m.matrixAutoUpdate = true; r.m.updateMatrix(); r.m.matrixWorldNeedsUpdate = true; }
+  const changed = commit && d.f.some(x => Math.abs(x - 1) > 1e-6);
+  if (!changed) { sceneCore.requestRender?.(120); return; }
+  const G = _s.group.matrixWorld;
+  const partRows = d.rows.map(r => {
+    const m = r.m, pos1 = new Th.Vector3().setFromMatrixPosition(r.W0).applyMatrix4(d.M).applyMatrix4(d.Ginv);   // the pivot goes with it
+    const F1w = new Th.Matrix4().multiplyMatrices(G, new Th.Matrix4().compose(pos1, m.quaternion, m.scale));
+    const V = F1w.invert().multiply(d.M).multiply(r.W0);                                  // old own space → new own space
+    const poly = _polyApply(clonePoly(r.it.poly), V);
+    return { it: r.it, before: { poly: clonePoly(r.it.poly), pos: m.position.clone() }, after: { poly, pos: pos1 } };
+  });
+  const folderRows = d.frows.map(r => ({ it: r.it, before: r.p0.clone(), after: r.p0.clone().applyMatrix4(G).applyMatrix4(d.M).applyMatrix4(d.Ginv) }));
+  const put = (key) => {
+    for (const r of partRows) { r.it.poly = clonePoly(r[key].poly); r.it.mesh.position.copy(r[key].pos); r.it.mesh.updateMatrixWorld(true); _refreshPartMesh(r.it); _partChanged(r.it.id); }
+    for (const r of folderRows) r.it.frame.p = r[key].clone();
+  };
+  put('after');
+  _push(sc.mode === '3d' ? 'Scale (3D)' : 'Scale', () => put('before'), () => put('after'));
+  _syncScene(); _emit('tree');
+}
+
 // ── the right-click menu of a part / folder ──────────────────────────────────
 export function polyShowMenu(x, y) {
   if (!_s || !_s.sel.size) return;
@@ -1442,6 +1586,10 @@ export function polyShowMenu(x, y) {
     { label: '📍 Align to a surface… (a face of it, then where it goes)', disabled: !nParts, action: () => polyAlignToSurface() },
     { label: '⊚ Align by 3 points… (a circle on it, then the circle it goes to)', disabled: !nParts, action: () => polyAlignBy3Points() },
     { separator: true },
+    { label: '⤢ Scale', disabled: !nParts, submenu: [
+      { label: `${_s.scale?.mode === '2d' ? '✔ ' : ''}2D — width / height as you see it (a corner = both equally)`, action: () => polySetScaleMode(_s.scale?.mode === '2d' ? null : '2d') },
+      { label: `${_s.scale?.mode === '3d' ? '✔ ' : ''}3D — equally in all directions`, action: () => polySetScaleMode(_s.scale?.mode === '3d' ? null : '3d') },
+    ] },
     { label: '✛ Pivot', disabled: !one, submenu: [
       { label: _s.pivotMode ? '✔ Moving the pivot only — click to finish' : '✛ Move the pivot only (with the gizmo)', action: () => polySetPivotMode(!_s.pivotMode) },
       { separator: true },
@@ -1464,6 +1612,7 @@ export function polyShowMenu(x, y) {
 
 function _syncGizmo() {
   if (!_s || isPolyEditing() || _s.pick) return;
+  if (_s.scale) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }   // the scale box has the stage: no gizmo under its handles
   if (_s.pivotMode && !_singleTop()) {                       // a pivot belongs to ONE object
     _s.pivotMode = false;
     try { if (gizmo.activeTarget === _target) gizmo.setSpace(gizmo.spaceMode); } catch { /* the badge re-reads its name on the next show */ }
@@ -1578,11 +1727,20 @@ function _onKey(e) {
     if (pic) removePolyRef(pic); else polyDeleteSelected();
     return;
   }
-  if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); if (polyRefsEditing()) setPolyRefsEdit(false); else if (_s.pivotMode) polySetPivotMode(false); else if (_s.sel.size) polySelect([]); return; }
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (_s.scale?.drag) _scaleFinish(false);                 // a scale in the hand: put it back
+    else if (_s.scale) polySetScaleMode(null);
+    else if (polyRefsEditing()) setPolyRefsEdit(false);
+    else if (_s.pivotMode) polySetPivotMode(false);
+    else if (_s.sel.size) polySelect([]);
+    return;
+  }
 }
 
 function _hint() {
   if (!_s) return;
+  if (_s.scale) { setStickyStatus(_s.scale.mode === '3d' ? '⬚ SCALE 3D — pull any handle of the box: everything grows / shrinks equally in all directions · the opposite side stays · Esc ends it' : '⬚ SCALE 2D — pull a side handle = width or height (as you see it) · a corner = both equally · the opposite side stays · Esc ends it', 'info', 'polySession'); return; }
   if (_s.pivotMode) { setStickyStatus(`⬚ PIVOT mode — the gizmo moves / turns only the pivot of ${_singleTop()?.name || 'the object'}; the geometry stays · Esc ends it (or right-click ▸ Pivot)`, 'info', 'polySession'); return; }
   setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
 }
@@ -1592,6 +1750,7 @@ function _teardown(how = 'discard') {
   if (!_s) return;
   if (isPolyEditing()) exitPolyEdit();
   _endPick(true);
+  _scaleEnd();
   try { disposePolyRefs(); } catch (err) { console.warn('[poly session] reference pictures', err); }
   try { hideContextMenu(); } catch { /* not up */ }
   if (gizmo.activeTarget === _target) gizmo.hide();

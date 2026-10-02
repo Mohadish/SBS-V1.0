@@ -12,7 +12,7 @@ import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoScope, polyPrimitiveKinds, polyAddPrimitive,
-  polyShowMenu, polySetPivotMode, isPolyPivotMode,
+  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode,
   setPolyTab, setPolyBackground, polyApplyPreset, polyNewColor,
 } from '../systems/poly-session.js';
 import { REF_VIEWS, addPolyRef, removePolyRef, squarePolyRef, selectPolyRef, setPolyRefsEdit, setPolyRefProps, movePolyRefOrder } from '../systems/poly-refs.js';   // ⬚ V0.3.5.25
@@ -122,6 +122,14 @@ function _render() {
   const edges = btn('Edges (2)', 'Not built yet', () => {}); edges.disabled = true; lv.append(edges);
   lv.append(btn('✛ Pivot', 'Move / turn only the PIVOT of the selected part or folder — the geometry stays (Esc ends it). More under right-click ▸ Pivot.', () => polySetPivotMode(!isPolyPivotMode()), isPolyPivotMode() ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''));
   _root.append(lv);
+  // ⬚ V0.3.5.26 — scale: a box with handles around the selection, as it is seen
+  const scOn = 'background:#9a3412;border-color:#fb923c;color:#fff;';
+  const scr = row(); scr.style.marginTop = '5px';
+  scr.append(
+    btn('⤢ Scale 2D', 'A box with handles around the selection: pull a side = stretch the width or the height as you see it; a corner = both equally. (Esc ends it.)', () => polySetScaleMode(info.scale === '2d' ? null : '2d'), `flex:1;${info.scale === '2d' ? scOn : ''}`),
+    btn('⤢ Scale 3D', 'The same box: any handle scales the selection equally in ALL directions. (Esc ends it.)', () => polySetScaleMode(info.scale === '3d' ? null : '3d'), `flex:1;${info.scale === '3d' ? scOn : ''}`),
+  );
+  _root.append(scr);
 
   // ⬚ V0.3.5.18 — primitives made inside the editor: editable polys from the first moment
   _root.append(section('Add'));
