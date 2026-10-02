@@ -2587,6 +2587,12 @@ gl_FragColor.a = 1.0;
         : this._selectedMeshIds;
 
     const color = state.get('selectionOutlineColor') ?? '#00ffff';
+    // ⬚ V0.3.5.22 — a per-mesh tint over the selection colour: a part that belongs to an asset the Poly
+    // Editor can re-edit glows ORANGE, so "this one opens as that asset" is seen before the right-click.
+    // The pass is made by whoever knows (setSelectionTintPass); it answers per mesh id, or null.
+    let tintOf = null;
+    try { tintOf = this._selectionTintPass ? this._selectionTintPass() : null; } catch { tintOf = null; }
+    const colorOf = (id) => { if (!tintOf) return color; try { return tintOf(id) || color; } catch { return color; } };
 
     // ── Fix A (V0.1.66): diff-based update ─────────────────────────────
     // Previously this iterated EVERY registered mesh in the scene on
@@ -2635,7 +2641,7 @@ gl_FragColor.a = 1.0;
     for (const id of selected) {
       if (prevApply.has(id)) continue;
       const mesh = this.meshById.get(id);
-      if (mesh) this._applySelectionHull(mesh, true, color, null, { outlineOnly });
+      if (mesh) this._applySelectionHull(mesh, true, colorOf(id), null, { outlineOnly });
     }
     // Newly deselected — strip hull. Use prevAll so stale hulls left from
     // a locked-folder selection are ALWAYS cleaned up.
@@ -2989,6 +2995,9 @@ gl_FragColor.a = 1.0;
     mesh.add(outline);
     mesh.userData[OUTLINE_KEY] = outline;
   }
+
+  /** ⬚ V0.3.5.22 — fn() → (meshId) → hex | null: a colour of its own for some of the selected meshes (see applySelectionHighlight). */
+  setSelectionTintPass(fn) { this._selectionTintPass = typeof fn === 'function' ? fn : null; }
 
   setSelectionOutlineColor(hex) {
     this._selectionColor = hex;

@@ -42,8 +42,9 @@ import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEd
 import { sceneGlb } from '../io/glb-write.js';
 import { isEditing as overlayIsEditing, setEditingMode as overlaySetEditing } from './overlay.js';
 import { sourceMatrixOfModel } from '../core/transforms.js';
-import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, polyAssetRemovalBlockers } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
+import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, polyAssetRemovalBlockers, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
+import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's colours, used (and added to) from the editor
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
@@ -76,8 +77,9 @@ export function polySessionInfo() {
   const alive = _aliveIds();
   const row = (id, depth) => {
     const it = _s.items.get(id);
-    return { id, kind: it.kind, name: it.name, parent: it.parent || null, depth, faces: it.kind === 'part' ? it.poly.f.length : 0, selected: _s.sel.has(id), primary: _s.primary === id, children: it.kind === 'folder' ? it.children.map(c => row(c, depth + 1)) : [] };
+    return { id, kind: it.kind, name: it.name, parent: it.parent || null, depth, faces: it.kind === 'part' ? it.poly.f.length : 0, selected: _s.sel.has(id), primary: _s.primary === id, color: it.kind === 'part' ? _hexOf(it.color) : null, children: it.kind === 'folder' ? it.children.map(c => row(c, depth + 1)) : [] };
   };
+  const selParts = _selectedPartIds(), prim = _s.items.get(selParts.includes(_s.primary) ? _s.primary : selParts[0]);
   return {
     name: _s.name, view: _s.view, level: isPolyEditing() ? (polyEditMode() || 'face') : 'object',
     parts: [...alive].filter(id => _s.items.get(id).kind === 'part').length,
@@ -85,6 +87,10 @@ export function polySessionInfo() {
     tree: _s.rootIds.map(id => row(id, 0)),
     canUndo: undoManager.undoScope?.() === SCOPE,
     reedit: _s.reedit ? { file: _s.reedit.file } : null,   // this session edits an asset that is already in the project
+    // ⬚ V0.3.5.22 — the panel's tabs: the scene's colours, the editor's own background
+    tab: _s.tab || 'model', bg: _s.bg || null,
+    colors: (state.get('colorPresets') || []).filter(p => p && p.id && typeof p.color === 'string').map(p => ({ id: p.id, name: p.name || p.color, color: p.color })),
+    selParts: selParts.length, selPreset: prim?.presetId || null,
   };
 }
 export function setPolySessionName(name) { if (_s) { _s.name = String(name || '').trim() || 'poly-asset'; } }
@@ -424,6 +430,7 @@ function _syncScene() {
   for (const id of [..._s.sel]) if (!alive.has(id)) _s.sel.delete(id);
   if (_s.primary && !alive.has(_s.primary)) _s.primary = [..._s.sel][0] || null;
   _syncGizmo();
+  if (_s.pick) _pickPivotMarks();                          // the diamonds follow an undo / a delete made while a tool waits for a click
   sceneCore.requestRender?.(120);
 }
 
@@ -438,7 +445,7 @@ function _selectedPartIds() {
 function _hideProject() {
   // a flat (axis) view goes back to its perspective lens first, or the restored camera would be stuck flat
   if (sceneCore.getStandardView?.()) { try { sceneCore._exitStandardView?.(); } catch { /* fine */ } }
-  const prev = { keep: getIsolateKeepSet(), dom: [], cable: null, camera: sceneCore.getCameraState?.() || null, overlayEditing: false };
+  const prev = { keep: getIsolateKeepSet(), dom: [], cable: null, camera: sceneCore.getCameraState?.() || null, overlayEditing: false, bg: sceneCore.scene?.background ?? null };
   try { if (overlayIsEditing()) { overlaySetEditing(false); prev.overlayEditing = true; } } catch { /* overlay not up */ }
   // The mask keeps the ROOT (it is sceneCore.rootGroup — the session's parts live under it) and nothing else:
   // every project node is hidden on every visibility pass. Quiet = no step re-capture, no ★ on the active step.
@@ -451,6 +458,8 @@ function _hideProject() {
   state.clearSelection?.();
   gizmo.hide();
   _s.prev = prev;
+  try { const hex = localStorage.getItem(BG_KEY); _s.bg = /^#[0-9a-f]{6}$/i.test(hex || '') ? hex : null; } catch { _s.bg = null; }
+  _applyBg();
 }
 
 /**
@@ -459,6 +468,9 @@ function _hideProject() {
  */
 function _showProject(how = 'discard') {
   const prev = _s?.prev; if (!prev) return;
+  // the editor's background goes with it — unless something else (a project that was just opened) has already replaced it
+  try { if (_s.bgObj && sceneCore.scene && sceneCore.scene.background === _s.bgObj) sceneCore.scene.background = prev.bg; } catch { /* the scene is gone */ }
+  _s.bgObj = null;
   for (const [el, d] of prev.dom) el.style.display = d;
   if (prev.cable) prev.cable.obj.visible = prev.cable.vis;   // the cables root outlives projects
   if (how === 'project') { clearIsolate(); return; }
@@ -466,6 +478,61 @@ function _showProject(how = 'discard') {
   try { actions.refreshIsolateView({ quiet: true }); } catch (err) { console.warn('[poly session] unmask', err); }
   if (prev.camera) { try { sceneCore.applyCameraState(prev.camera); } catch { /* keep the current view */ } }
   if (prev.overlayEditing) { try { overlaySetEditing(true); } catch { /* fine */ } }
+}
+
+// ── the panel's tabs · the editor's own background · the scene's colours (V0.3.5.22) ──
+export function setPolyTab(tab) { if (!_s) return; _s.tab = tab === 'colors' || tab === 'env' ? tab : 'model'; _emit('view'); }
+
+// The background is the EDITOR's: it is only for seeing things here. The project's own background (state,
+// steps, exports) is never written; what the scene showed before comes back when the editor closes. The
+// choice is remembered on this computer for the next time the editor opens.
+const BG_KEY = 'sbs.polyEditor.background';
+function _applyBg() {
+  if (!_s) return;
+  const scene = sceneCore.scene; if (!scene) return;
+  if (_s.bg) { _s.bgObj = new (T().Color)(_s.bg); scene.background = _s.bgObj; }
+  else { if (_s.bgObj && scene.background === _s.bgObj) scene.background = _s.prev?.bg ?? null; _s.bgObj = null; }
+  sceneCore.requestRender?.(200);
+}
+/** hex = the editor's background; null = show the project's. quiet = no panel refresh (a colour being dragged). */
+export function setPolyBackground(hex, { quiet = false } = {}) {
+  if (!_s) return;
+  _s.bg = /^#[0-9a-f]{6}$/i.test(hex || '') ? hex.toLowerCase() : null;
+  try { if (_s.bg) localStorage.setItem(BG_KEY, _s.bg); else localStorage.removeItem(BG_KEY); } catch { /* private mode */ }
+  _applyBg();
+  if (!quiet) _emit('view');
+}
+
+// Colours come FROM the scene: the project's colour presets. A part coloured here wears that same preset in
+// the scene after Apply (no look-alike copy is made), and a colour made here is added to the project's too.
+const _hexOf = (c) => '#' + new (T().Color)(c[0], c[1], c[2]).getHexString();
+export function polyApplyPreset(presetId) {
+  if (!_s) return false;
+  const p = (state.get('colorPresets') || []).find(x => x.id === presetId);
+  if (!p || typeof p.color !== 'string') return false;
+  const ids = _selectedPartIds();
+  if (!ids.length) { setStatus('Select the part(s) to colour first.', 'warn', 3500); return false; }
+  const c = new (T().Color)(p.color), rgb = [c.r, c.g, c.b];
+  const rows = ids.map(id => { const it = _s.items.get(id); return { it, color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited }; });
+  const paint = (it) => { if (it.mesh?.material?.color) it.mesh.material.color.setRGB(it.color[0], it.color[1], it.color[2]); };
+  const to = () => { for (const r of rows) { r.it.color = rgb.slice(); r.it.presetId = presetId; r.it.colorEdited = true; paint(r.it); } };
+  const back = () => { for (const r of rows) { r.it.color = r.color.slice(); r.it.presetId = r.presetId; r.it.colorEdited = r.edited; paint(r.it); } };
+  to();
+  _push(ids.length > 1 ? 'Colour parts' : 'Colour part', back, to);
+  _syncScene(); _emit('tree');
+  setStatus(`${ids.length} part${ids.length === 1 ? '' : 's'}: ${p.name || p.color}.`, 'success', 2500);
+  return true;
+}
+/** A new colour: it is added to the PROJECT's colours (unless that exact colour is already there) and put on the selection. */
+export function polyNewColor(hex, name = '') {
+  if (!_s || !/^#[0-9a-f]{6}$/i.test(hex || '')) return null;
+  const h = hex.toLowerCase(), nm = String(name || '').trim();
+  let p = (state.get('colorPresets') || []).find(x => typeof x.color === 'string' && x.color.toLowerCase() === h && (!nm || x.name === nm));
+  let made = false;
+  if (!p) { try { p = materials.createPreset({ color: h, name: nm || h }); made = true; } catch (err) { console.warn('[poly session] new colour', err); return null; } }
+  if (_selectedPartIds().length) polyApplyPreset(p.id);
+  else { _emit('tree'); setStatus(made ? `“${p.name || h}” was added to the scene's colours. Select a part and click it to use it.` : 'The scene already has that colour.', made ? 'success' : 'info', 5000); }
+  return p.id;
 }
 
 // ── undo (scope: polySession; a no-op once the session is over) ──────────────
@@ -582,7 +649,7 @@ export function polyDuplicateSelected() {
     const nid = `${it.kind === 'folder' ? 'f' : 'p'}${(++_s.seq).toString(36)}`;
     if (it.kind === 'folder') { const f = { id: nid, kind: 'folder', name: it.name, parent, children: [], uid: _newUid(), frame: { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null } }; _s.items.set(nid, f); f.children = it.children.map(c => copy(c, nid)); }
     else {
-      const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null, uid: _newUid() };   // a copy is a new object
+      const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null, uid: _newUid(), presetId: it.presetId || null, colorEdited: !!it.presetId };   // a copy is a new object
       _s.items.set(nid, p); _buildPartMesh(p);
       p.mesh.position.copy(it.mesh.position); p.mesh.quaternion.copy(it.mesh.quaternion); p.mesh.scale.copy(it.mesh.scale);
     }
@@ -1012,8 +1079,8 @@ export function polyPivotToSurface() {
 export function polyPivotBy3Points() {
   const it = _singleTop();
   if (!it) { setStatus('Select ONE part or folder first.', 'warn', 3500); return false; }
-  _startPick({ need: 3, what: `Pivot of ${it.name} — 3 points on a circle (the pivot goes to its centre)`, done: (pts) => {
-    const c = _circle3(pts[0].p, pts[1].p, pts[2].p);
+  _startPick({ need: 3, circles: true, what: `Pivot of ${it.name} — 3 points on a circle (the pivot goes to its centre)`, done: (pts) => {
+    const c = _circle3(pts[0].p, pts[1].p, pts[2].p, _outOf(pts));
     if (!c) { setStatus('Those 3 points are on one line — no circle goes through them.', 'warn', 5000); return; }
     _setFrame(it, _s.group.worldToLocal(c.c.clone()), _quatOnto(it, c.n), 'Pivot by 3 points');
   } });
@@ -1054,7 +1121,8 @@ export function polyAlignToSurface() {
     need: 2, allow: (i) => (i === 0 ? { only: sel } : { not: sel }),
     what: (i) => (i === 0 ? 'Align — click a face ON THE OBJECT you are aligning (the face that will touch)' : 'Align — now click the face it should sit on'),
     miss: (i) => (i === 0 ? 'Click on the selected object — the face of it that should touch.' : 'Click on ANOTHER part — the surface to sit on.'),
-    done: ([a, b]) => _alignRigid(a.p, a.n, b.p, b.n.clone().negate(), 'Align to surface'),
+    // a FACE of the object meets the surface (normals opposed); its PIVOT sits on it (the pivot's Y along the surface, like "Pivot to a surface")
+    done: ([a, b]) => _alignRigid(a.p, a.snap === 'pivot' ? a.n.clone().negate() : a.n, b.p, b.n.clone().negate(), 'Align to surface'),
   });
   return true;
 }
@@ -1062,20 +1130,33 @@ export function polyAlignBy3Points() {
   if (!_alignReady()) return false;
   const sel = new Set(_selectedPartIds());
   _startPick({
-    need: 6, allow: (i) => (i < 3 ? { only: sel } : { not: sel }),
-    what: (i) => (i < 3 ? `Align — point ${i + 1} of 3 on a circle of THE OBJECT (a rim, a pin)` : `Align — point ${i - 2} of 3 on the circle it should go to (a hole, a rim)`),
+    need: 6, circles: true, allow: (i) => (i < 3 ? { only: sel } : { not: sel }),
+    what: (i) => (i < 3 ? `Align — point ${i + 1} of 3 ON THE OBJECT (3 corners of the face that will touch, or 3 points of a rim)` : `Align — point ${i - 2} of 3 where it goes (the face / rim it will sit against)`),
     miss: (i) => (i < 3 ? 'Click on the selected object.' : 'Click on ANOTHER part — the one to align to.'),
     done: (pts) => {
-      const s = _circle3(pts[0].p, pts[1].p, pts[2].p), g = _circle3(pts[3].p, pts[4].p, pts[5].p);
+      const s = _circle3(pts[0].p, pts[1].p, pts[2].p, _outOf(pts.slice(0, 3))), g = _circle3(pts[3].p, pts[4].p, pts[5].p, _outOf(pts.slice(3)));
       if (!s || !g) { setStatus('Three of those points are on one line — no circle goes through them.', 'warn', 5000); return; }
-      _alignRigid(s.c, s.n, g.c, s.n.dot(g.n) < 0 ? g.n.clone().negate() : g.n, 'Align by 3 points');
+      // V0.3.5.22 (his test): the two planes MEET — the object's face against the other face, normals opposed —
+      // exactly like Align to a surface. (Lining the axes up by the smaller turn left a box sunk INSIDE the other.)
+      _alignRigid(s.c, s.n, g.c, g.n.clone().negate(), 'Align by 3 points');
     },
   });
   return true;
 }
 
-/** The circle through 3 points → { c: centre, n: its normal, turned to the camera } — null when they are on one line. */
-function _circle3(a, b, c) {
+/** The side the picked surface shows: the sum of the normals of the faces that were clicked (null when the picks say nothing). */
+function _outOf(pts) {
+  const v = new (T().Vector3)();
+  for (const h of pts) if (h?.n) v.add(h.n);
+  return v.lengthSq() > 1e-12 ? v.normalize() : null;
+}
+/**
+ * The circle through 3 points → { c: centre, n: its normal } — null when they are on one line. The normal
+ * points OUT of the surface the points were picked on (`out`, from the clicked faces); when that does not
+ * say (corners clicked from the neighbouring faces, pivots) it is the side turned to the camera — the side
+ * of a face one can click on is the side one sees.
+ */
+function _circle3(a, b, c, out = null) {
   const Th = T();
   const ab = b.clone().sub(a), ac = c.clone().sub(a), n = new Th.Vector3().crossVectors(ab, ac), n2 = n.lengthSq();
   if (!(n2 > 1e-18 * Math.max(ab.lengthSq(), ac.lengthSq(), 1e-12) ** 2) || n2 < 1e-24) return null;
@@ -1083,78 +1164,168 @@ function _circle3(a, b, c) {
     .addScaledVector(new Th.Vector3().crossVectors(n, ab), ac.lengthSq() / (2 * n2))
     .addScaledVector(new Th.Vector3().crossVectors(ac, n), ab.lengthSq() / (2 * n2));
   n.normalize();
-  if (n.dot(sceneCore.camera.position.clone().sub(centre)) < 0) n.negate();
+  const side = out && Math.abs(n.dot(out)) > 0.2 ? n.dot(out) : n.dot(sceneCore.camera.position.clone().sub(centre));
+  if (side < 0) n.negate();
   return { c: centre, n };
 }
 
 // ── picking points on the model (for the align / pivot tools) ────────────────
 /**
  * need = how many clicks; allow(i) → { only: Set } | { not: Set } | null — which parts click i may land on;
- * what / miss = text, or (i) → text, for click i.
+ * what / miss = text, or (i) → text, for click i; circles = the clicks come in threes, each three a circle.
+ *
+ * A click SNAPS (V0.3.5.21), in this order: to a PIVOT — of a part or of a folder; they are drawn as small
+ * diamonds while picking — to a CORNER of the face under the cursor, to the nearest point on an EDGE of that
+ * face, else it is the point on the surface. A picked point is drawn as a cross + an ARROW along its normal
+ * (cyan = on the object, orange = where it goes: the project's colours); the same pin follows the cursor
+ * before the click, so what a click would take is seen first.
  */
-function _startPick({ need, what, miss = null, allow = null, done }) {
+const PICK_PIVOT_PX = 8, PICK_CORNER_PX = 12, PICK_EDGE_PX = 10;   // a pivot only when the cursor is on its diamond: it may lie inside the part
+function _startPick({ need, what, miss = null, allow = null, circles = false, done }) {
   if (!_s) return;
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return;
   _endPick(true);
-  _s.pick = { need, what, miss, allow, pts: [], marks: [], done };
+  const Th = T(), group = new Th.Group(), marks = new Th.Group(), pivots = new Th.Group(), hover = new Th.Group();
+  group.name = 'sbs:poly-pick';
+  group.add(marks, pivots, hover);
+  (sceneCore.overlayScene || sceneCore.scene)?.add(group);
+  _s.pick = { need, what, miss, allow, circles, pts: [], done, group, marks, pivots, hover, raf: 0, last: null };
   if (gizmo.activeTarget === _target) gizmo.hide();
+  _pickPivotMarks();
   _pickHint();
 }
 const _pickText = (x, i) => (typeof x === 'function' ? x(i) : x);
-function _pickHint() { const k = _s?.pick; if (k) setStickyStatus(`⬚ ${_pickText(k.what, k.pts.length)} — click ${k.pts.length + 1} of ${k.need} (it snaps to a corner) · Esc or right-click cancels`, 'info', 'polySession'); }
+function _pickHint() { const k = _s?.pick; if (k) setStickyStatus(`⬚ ${_pickText(k.what, k.pts.length)} — click ${k.pts.length + 1} of ${k.need} · it snaps to pivots ◇, corners and edges · Esc or right-click cancels`, 'info', 'polySession'); }
+function _disposePins(g) {
+  while (g.children.length) { const c = g.children[g.children.length - 1]; g.remove(c); if (c.children?.length) _disposePins(c); c.geometry?.dispose?.(); c.material?.dispose?.(); }
+}
 function _endPick(quiet = false) {
   const k = _s?.pick; if (!k) return;
-  for (const m of k.marks) { try { m.parent?.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); } catch { /* gone */ } }
+  if (k.raf) { try { cancelAnimationFrame(k.raf); } catch { /* fine */ } }
+  try { _disposePins(k.group); k.group.parent?.remove(k.group); } catch { /* gone */ }
   _s.pick = null;
   if (!quiet) { _hint(); _syncGizmo(); }
   sceneCore.requestRender?.(120);
 }
+/** Which parts the NEXT click may land on, and the colour of its pin. */
+function _pickRule() {
+  const k = _s.pick, rule = k.allow ? k.allow(k.pts.length) : null;
+  return { ok: (id) => (rule?.only ? rule.only.has(id) : rule?.not ? !rule.not.has(id) : true), color: rule?.only ? 0x55ddff : rule?.not ? 0xff8c1a : 0xfbbf24 };
+}
+/** The pivots the next click may snap to: of the parts the rule allows, and of the folders whose parts it all allows. World space. */
+function _pickPivots() {
+  const Th = T(), { ok } = _pickRule(), alive = _aliveIds(), gq = _groupQuat(), out = [];
+  const partsUnder = (it) => { const r = []; (function w(x) { const n = _s.items.get(x); if (!n || !alive.has(x)) return; if (n.kind === 'part') r.push(x); else n.children.forEach(w); })(it.id); return r; };
+  for (const it of _s.items.values()) {
+    if (!alive.has(it.id)) continue;
+    if (it.kind === 'part') { if (!it.mesh || !ok(it.id)) continue; }
+    else { const ps = partsUnder(it); if (!ps.length || !ps.every(ok)) continue; }
+    const pl = _pivotLocal(it); if (!pl) continue;
+    const q = it.kind === 'part' ? it.mesh.getWorldQuaternion(new Th.Quaternion()) : gq.clone().multiply(it.frame.q);
+    out.push({ p: _s.group.localToWorld(pl), n: new Th.Vector3(0, 1, 0).applyQuaternion(q) });
+  }
+  return out;
+}
+const _pinSize = (p) => { const cam = sceneCore.camera; return Math.max(1e-6, cam.position.distanceTo(p) * Math.tan((cam.fov || 35) * Math.PI / 360) * 0.025); };
+/** A cross on the point + an arrow along its normal — drawn over everything. */
+function _buildPin(p, n, color, opacity = 0.95) {
+  const Th = T(), s = _pinSize(p), g = new Th.Group();
+  const cg = new Th.BufferGeometry();
+  cg.setAttribute('position', new Th.BufferAttribute(new Float32Array([-s, 0, 0, s, 0, 0, 0, -s, 0, 0, s, 0, 0, 0, -s, 0, 0, s]), 3));
+  const cross = new Th.LineSegments(cg, new Th.LineBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true, opacity }));
+  cross.position.copy(p); cross.renderOrder = 999;
+  g.add(cross);
+  if (n && n.lengthSq() > 1e-12) {
+    const dir = n.clone().normalize(), len = s * 4, q = new Th.Quaternion().setFromUnitVectors(new Th.Vector3(0, 1, 0), dir);
+    const shaft = new Th.Mesh(new Th.CylinderGeometry(s * 0.07, s * 0.07, len, 8), new Th.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true, opacity: opacity * 0.9 }));
+    shaft.position.copy(p).addScaledVector(dir, len / 2); shaft.quaternion.copy(q); shaft.renderOrder = 998;
+    const head = new Th.Mesh(new Th.ConeGeometry(s * 0.3, s * 0.9, 12), new Th.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true, opacity: opacity * 0.9 }));
+    head.position.copy(p).addScaledVector(dir, len + s * 0.45); head.quaternion.copy(q); head.renderOrder = 998;
+    g.add(shaft, head);
+  }
+  return g;
+}
+/** The diamonds on the pivots the next click may take. */
+function _pickPivotMarks() {
+  const k = _s?.pick; if (!k) return;
+  const Th = T();
+  _disposePins(k.pivots);
+  for (const c of _pickPivots()) {
+    const r0 = _pinSize(c.p) * 0.5;
+    const m = new Th.Mesh(new Th.OctahedronGeometry(r0), new Th.MeshBasicMaterial({ color: 0xe879f9, wireframe: true, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+    m.position.copy(c.p); m.renderOrder = 997; m.userData.r0 = r0;
+    k.pivots.add(m);
+  }
+  sceneCore.requestRender?.(120);
+}
+/** What a click at this cursor position would take → { p, n, snap: 'pivot' | 'corner' | 'edge' | 'surface' } (world) — or null. */
 function _pickPoint(e) {
-  const Th = T(), rect = sceneCore.renderer.domElement.getBoundingClientRect(), cam = sceneCore.camera, k = _s.pick;
+  const Th = T(), rect = sceneCore.renderer.domElement.getBoundingClientRect(), cam = sceneCore.camera, { ok } = _pickRule();
   const rc = _s.rc || (_s.rc = new Th.Raycaster());
   rc.setFromCamera(new Th.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), cam);
+  const s = new Th.Vector3();
+  const far2 = (v) => { s.copy(v).project(cam); if (s.z >= 1) return Infinity; const dx = (s.x * 0.5 + 0.5) * rect.width + rect.left - e.clientX, dy = (-s.y * 0.5 + 0.5) * rect.height + rect.top - e.clientY; return dx * dx + dy * dy; };
+  // 1. a pivot (it need not lie on the model)
+  let best = PICK_PIVOT_PX * PICK_PIVOT_PX, piv = null;
+  for (const c of _pickPivots()) { const d = far2(c.p); if (d < best) { best = d; piv = c; } }
+  if (piv) return { p: piv.p.clone(), n: piv.n.clone(), snap: 'pivot' };
+  // 2. the model
   const alive = _aliveIds();
-  const rule = k.allow ? k.allow(k.pts.length) : null;
-  const ok = (id) => (rule?.only ? rule.only.has(id) : rule?.not ? !rule.not.has(id) : true);
   const meshes = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id) && ok(it.id)).map(it => it.mesh);
   const h = rc.intersectObjects(meshes, false)[0];
   if (!h) return null;
   const n = h.face ? h.face.normal.clone().transformDirection(h.object.matrixWorld) : null;
   if (n && n.dot(rc.ray.direction) > 0) n.negate();        // the side that was clicked
   const p = h.point.clone(), part = _s.items.get(h.object.userData.polyPartId);
-  // Snap to the nearest corner OF THE FACE THAT WAS CLICKED, within 12 px. (Not of the whole part: in a flat
-  // view the corner on the far side projects onto the same pixel, and the tool would land behind the surface.)
+  let snap = 'surface';
+  // Corners and edges OF THE FACE THAT WAS CLICKED only (not of the whole part: in a flat view the corner on
+  // the far side projects onto the same pixel, and the tool would land behind the surface).
   const ids = part ? part.poly.f[h.object.geometry?.userData?.faceOfTri?.[h.faceIndex]] : null;
   if (ids) {
-    let best = 144, bp = null; const v = new Th.Vector3(), s = new Th.Vector3();
-    for (const vi of ids) {
-      v.set(part.poly.v[vi * 3], part.poly.v[vi * 3 + 1], part.poly.v[vi * 3 + 2]).applyMatrix4(h.object.matrixWorld); s.copy(v).project(cam);
-      if (s.z >= 1) continue;
-      const dx = (s.x * 0.5 + 0.5) * rect.width + rect.left - e.clientX, dy = (-s.y * 0.5 + 0.5) * rect.height + rect.top - e.clientY, d2 = dx * dx + dy * dy;
-      if (d2 < best) { best = d2; bp = v.clone(); }
+    const W = ids.map(vi => new Th.Vector3(part.poly.v[vi * 3], part.poly.v[vi * 3 + 1], part.poly.v[vi * 3 + 2]).applyMatrix4(h.object.matrixWorld));
+    let bc = PICK_CORNER_PX * PICK_CORNER_PX, corner = null;
+    for (const v of W) { const d = far2(v); if (d < bc) { bc = d; corner = v; } }
+    if (corner) { p.copy(corner); snap = 'corner'; }
+    else {
+      let be = PICK_EDGE_PX * PICK_EDGE_PX, onEdge = null; const q = new Th.Vector3();
+      for (let a = 0; a < W.length; a++) {
+        rc.ray.distanceSqToSegment(W[a], W[(a + 1) % W.length], undefined, q);     // the point of this edge nearest to the cursor's ray
+        const d = far2(q); if (d < be) { be = d; onEdge = q.clone(); }
+      }
+      if (onEdge) { p.copy(onEdge); snap = 'edge'; }
     }
-    if (bp) p.copy(bp);
   }
-  return { p, n };
+  return { p, n, snap };
 }
-function _pickMark(p, color = 0xfbbf24) {
-  const Th = T(), cam = sceneCore.camera, scene = sceneCore.scene;
-  if (!scene) return null;
-  const r = Math.max(1e-6, cam.position.distanceTo(p) * Math.tan((cam.fov || 35) * Math.PI / 360) * 0.012);
-  const m = new Th.Mesh(new Th.SphereGeometry(r, 12, 8), new Th.MeshBasicMaterial({ color, depthTest: false, transparent: true }));
-  m.renderOrder = 9999; m.position.copy(p);
-  scene.add(m);
-  return m;
+/** The pin under the cursor: what the next click would take (one frame late at most). */
+function _pickHover(e) {
+  const k = _s?.pick; if (!k) return;
+  k.last = { clientX: e.clientX, clientY: e.clientY };
+  if (k.raf) return;
+  k.raf = requestAnimationFrame(() => {
+    const kk = _s?.pick; if (!kk || kk !== k) return;
+    k.raf = 0;
+    _disposePins(k.hover);
+    for (const m of k.pivots.children) m.scale.setScalar(_pinSize(m.position) * 0.5 / (m.userData.r0 || 1));   // the same size on screen after a zoom
+    let h = null;
+    try { h = _pickPoint(k.last); } catch (err) { console.warn('[poly session] pick hover', err); }
+    if (h) k.hover.add(_buildPin(h.p, h.n, _pickRule().color, 0.55));
+    sceneCore.requestRender?.(60);
+  });
 }
 function _pickClick(e) {
   const k = _s.pick, h = _pickPoint(e), i = k.pts.length;
   if (!h) { setStatus(_pickText(k.miss, i) || 'Click on a part of the model.', 'warn', 3000); return; }
+  const color = _pickRule().color;                           // read BEFORE the point is counted: the rule is per click
+  if (k.circles && k.pts.slice(k.pts.length - (k.pts.length % 3)).some(q => q.p.distanceToSquared(h.p) < 1e-16)) { setStatus('That is the same point as one already picked — click a different point of the circle.', 'warn', 4000); return; }
+  // circles: every 3 points must make a circle — said at the third click, not after all of them
+  if (k.circles && k.pts.length % 3 === 2 && !_circle3(k.pts[k.pts.length - 2].p, k.pts[k.pts.length - 1].p, h.p)) { setStatus('That point is on one line with the other two (or on one of them) — no circle goes through them. Click the third point somewhere else.', 'warn', 6000); return; }
   k.pts.push(h);
-  const rule = k.allow ? k.allow(i) : null;                 // on the object = cyan · where it goes = orange (the project's colours)
-  const mk = _pickMark(h.p, rule?.only ? 0x55ddff : rule?.not ? 0xff8c1a : 0xfbbf24); if (mk) k.marks.push(mk);
+  _disposePins(k.hover);
+  k.marks.add(_buildPin(h.p, h.n, color));
   sceneCore.requestRender?.(120);
-  if (k.pts.length < k.need) { _pickHint(); return; }
+  if (k.pts.length < k.need) { _pickPivotMarks(); _pickHint(); return; }
   const pts = k.pts.slice(), done = k.done;
   _endPick(true);
   try { done(pts); } catch (err) { console.warn('[poly session] pick', err); }
@@ -1222,6 +1393,7 @@ function _attachInput() {
       _clickSelect(_pickPart(e), e);
     },
     click: (e) => { if (_s) { e.preventDefault(); e.stopImmediatePropagation(); } },          // the app's click handler never runs here
+    move: (e) => { if (_s?.pick) _pickHover(e); },         // the pin under the cursor (nothing is swallowed: the camera still orbits)
     dbl: (e) => { if (!_s) return; e.preventDefault(); e.stopImmediatePropagation(); if (isPolyEditing() || _s.pick) return; const id = _pickPart(e); if (id) polyEnterSub('face', id); },
     menu: (e) => {
       if (!_s) return;
@@ -1243,6 +1415,7 @@ function _attachInput() {
     exp: () => { if (state.get('_exporting')) _forceClose('An export started — the Poly Editor was closed without applying.'); },
   };
   dom.addEventListener('pointerdown', L.down, true);
+  dom.addEventListener('pointermove', L.move, true);
   dom.addEventListener('click', L.click, true);
   dom.addEventListener('dblclick', L.dbl, true);
   dom.addEventListener('contextmenu', L.menu, true);
@@ -1260,6 +1433,7 @@ function _detachInput() {
   const dom = sceneCore.renderer?.domElement;
   try {
     dom?.removeEventListener('pointerdown', L.down, true);
+    dom?.removeEventListener('pointermove', L.move, true);
     dom?.removeEventListener('click', L.click, true);
     dom?.removeEventListener('dblclick', L.dbl, true);
     dom?.removeEventListener('contextmenu', L.menu, true);
@@ -1394,7 +1568,7 @@ function _assetLayout(space = 'scene') {
     const fp = new Th.Vector3(), fq = new Th.Quaternion();
     M.decompose(fp, fq, new Th.Vector3());
     const pfr = frameOut(fp, fq);
-    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr });
+    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr, tint: it.presetId ? { presetId: it.presetId, edited: !!it.colorEdited } : null });
     const baked = clonePoly(it.poly), v = new Th.Vector3();
     for (let i = 0; i < baked.v.length; i += 3) { v.set(baked.v[i], baked.v[i + 1], baked.v[i + 2]).applyMatrix4(M); baked.v[i] = v.x; baked.v[i + 1] = v.y; baked.v[i + 2] = v.z; }
     if (M.determinant() < 0) baked.f = baked.f.map(f => f.slice().reverse());
@@ -1515,7 +1689,8 @@ async function _applyUpdate({ swapName = null } = {}) {
 }
 
 async function _applyNew({ oldModel = null } = {}) {
-  const { roots } = _assetLayout('scene');
+  const { roots, parts } = _assetLayout('scene');
+  const presetsBefore = new Set((state.get('colorPresets') || []).map(p => p.id));
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
   _s.applying = true;
   const name = _safeName(_s.name), sourceIds = _s.sourceIds.slice();
@@ -1535,6 +1710,8 @@ async function _applyNew({ oldModel = null } = {}) {
     const modelNode = await importModelAtPath(path);
     if (!modelNode) throw new Error('the saved asset did not load back');
     setStatus(`Poly Editor: saved ${path.split(/[\\/]/).pop()} (${Math.round(glb.byteLength / 1024)} KB) and loaded it into the scene.`, 'success', 7000);
+    // parts coloured from the scene's colours wear those same colours (not the look-alikes the import made)
+    try { applyPolyPartColours(modelNode.assetId, parts, presetsBefore); } catch (err) { console.warn('[poly session] colours', err); }
     const { askPolyOriginals } = await import('../ui/poly-editor-panel.js');
     // The session held the whole old asset (seeded from its manifest). Two things follow for the NEW model:
     // a part that was archived in the project stays archived, and a part some step keeps OUTSIDE the old

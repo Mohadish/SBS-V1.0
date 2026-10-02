@@ -13,11 +13,13 @@ import {
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoScope, polyPrimitiveKinds, polyAddPrimitive,
   polyShowMenu, polySetPivotMode, isPolyPivotMode,
+  setPolyTab, setPolyBackground, polyApplyPreset, polyNewColor,
 } from '../systems/poly-session.js';
 
 let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null;
 const _collapsed = new Set();
 let _dragIds = null;
+let _newHex = '#8fa3b8', _newName = '';   // the "new colour" row survives the panel's re-renders
 
 const VIEWS = [['persp', 'Persp'], ['top', 'Top'], ['front', 'Front'], ['left', 'Left'], ['right', 'Right'], ['bottom', 'Bottom'], ['back', 'Back']];
 
@@ -98,6 +100,15 @@ function _render() {
   views.append(btn('⛶ Fit', 'Frame the selection, or everything (F)', () => polyFit()));
   _root.append(views);
 
+  // ⬚ V0.3.5.22 — tabs: the model (add / level / tools / tree) · the scene's colours · the editor's background
+  const tabs = row(); tabs.style.marginTop = '10px';
+  for (const [id, label, tip] of [['model', '⬚ Model', 'Add, edit and arrange the parts'], ['colors', '🎨 Colours', "Colour parts with the scene's colours"], ['env', '🌄 Environment', 'The background of this editor']]) {
+    tabs.append(btn(label, tip, () => setPolyTab(id), `flex:1;${info.tab === id ? 'background:#334155;border-color:#94a3b8;color:#fff;' : ''}`));
+  }
+  _root.append(tabs);
+  if (info.tab === 'colors') { _renderColours(info); return; }
+  if (info.tab === 'env') { _renderEnv(info); return; }
+
   _root.append(section('Level'));
   const lv = row();
   const on = 'background:#1d4ed8;border-color:#60a5fa;color:#fff;';
@@ -140,6 +151,67 @@ function _render() {
   if (keepName) { const n = document.getElementById('poly-editor-name'); n?.focus(); n?.setSelectionRange?.(n.value.length, n.value.length); }
 }
 
+const _note = (text) => el('div', 'font-size:11px;opacity:.65;margin-top:8px;line-height:1.4;', text);
+
+/** 🎨 the scene's colours: click one = the selected parts wear it; a new one is added to the scene too. */
+function _renderColours(info) {
+  _root.append(section("The scene's colours"));
+  _root.append(el('div', 'font-size:12px;opacity:.8;margin-bottom:7px;', info.selParts
+    ? `Click a colour to put it on the ${info.selParts === 1 ? 'selected part' : `${info.selParts} selected parts`}.`
+    : 'Select a part in the view (or in the Model tab), then click a colour.'));
+  const grid = el('div', 'display:flex;flex-wrap:wrap;gap:6px;max-height:42vh;overflow:auto;padding:2px;');
+  for (const p of info.colors) {
+    const b = el('button', `width:30px;height:30px;padding:0;border-radius:7px;cursor:pointer;background:${p.color};border:2px solid ${info.selPreset === p.id ? '#ffffff' : 'rgba(255,255,255,.2)'};${info.selPreset === p.id ? 'box-shadow:0 0 0 2px #2563eb;' : ''}`);
+    b.title = p.name;
+    b.addEventListener('click', (e) => { e.preventDefault(); polyApplyPreset(p.id); b.blur(); });
+    grid.append(b);
+  }
+  if (!info.colors.length) grid.append(el('div', 'font-size:12px;opacity:.6;', 'The scene has no colours yet — make one below.'));
+  _root.append(grid);
+
+  _root.append(section('New colour'));
+  const nr = el('div', 'display:flex;align-items:center;gap:6px;');
+  const pick = el('input', 'width:40px;height:32px;padding:0;border:1px solid var(--line,#334155);border-radius:7px;background:transparent;cursor:pointer;flex:0 0 auto;');
+  pick.type = 'color'; pick.value = _newHex; pick.title = 'Choose the colour';
+  pick.addEventListener('input', () => { _newHex = pick.value; });
+  const nm = el('input', 'flex:1;min-width:0;padding:6px 8px;border-radius:8px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:13px;');
+  nm.placeholder = 'Name (optional)'; nm.value = _newName;
+  nm.addEventListener('input', () => { _newName = nm.value; });
+  nm.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); add(); } });
+  const add = () => { const name = _newName.trim(); _newName = ''; polyNewColor(_newHex, name); };
+  nr.append(pick, nm, btn('＋ Add', "Add this colour to the scene's colours — and put it on the selected part(s)", add));
+  _root.append(nr);
+  _root.append(_note("A colour made here is added to the project's colours as well. After Apply, the parts wear these same colours in the scene."));
+}
+
+/** 🌄 the background of the editor: for seeing things here only. */
+function _renderEnv(info) {
+  _root.append(section('Background — this editor only'));
+  const sw = row(), marks = [];
+  for (const [hex, name] of [['#0f172a', 'Dark blue'], ['#000000', 'Black'], ['#3a3f4b', 'Dark grey'], ['#8b93a1', 'Grey'], ['#d7dbe2', 'Light grey'], ['#ffffff', 'White']]) {
+    const b = el('button', `width:30px;height:30px;padding:0;border-radius:7px;cursor:pointer;background:${hex};border:2px solid ${info.bg === hex ? '#60a5fa' : 'rgba(255,255,255,.25)'};`);
+    b.title = name;
+    b.addEventListener('click', (e) => { e.preventDefault(); setPolyBackground(hex); });
+    sw.append(b); marks.push([b, hex]);
+  }
+  const pick = el('input', 'width:40px;height:32px;padding:0;border:1px solid var(--line,#334155);border-radius:7px;background:transparent;cursor:pointer;');
+  pick.type = 'color'; pick.value = info.bg || '#3a3f4b'; pick.title = 'Any colour';
+  const backBtn = btn("↺ Use the project's background", 'Show the background the project has', () => setPolyBackground(null), info.bg ? '' : 'background:#334155;border-color:#94a3b8;color:#fff;');
+  // Live, and WITHOUT redrawing the panel: the colour dialog closes on the mousedown of the next click, and a
+  // panel rebuilt under that click would swallow it (the pressed button would be gone before the mouse is up).
+  pick.addEventListener('input', () => {
+    setPolyBackground(pick.value, { quiet: true });
+    for (const [b, hex] of marks) b.style.borderColor = hex === pick.value.toLowerCase() ? '#60a5fa' : 'rgba(255,255,255,.25)';
+    backBtn.style.background = ''; backBtn.style.borderColor = ''; backBtn.style.color = '';
+  });
+  sw.append(pick);
+  _root.append(sw);
+  const back = row(); back.style.marginTop = '8px';
+  back.append(backBtn);
+  _root.append(back);
+  _root.append(_note("Only for seeing things in the Poly Editor. The project's own background — its steps and its exports — is not touched; it comes back when the editor closes. The choice is remembered for the next time."));
+}
+
 function _treeRow(r, info) {
   const wrap = el('div');
   const line = el('div', `display:flex;align-items:center;gap:6px;padding:4px 8px 4px ${8 + r.depth * 14}px;cursor:pointer;user-select:none;`);
@@ -149,7 +221,8 @@ function _treeRow(r, info) {
   const tw = el('span', 'width:12px;display:inline-block;text-align:center;opacity:.7;', folder ? (closed ? '▸' : '▾') : '');
   if (folder) tw.addEventListener('click', (e) => { e.stopPropagation(); if (closed) _collapsed.delete(r.id); else _collapsed.add(r.id); _render(); });
   const label = el('span', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;', r.name);
-  line.append(tw, el('span', '', folder ? '📁' : '⬚'), label);
+  const dot = folder || !r.color ? null : el('span', `width:10px;height:10px;border-radius:3px;flex:0 0 auto;background:${r.color};border:1px solid rgba(255,255,255,.25);`);
+  line.append(tw, el('span', '', folder ? '📁' : '⬚'), ...(dot ? [dot] : []), label);
   if (!folder) line.append(el('span', 'font-size:11px;opacity:.55;', `${r.faces} f`));
   // The first click re-renders the panel (selection), so a dblclick listener would land on a detached
   // label: the SECOND click (detail 2) starts the rename on the row that is on screen now.

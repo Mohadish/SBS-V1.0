@@ -57,6 +57,26 @@ export function polyAssetOfModel(modelNode) {
   return { modelId: modelNode.id, assetId: modelNode.assetId, path, file: path.split(/[\\/]/).pop() };
 }
 
+/**
+ * ⬚ V0.3.5.22 — his ask: a selected part that belongs to an asset the Poly Editor can re-edit (a saved .glb
+ * of its own) is highlighted in ORANGE instead of the selection cyan — the whole assembly when it is all
+ * selected. It is the same test as "right-click ▸ Edit in Poly Editor opens that asset": the part is one of
+ * the asset's own (in its manifest), wherever a step has put it. Other things in the same selection keep cyan.
+ */
+export const POLY_ASSET_SELECT_COLOR = '#ff8c1a';
+export function polyAssetTintPass() {
+  const nb = _nodeById();
+  let byAsset = null;
+  return (meshId) => {
+    const n = nb?.get(meshId), aid = n?.type === 'mesh' ? n.sourceAssetId : null;
+    if (!aid) return null;
+    if (!byAsset) { byAsset = new Map(); for (const m of nb.values()) if (m.type === 'model' && m.assetId) byAsset.set(m.assetId, polyAssetOfModel(m) ? m : null); }
+    const model = byAsset.get(aid);
+    return model && model.polyManifest?.nodes?.[meshId] ? POLY_ASSET_SELECT_COLOR : null;
+  };
+}
+try { materials.setSelectionTintPass?.(polyAssetTintPass); } catch { /* an older materials module */ }
+
 /** parts = [{ uid, kind: 'part' | 'folder', name, parentUid | null }] top-down, exactly what the new file holds. */
 function _manifestOfParts(assetId, rootId, parts) {
   const idOf = new Map(parts.map(p => [p.uid, polyPartNodeId(assetId, p.uid, p.kind === 'part')]));
@@ -140,6 +160,42 @@ function _colourNewMeshes(assetId, ids) {
     materials.meshDefaultColors[id] = preset.id;
   }
   state.emit('materials:defaultColorsChanged');
+}
+
+/**
+ * ⬚ V0.3.5.22 — parts that were coloured in the Poly Editor with one of the SCENE's colours wear that same
+ * preset in the project: it becomes the part's default colour (a step that gave the part another colour on
+ * purpose keeps it — materials.assignDefaultColor). parts = the editor's list ({ kind, uid, tint: { presetId,
+ * edited } }); only(part, nodeId) limits it (an update: new parts, and the ones recoloured in this edit).
+ * presetsBefore = the preset ids that existed before the import / update: the look-alike presets it made
+ * and nothing wears any more are removed again.
+ */
+export function applyPolyPartColours(assetId, parts, presetsBefore = null, only = null) {
+  const have = new Set((state.get('colorPresets') || []).map(p => p.id)), nb = _nodeById(), by = new Map();
+  const active = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
+  for (const p of parts || []) {
+    const pid = p?.kind === 'part' ? p.tint?.presetId : null;
+    if (!pid || !have.has(pid)) continue;
+    const id = polyPartNodeId(assetId, p.uid, true);
+    if (!nb?.has(id) || (only && !only(p, id))) continue;
+    // The colour the editor SHOWED was the one this step gives the part (an override of the step that is
+    // open): the pick replaces it here — or the part would look unchanged right after Apply. Other steps
+    // that gave it a colour of their own keep theirs.
+    if (p.tint.edited) {
+      if (active?.snapshot?.materials) delete active.snapshot.materials[id];
+      delete materials.meshColorAssignments[id];
+    }
+    if (materials.meshDefaultColors[id] === pid) continue;
+    if (!by.has(pid)) by.set(pid, []);
+    by.get(pid).push(id);
+  }
+  for (const [pid, ids] of by) materials.assignDefaultColor(ids, pid);
+  if (presetsBefore && by.size) {
+    const used = new Set([...Object.values(materials.meshDefaultColors), ...Object.values(materials.meshColorAssignments)]);
+    for (const st of state.get('steps') || []) for (const v of Object.values(st?.snapshot?.materials || {})) used.add(v);
+    for (const p of (state.get('colorPresets') || []).slice()) if (!presetsBefore.has(p.id) && !used.has(p.id)) { try { materials.deletePreset(p.id); } catch { /* it stays */ } }
+  }
+  return by.size;
 }
 
 function _reconcileCtx(modelId, oldM, newM, diff, changedIds = null) {
@@ -268,6 +324,7 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   }
 
   const innerNode = nb.get(newM.root) || model;
+  const presetsBefore = new Set((state.get('colorPresets') || []).map(p => p.id));
   const addedMeshIds = [];
   const T = window.THREE;
   for (const id of diff.added) {                             // ADDED (a folder needs nothing live: the step's tree builds it)
@@ -292,6 +349,9 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
     ? { ...a, fileSize: glb.byteLength, lastModified: st?.mtimeMs ? Math.round(st.mtimeMs) : Date.now(), ...(swap ? { originalPath: path, relativePath: '', name: newFile } : {}) }
     : a));
   state.setState({ steps: r.steps, assets, nodeById: buildNodeMap(root) });
+
+  // the scene's colours chosen in the editor: on the new parts, and on the parts recoloured in this edit
+  try { const added = new Set(addedMeshIds); applyPolyPartColours(assetId, parts, presetsBefore, (p, id) => added.has(id) || !!p.tint?.edited); } catch (err) { console.warn('[poly asset] colours', err); }
 
   // ── the scene: source transform on the new vertices, colours, the active step re-staged from its patched snapshot ──
   try { applyNodeSourceTransformToObject3D(model, outer, steps.object3dById); } catch (err) { console.warn('[poly asset] source transform', err); }
