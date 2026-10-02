@@ -134,6 +134,19 @@ class UndoManager {
     if (n) state.emit('undo:change');
   }
 
+  /**
+   * ⬚ V0.3.5.28 — an undo / redo whose work is asynchronous and turned out NOT to have happened (it was
+   * refused): its entry goes back to the stack it came from, so the same key can be tried again.
+   */
+  moveBack(undoFn, wasUndo) {
+    const src = wasUndo ? this._redo : this._undo, dst = wasUndo ? this._undo : this._redo;
+    const i = src.findIndex(c => c.undo === undoFn);
+    if (i < 0) return false;
+    dst.push(src.splice(i, 1)[0]);
+    state.emit('undo:change');
+    return true;
+  }
+
   /** Clear both stacks (e.g. after project load). */
   clear() {
     this._undo = [];

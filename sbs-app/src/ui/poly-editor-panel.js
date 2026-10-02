@@ -12,7 +12,7 @@ import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
-  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode,
+  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent,
   setPolyTab, setPolyBackground, polyColorsHost,
 } from '../systems/poly-session.js';
 import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
@@ -24,6 +24,13 @@ let _dragIds = null;
 let _coloursMount = null, _coloursHost = null;   // ⬚ V0.3.5.27 — the project's Colours panel lives in this element while its tab shows
 
 const VIEWS = [['persp', 'Persp'], ['top', 'Top'], ['front', 'Front'], ['left', 'Left'], ['right', 'Right'], ['bottom', 'Bottom'], ['back', 'Back']];
+
+// Chromium drops a click whose target was rebuilt between the press and the release. A field's `change` fires
+// ON that press (the focus leaves it), so what it starts is held until the press is over.
+let _pressing = false; const _afterUp = [];
+const _afterPress = (fn) => { if (_pressing) _afterUp.push(fn); else fn(); };
+const _onPressDown = (e) => { if (_root?.contains(e.target)) _pressing = true; };
+const _onPressUp = () => { _pressing = false; if (!_afterUp.length) return; const q = _afterUp.splice(0); setTimeout(() => { for (const f of q) { try { f(); } catch (err) { console.warn('[poly editor] deferred', err); } } }, 0); };
 
 const el = (tag, css = '', text = '') => { const e = document.createElement(tag); if (css) e.style.cssText = css; if (text) e.textContent = text; return e; };
 function btn(label, title, onClick, extraCss = '') {
@@ -44,12 +51,19 @@ export function openPolyEditorPanel() {
   _root = el('div', 'flex:1;min-height:0;display:flex;flex-direction:column;padding:12px;gap:2px;overflow:hidden;color:var(--text,#e5e7eb);');
   _root.id = 'poly-editor-panel';
   host.appendChild(_root);
+  window.addEventListener('pointerdown', _onPressDown, true);
+  window.addEventListener('pointerup', _onPressUp, true);
+  window.addEventListener('pointercancel', _onPressUp, true);
   _unsub = onPolySession((what) => { if (what === 'close') return; _render(what); });
   _render();
 }
 
 export function closePolyEditorPanel() {
   _unsub?.(); _unsub = null;
+  window.removeEventListener('pointerdown', _onPressDown, true);
+  window.removeEventListener('pointerup', _onPressUp, true);
+  window.removeEventListener('pointercancel', _onPressUp, true);
+  _pressing = false; _afterUp.length = 0;
   _dropColours();
   if (_root) { _root.remove(); _root = null; _treeEl = null; }
   if (_hiddenContent) { for (const [c, d] of _hiddenContent) c.style.display = d; _hiddenContent = null; }
@@ -136,14 +150,26 @@ function _render(what) {
   const edges = btn('Edges (2)', 'Not built yet', () => {}); edges.disabled = true; lv.append(edges);
   lv.append(btn('✛ Pivot', 'Move / turn only the PIVOT of the selected part or folder — the geometry stays (Esc ends it). More under right-click ▸ Pivot.', () => polySetPivotMode(!isPolyPivotMode()), isPolyPivotMode() ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''));
   _root.append(lv);
-  // ⬚ V0.3.5.26 — scale: a box with handles around the selection, as it is seen
-  const scOn = 'background:#9a3412;border-color:#fb923c;color:#fff;';
+  // ⬚ V0.3.5.28 — scale: a 3D box around the selection, a pyramid and a flat triangle on each face
   const scr = row(); scr.style.marginTop = '5px';
-  scr.append(
-    btn('⤢ Scale 2D', 'A box with handles around the selection: pull a side = stretch the width or the height as you see it; a corner = both equally. (Esc ends it.)', () => polySetScaleMode(info.scale === '2d' ? null : '2d'), `flex:1;${info.scale === '2d' ? scOn : ''}`),
-    btn('⤢ Scale 3D', 'The same box: any handle scales the selection equally in ALL directions. (Esc ends it.)', () => polySetScaleMode(info.scale === '3d' ? null : '3d'), `flex:1;${info.scale === '3d' ? scOn : ''}`),
-  );
+  scr.append(btn('⤢ Scale', 'A box around the selection. Pull a pyramid = stretch that side (the opposite side stays; Alt = from the centre; Shift = every direction equally). Pull a corner triangle = scale that face\'s two directions (the opposite corner stays; Shift = keep the proportions; Alt = from the centre). Esc ends it.', () => polySetScaleMode(!info.scale), `flex:1;${info.scale ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''}`));
   _root.append(scr);
+  if (info.scl) {
+    // the scale record of the one selected object: 100 % = as it came into the editor. Typing rescales it.
+    const sz = el('div', 'display:flex;align-items:center;gap:4px;margin-top:5px;font-size:12px;');
+    sz.title = 'The size of the selected object along its own X / Y / Z, in % of how it came into the editor. Type a number (Enter) to rescale it about its pivot — 100 / 100 / 100 gives back the proportions it came with.';
+    sz.append(el('span', 'opacity:.7;margin-right:2px;', 'Size %'));
+    const boxes = info.scl.map((v, i) => {
+      const inp = el('input', 'width:0;flex:1;min-width:0;padding:4px 5px;border-radius:7px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:12px;');
+      inp.type = 'number'; inp.min = '1'; inp.step = '1'; inp.value = String(v);
+      inp.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') inp.blur(); else if (e.key === 'Escape') { inp.value = String(v); inp.blur(); } });
+      inp.addEventListener('change', () => _afterPress(() => polySetScalePercent(boxes.map(b => Number(b.value)))));
+      sz.append(el('span', 'opacity:.6;', 'XYZ'[i]), inp);
+      return inp;
+    });
+    sz.append(btn('↺', 'Back to 100 / 100 / 100: the proportions it came with', () => polySetScalePercent([100, 100, 100]), 'padding:4px 7px;'));
+    _root.append(sz);
+  }
 
   // ⬚ V0.3.5.18 — primitives made inside the editor: editable polys from the first moment
   _root.append(section('Add'));

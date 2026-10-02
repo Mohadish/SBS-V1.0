@@ -97,7 +97,8 @@ export function polySessionInfo() {
     tab: _s.tab || 'model', bg: _s.bg || null,
     selParts: selParts.length,
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
-    scale: _s.scale?.mode || null,                           // ⬚ V0.3.5.26 — the scale box: '2d' | '3d' | off
+    scale: !!_s.scale,                                       // ⬚ V0.3.5.28 — the scale box is up
+    scl: _scalePct(),                                        //   the scale record of the one selected object, % of how it came in
   };
 }
 /** The ONE folder everything of a new object sits in (null when the tree's top level is anything else). */
@@ -403,6 +404,7 @@ async function _start(nodeIds, opts = {}) {
     const f = _rootFolder(), cs = sceneCore.getCameraState?.();
     if (f && !f.frame.p) f.frame.p = Array.isArray(cs?.pivot) ? sess.group.worldToLocal(new Th.Vector3().fromArray(cs.pivot)) : new Th.Vector3();
   }
+  _stampOrigs();                                           // how everything came in: what ↩ Restore puts back
   _hideProject();
   _attachInput();
   try { initPolyRefs(_refsHost, plan.reedit ? state.get('nodeById')?.get(plan.reedit.modelId)?.polyManifest?.refs : null); } catch (err) { console.warn('[poly session] reference pictures', err); }
@@ -462,6 +464,7 @@ function _refreshPartMesh(part) {
   g.computeBoundingBox(); g.computeBoundingSphere();
   part.mesh.geometry?.dispose?.();
   part.mesh.geometry = g;
+  if (_s?.scale) _s.scale.dirty = true;                    // the scale box is measured from the vertices: any new shape (an undo of a face edit too)
   sceneCore.requestRender?.(120);
 }
 
@@ -490,6 +493,8 @@ function _syncScene() {
   if (_s.primary && !alive.has(_s.primary)) _s.primary = [..._s.sel][0] || null;
   _syncGizmo();
   if (_s.pick) _pickPivotMarks();                          // the diamonds follow an undo / a delete made while a tool waits for a click
+  if (_s.scale) _s.scale.dirty = true;                     // the scale box follows the selection, an undo, an edit
+  _stampOrigs();                                           // whatever is new here: this is how it came in
   syncPolyRefs();                                          // the reference pictures stand on the object's folder
   sceneCore.requestRender?.(120);
 }
@@ -1518,143 +1523,335 @@ function _pickClick(e) {
   if (_s) { _hint(); _syncScene(); }
 }
 
-// ── scale (V0.3.5.26) ────────────────────────────────────────────────────────
-// His ask: "we need a way to scale things, 2D and 3D". A box with eight handles is drawn around the
-// selection AS IT IS SEEN (the screen's own right / up), from any angle:
-//   2D   a side handle stretches it along that screen direction only (width, or height); a corner handle
-//        stretches both equally. Depth is not touched.
-//   3D   any handle scales it equally in ALL directions.
-// The opposite side (or corner) stays where it is. The scale is real: it goes into the vertices of every
-// selected part (a part has no "scale" of its own to carry), pivots and folder pivots move with it. One undo step.
-export const polyScaleMode = () => _s?.scale?.mode || null;
-/** '2d' | '3d' | null (off). */
-export function polySetScaleMode(mode) {
+// ── scale (V0.3.5.28 — his design; replaces the flat screen box of .26) ───────
+// A 3D BOX stands around the selection (one object: along its own axes; several: along the asset's).
+//   ▲ a PYRAMID on each of the six faces: pull it = stretch the box in that direction. The opposite face
+//     stays; Alt = both sides, from the centre; Shift = every direction equally (a plain 3D scale).
+//   ◣ a flat TRIANGLE on each corner of each face that looks at you: pull it = scale that face's TWO
+//     directions like a standard scaler — the opposite corner stays, the third direction is untouched;
+//     Shift = keep the proportions it had; Alt = from the centre; Shift + Alt = both.
+// Every part and folder keeps a RECORD of its scale along its own axes (100 % = as it came into the editor);
+// typing the numbers back (the panel's Size row) rescales it — 100 / 100 / 100 = the proportions it came with.
+// The scale is real: it goes into the vertices of every selected part (a part carries no "scale" of its
+// own), pivots and folder pivots move with it. One undo step. The handles live in the overlay scene.
+export const polyScaleMode = () => (_s?.scale ? 'on' : null);
+export function polySetScaleMode(on) {
   if (!_s) return false;
-  const m = mode === '2d' || mode === '3d' ? mode : null;
-  if (m && !_selectedPartIds().length) { setStatus('Select what should be scaled first.', 'warn', 3500); return false; }
-  if (m && isPolyEditing()) exitPolyEdit();
+  const want = !!on;
+  if (want && !_selectedPartIds().length) { setStatus('Select what should be scaled first.', 'warn', 3500); return false; }
+  if (want && isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
-  if (m) { if (_s.pick) _endPick(true); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); _s.scale.mode = m; }
+  if (want) { if (_s.pick) _endPick(true); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); }
   else _scaleEnd();
   _hint(); _syncScene(); _emit('mode');
   return true;
 }
-const _SCALE_HANDLES = { tl: 'nwse-resize', t: 'ns-resize', tr: 'nesw-resize', r: 'ew-resize', br: 'nwse-resize', b: 'ns-resize', bl: 'nesw-resize', l: 'ew-resize' };
+const SCALE_AXIS_COLOR = [0xef4444, 0x22c55e, 0x3b82f6], SCALE_HOT = 0xfde047;
+const SCALE_PYR_W = 15, SCALE_PYR_H = 24, SCALE_TRI = 18;     // sizes on screen, px
+const SCALE_BOX_EDGES = [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
 function _scaleBegin() {
-  const wrap = document.createElement('div');             // the size of the viewport: the box never draws over the side panels
-  wrap.style.cssText = 'position:fixed;z-index:50;pointer-events:none;overflow:hidden;display:none;';
-  const box = document.createElement('div');
-  box.style.cssText = 'position:absolute;pointer-events:none;box-sizing:border-box;border:1px dashed #fbbf24;';
-  const hs = {};
-  for (const [k, cur] of Object.entries(_SCALE_HANDLES)) {
-    const h = document.createElement('div');
-    h.style.cssText = `position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;box-sizing:border-box;background:#fff;border:2px solid #b45309;border-radius:2px;pointer-events:auto;cursor:${cur};touch-action:none;`;
-    h.style.left = k.includes('l') ? '0%' : k.includes('r') ? '100%' : '50%';
-    h.style.top = k.includes('t') ? '0%' : k.includes('b') ? '100%' : '50%';
-    h.addEventListener('pointerdown', (e) => _scaleDown(e, k));
-    box.append(h); hs[k] = h;
+  const Th = T(), group = new Th.Group(); group.name = 'sbs:poly-scale';
+  const mat = (color, opacity) => new Th.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true, opacity, side: Th.DoubleSide });
+  const bg = new Th.BufferGeometry(); bg.setAttribute('position', new Th.BufferAttribute(new Float32Array(72), 3));
+  const box = new Th.LineSegments(bg, new Th.LineBasicMaterial({ color: 0xfbbf24, depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 }));
+  box.renderOrder = 990; box.frustumCulled = false;
+  group.add(box);
+  const cone = new Th.ConeGeometry(0.5, 1, 4); cone.translate(0, 0.5, 0);   // it stands on the face: base on the origin, tip at +Y
+  const handles = [];
+  for (let a = 0; a < 3; a++) for (const sg of [1, -1]) {
+    const pyr = new Th.Mesh(cone, mat(SCALE_AXIS_COLOR[a], 0.95));
+    pyr.renderOrder = 992; pyr.frustumCulled = false; pyr.userData.h = { type: 'axis', a, sg };
+    group.add(pyr); handles.push(pyr);
+    for (const sb of [1, -1]) for (const s2 of [1, -1]) {   // a triangle on each of the face's four corners
+      const tg = new Th.BufferGeometry(); tg.setAttribute('position', new Th.BufferAttribute(new Float32Array(9), 3));
+      const tri = new Th.Mesh(tg, mat(SCALE_AXIS_COLOR[a], 0.8));
+      tri.renderOrder = 991; tri.frustumCulled = false; tri.userData.h = { type: 'plane', a, sg, sb, sc: s2 };
+      group.add(tri); handles.push(tri);
+    }
   }
-  wrap.appendChild(box); document.body.appendChild(wrap);
-  const sc = _s.scale = { mode: '2d', wrap, box, hs, raf: 0, drag: null };
+  group.visible = false;
+  (sceneCore.overlayScene || sceneCore.scene)?.add(group);
+  const sc = _s.scale = { group, box, handles, raf: 0, drag: null, hot: null, frame: null, dirty: true, camKey: '' };
   const tick = () => { if (!_s || _s.scale !== sc) return; _scaleLayout(); sc.raf = requestAnimationFrame(tick); };
   tick();
 }
 function _scaleEnd() {
   const sc = _s?.scale; if (!sc) return;
   if (sc.drag) _scaleFinish(false);
-  try { cancelAnimationFrame(sc.raf); sc.wrap.remove(); } catch { /* gone */ }
+  try { cancelAnimationFrame(sc.raf); _disposePins(sc.group); sc.group.parent?.remove(sc.group); } catch { /* gone */ }
+  try { if (sc.hot) sceneCore.renderer.domElement.style.cursor = ''; } catch { /* fine */ }
   _s.scale = null;
+  sceneCore.requestRender?.(120);
 }
-/** Where the selection is on the screen: the box its parts' own boxes make, in client pixels. */
-function _scaleScreenRect() {
-  const Th = T(), cam = sceneCore.camera, r = sceneCore.renderer.domElement.getBoundingClientRect(), v = new Th.Vector3();
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const id of _selectedPartIds()) {
-    const m = _s.items.get(id)?.mesh, bb = m?.geometry?.boundingBox; if (!bb) continue;
-    for (let i = 0; i < 8; i++) {
-      v.set(i & 1 ? bb.max.x : bb.min.x, i & 2 ? bb.max.y : bb.min.y, i & 4 ? bb.max.z : bb.min.z).applyMatrix4(m.matrixWorld).project(cam);
-      if (!isFinite(v.x) || !isFinite(v.y) || v.z > 1) continue;
-      const x = (v.x * 0.5 + 0.5) * r.width + r.left, y = (-v.y * 0.5 + 0.5) * r.height + r.top;
-      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+/**
+ * The box of the selection → { B: [x, y, z] unit axes (world), C: its centre (world), half: [hx, hy, hz] } — or null.
+ * ONE object (a part, or a folder with all in it): along its own axes, so the box hugs it. Several: the asset's axes.
+ */
+function _scaleFrame() {
+  const Th = T(), ids = _selectedPartIds(); if (!ids.length) return null;
+  _s.group.updateWorldMatrix(true, true);
+  const one = _singleTop();
+  const q = !one ? _groupQuat() : one.kind === 'part' ? one.mesh.getWorldQuaternion(new Th.Quaternion()) : _groupQuat().multiply(one.frame.q);
+  const Rinv = new Th.Matrix4().makeRotationFromQuaternion(q.clone().invert()), M = new Th.Matrix4(), v = new Th.Vector3();
+  const mn = [Infinity, Infinity, Infinity], mx = [-Infinity, -Infinity, -Infinity];
+  for (const id of ids) {
+    const m = _s.items.get(id)?.mesh, pos = m?.geometry?.getAttribute?.('position'); if (!pos) continue;
+    M.multiplyMatrices(Rinv, m.matrixWorld);
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(M);
+      if (v.x < mn[0]) mn[0] = v.x; if (v.x > mx[0]) mx[0] = v.x;
+      if (v.y < mn[1]) mn[1] = v.y; if (v.y > mx[1]) mx[1] = v.y;
+      if (v.z < mn[2]) mn[2] = v.z; if (v.z > mx[2]) mx[2] = v.z;
     }
   }
-  return isFinite(x0) && x1 - x0 > 1 && y1 - y0 > 1 ? { x0, y0, x1, y1, canvas: r } : null;
+  if (!isFinite(mn[0])) return null;
+  return {
+    B: [new Th.Vector3(1, 0, 0).applyQuaternion(q), new Th.Vector3(0, 1, 0).applyQuaternion(q), new Th.Vector3(0, 0, 1).applyQuaternion(q)],
+    C: new Th.Vector3((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2).applyQuaternion(q),
+    half: [(mx[0] - mn[0]) / 2, (mx[1] - mn[1]) / 2, (mx[2] - mn[2]) / 2],
+  };
 }
+/** Every frame: the box where the selection is, the handles the same size on screen whatever the zoom. */
 function _scaleLayout() {
   const sc = _s?.scale; if (!sc) return;
-  const R = isPolyEditing() || _s.pick ? null : _scaleScreenRect();
-  if (!R) { sc.wrap.style.display = 'none'; return; }
-  const w = sc.wrap.style, s = sc.box.style, c = R.canvas;
-  w.display = 'block'; w.left = `${c.left}px`; w.top = `${c.top}px`; w.width = `${c.width}px`; w.height = `${c.height}px`;
-  s.left = `${R.x0 - c.left}px`; s.top = `${R.y0 - c.top}px`; s.width = `${R.x1 - R.x0}px`; s.height = `${R.y1 - R.y0}px`;
+  if (sc.dirty && !sc.drag) { sc.frame = _scaleFrame(); sc.dirty = false; sc.camKey = ''; }
+  const fr = sc.drag ? sc.drag.cur : sc.frame;
+  if (!fr) { if (sc.group.visible) { sc.group.visible = false; sceneCore.requestRender?.(60); } return; }
+  const Th = T(), cam = sceneCore.camera, dom = sceneCore.renderer.domElement;
+  cam.updateMatrixWorld();
+  const key = `${cam.matrixWorld.elements.join(',')}|${cam.fov}|${dom.clientWidth}x${dom.clientHeight}`;
+  if (key === sc.camKey && sc.group.visible) return;         // nothing moved: nothing to redraw
+  sc.camKey = key; sc.group.visible = true;
+  const { B, C, half } = fr;
+  const camPos = new Th.Vector3().setFromMatrixPosition(cam.matrixWorld), fwd = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 2).negate().normalize();
+  const tanH = Math.tan((cam.fov || 35) * Math.PI / 360) / (cam.zoom || 1), H = Math.max(1, dom.clientHeight);
+  const wpp = (p) => Math.max(1e-9, 2 * Math.abs(p.clone().sub(camPos).dot(fwd)) * tanH / H);      // world units per pixel at p
+  const corner = (i) => C.clone().addScaledVector(B[0], (i & 1 ? 1 : -1) * half[0]).addScaledVector(B[1], (i & 2 ? 1 : -1) * half[1]).addScaledVector(B[2], (i & 4 ? 1 : -1) * half[2]);
+  const bp = sc.box.geometry.getAttribute('position'); let k = 0;
+  for (const [i, j] of SCALE_BOX_EDGES) { const p = corner(i), q = corner(j); bp.setXYZ(k++, p.x, p.y, p.z); bp.setXYZ(k++, q.x, q.y, q.z); }
+  bp.needsUpdate = true;
+  const Y = new Th.Vector3(0, 1, 0);
+  for (const m of sc.handles) {
+    const h = m.userData.h, n = B[h.a].clone().multiplyScalar(h.sg), fc = C.clone().addScaledVector(n, half[h.a]);
+    const facing = n.dot(camPos.clone().sub(fc)) > 0, hot = sc.hot === m || sc.drag?.mesh === m;
+    m.material.color.setHex(hot ? SCALE_HOT : SCALE_AXIS_COLOR[h.a]);
+    m.material.opacity = (hot ? 1 : h.type === 'axis' ? 0.95 : 0.8) * (facing || hot ? 1 : 0.35);   // a handle on a far face is dimmer
+    const s = wpp(fc);
+    if (h.type === 'axis') {
+      m.position.copy(fc); m.quaternion.setFromUnitVectors(Y, n); m.scale.set(s * SCALE_PYR_W, s * SCALE_PYR_H, s * SCALE_PYR_W);
+      continue;
+    }
+    const b = (h.a + 1) % 3, c = (h.a + 2) % 3;
+    const P = fc.clone().addScaledVector(B[b], h.sb * half[b]).addScaledVector(B[c], h.sc * half[c]);
+    const Lb = Math.min(s * SCALE_TRI, half[b]), Lc = Math.min(s * SCALE_TRI, half[c]);     // never past the middle of a small face
+    const P1 = P.clone().addScaledVector(B[b], -h.sb * Lb), P2 = P.clone().addScaledVector(B[c], -h.sc * Lc);
+    const tp = m.geometry.getAttribute('position');
+    tp.setXYZ(0, P.x, P.y, P.z); tp.setXYZ(1, P1.x, P1.y, P1.z); tp.setXYZ(2, P2.x, P2.y, P2.z);
+    tp.needsUpdate = true; m.geometry.computeBoundingSphere();
+    // a face with no area has nothing to scale; a face that looks away is not offered (the face across the box
+    // scales the same two directions, and it looks at you)
+    m.visible = Lb > 1e-9 && Lc > 1e-9 && (facing || sc.drag?.mesh === m);
+  }
+  sceneCore.requestRender?.(60);
 }
-function _scaleDown(e, k) {
-  const sc = _s?.scale; if (!sc || sc.drag || e.button !== 0) return;
-  e.preventDefault(); e.stopPropagation();
-  const R = _scaleScreenRect(); if (!R) return;
-  const Th = T(), cam = sceneCore.camera;
-  cam.updateMatrixWorld(); _s.group.updateWorldMatrix(true, true);
-  const right = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 0).normalize(), up = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 1).normalize(), depth = new Th.Vector3().crossVectors(right, up).normalize();
-  const wb = new Th.Box3(); for (const id of _selectedPartIds()) { const m = _s.items.get(id)?.mesh; if (m) wb.expandByObject(m); }
-  const C = wb.getCenter(new Th.Vector3()), cp = C.clone().project(cam);                 // everything is measured at the depth of the selection's middle
-  const hx = k.includes('l') ? -1 : k.includes('r') ? 1 : 0, hy = k.includes('t') ? -1 : k.includes('b') ? 1 : 0;
-  const fx = hx < 0 ? R.x1 : hx > 0 ? R.x0 : (R.x0 + R.x1) / 2, fy = hy < 0 ? R.y1 : hy > 0 ? R.y0 : (R.y0 + R.y1) / 2;   // the side that stays
-  const d = sc.drag = {
-    hx, hy, fx, fy, sx0: hx < 0 ? R.x0 : R.x1, sy0: hy < 0 ? R.y0 : R.y1, right, up, depth, f: [1, 1, 1], M: new Th.Matrix4(),
-    F: new Th.Vector3(((fx - R.canvas.left) / R.canvas.width) * 2 - 1, -(((fy - R.canvas.top) / R.canvas.height) * 2 - 1), cp.z).unproject(cam),
+function _scaleRay(e) {
+  const Th = T(), rect = sceneCore.renderer.domElement.getBoundingClientRect();
+  const rc = _s.rc || (_s.rc = new Th.Raycaster());
+  rc.setFromCamera(new Th.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), sceneCore.camera);
+  return rc;
+}
+function _scaleHit(e) {
+  const sc = _s?.scale; if (!sc || !sc.group.visible) return null;
+  sc.group.updateMatrixWorld(true);
+  const hits = _scaleRay(e).intersectObjects(sc.handles.filter(m => m.visible), false);
+  if (!hits.length) return null;
+  return (hits.find(h => h.object.userData.h.type === 'axis') || hits[0]).object;   // a pyramid in front of a triangle wins
+}
+function _scaleHover(e) {
+  const sc = _s?.scale; if (!sc || sc.drag) return;
+  const hot = _scaleHit(e);
+  if (hot === sc.hot) return;
+  sc.hot = hot; sc.camKey = '';
+  try { sceneCore.renderer.domElement.style.cursor = hot ? 'pointer' : ''; } catch { /* fine */ }
+}
+/** Where along the line (o + n·t) the cursor's ray passes closest — null when the line points at the eye. */
+function _scaleAxisParam(ray, o, n) {
+  const w = ray.origin.clone().sub(o), b = n.dot(ray.direction), d = n.dot(w), e = ray.direction.dot(w), den = 1 - b * b;
+  if (den < 1e-4) return null;
+  return d + b * ((b * d - e) / den);
+}
+/** A handle under the cursor? → the pull starts (true). */
+function _scaleDown(e) {
+  const sc = _s?.scale; if (!sc || sc.drag || !sc.frame) return false;
+  const mesh = _scaleHit(e); if (!mesh) return false;
+  const Th = T(), fr = sc.frame, h = mesh.userData.h, ray = _scaleRay(e).ray;
+  const n = fr.B[h.a].clone().multiplyScalar(h.sg), fc = fr.C.clone().addScaledVector(n, fr.half[h.a]);
+  _s.group.updateWorldMatrix(true, true);
+  const d = {
+    mesh, type: h.type, a: h.a, sg: h.sg, sb: h.sb, sc: h.sc, n, fc, fr, cur: fr, f: [1, 1, 1], M: new Th.Matrix4(),
     Ginv: _s.group.matrixWorld.clone().invert(),
     rows: _selectedPartIds().map(id => { const it = _s.items.get(id), m = it.mesh; return { it, m, W0: m.matrixWorld.clone() }; }),
-    frows: _foldersInSelection().filter(f => f.frame.p).map(f => ({ it: f, p0: f.frame.p.clone() })),
+    last: { clientX: e.clientX, clientY: e.clientY },
   };
-  d.move = (ev) => _scaleMove(ev);
+  if (h.type === 'axis') {
+    d.t0 = _scaleAxisParam(ray, fc, n);
+    if (d.t0 == null) { setStatus('That handle points straight at you — turn the view a little, or pull the one on a side.', 'warn', 4000); return true; }
+  } else {
+    d.p0 = ray.intersectPlane(new Th.Plane().setFromNormalAndCoplanarPoint(n, fc), new Th.Vector3());
+    if (!d.p0) { setStatus('That face is seen edge-on — turn the view a little.', 'warn', 4000); return true; }
+  }
+  sc.drag = d;
+  d.move = (ev) => {
+    if (!(ev.buttons & 1)) { _scaleFinish(false); return; }   // the release was lost (the window lost the mouse): nothing is baked
+    d.last = { clientX: ev.clientX, clientY: ev.clientY }; _scaleMove(ev);
+  };
   d.end = () => _scaleFinish(true);
+  // Alt / Shift pressed or let go while the mouse rests: the pull follows at once
+  d.key = (ev) => { if (ev.key !== 'Alt' && ev.key !== 'Shift') return; ev.preventDefault(); _scaleMove({ ...d.last, altKey: ev.altKey, shiftKey: ev.shiftKey }); };
   window.addEventListener('pointermove', d.move, true);
   window.addEventListener('pointerup', d.end, true);
   window.addEventListener('pointercancel', d.end, true);
+  window.addEventListener('keydown', d.key, true);
+  window.addEventListener('keyup', d.key, true);
+  _scaleMove(e);
+  return true;
 }
 function _scaleMove(e) {
   const sc = _s?.scale, d = sc?.drag; if (!d) return;
-  const Th = T();
-  let sx = d.hx ? (e.clientX - d.fx) / (d.sx0 - d.fx) : 1, sy = d.hy ? (e.clientY - d.fy) / (d.sy0 - d.fy) : 1;
-  sx = Math.max(0.01, sx); sy = Math.max(0.01, sy);                                      // never through itself (no mirror)
-  const both = d.hx && d.hy ? Math.max(sx, sy) : d.hx ? sx : sy;
-  d.f = sc.mode === '3d' ? [both, both, both] : (d.hx && d.hy ? [both, both, 1] : [d.hx ? sx : 1, d.hy ? sy : 1, 1]);
-  // x' = F + A (x − F), A = stretch along the screen's right / up / depth
-  const B = new Th.Matrix4().makeBasis(d.right, d.up, d.depth);
-  const A = B.clone().multiply(new Th.Matrix4().makeScale(d.f[0], d.f[1], d.f[2])).multiply(B.clone().transpose());
-  d.M.makeTranslation(d.F.x, d.F.y, d.F.z).multiply(A).multiply(new Th.Matrix4().makeTranslation(-d.F.x, -d.F.y, -d.F.z));
+  const Th = T(), { B, C, half } = d.fr, ray = _scaleRay(e).ray, alt = !!e.altKey, shift = !!e.shiftKey;
+  const lim = (x) => (Number.isFinite(x) ? Math.max(0.01, x) : 1);      // never through itself (no mirror)
+  let f = [1, 1, 1], F = C.clone();
+  if (d.type === 'axis') {
+    const t = _scaleAxisParam(ray, d.fc, d.n), h = half[d.a];
+    if (t == null || h < 1e-9) return;
+    const dt = t - d.t0, s = lim(alt ? (h + dt) / h : (2 * h + dt) / (2 * h));
+    if (!alt) F = C.clone().addScaledVector(d.n, -h);        // the opposite face stays
+    f = shift ? [s, s, s] : f.map((x, i) => (i === d.a ? s : 1));
+  } else {
+    const p = ray.intersectPlane(new Th.Plane().setFromNormalAndCoplanarPoint(d.n, d.fc), new Th.Vector3());
+    if (!p) return;
+    const b = (d.a + 1) % 3, c = (d.a + 2) % 3, dl = p.sub(d.p0);
+    const rb = d.sb * half[b], rc2 = d.sc * half[c];
+    // the corner follows the cursor; what stays is the opposite corner of the face — or, with Alt, the centre
+    const eb = alt ? rb : 2 * rb, ec = alt ? rc2 : 2 * rc2, nb = eb + dl.dot(B[b]), nc = ec + dl.dot(B[c]);
+    if (shift) { const s = lim((nb * eb + nc * ec) / (eb * eb + ec * ec)); f[b] = s; f[c] = s; }   // the proportions it had
+    else { f[b] = Math.abs(eb) > 1e-9 ? lim(nb / eb) : 1; f[c] = Math.abs(ec) > 1e-9 ? lim(nc / ec) : 1; }
+    if (!alt) F = C.clone().addScaledVector(B[b], -rb).addScaledVector(B[c], -rc2);   // (the third direction is not scaled: where F sits along it does not matter)
+  }
+  d.f = f;
+  // x' = F + A (x − F), A = the stretch along the box's own axes
+  const Bm = new Th.Matrix4().makeBasis(B[0], B[1], B[2]);
+  const A = Bm.clone().multiply(new Th.Matrix4().makeScale(f[0], f[1], f[2])).multiply(Bm.clone().transpose());
+  d.M.makeTranslation(F.x, F.y, F.z).multiply(A).multiply(new Th.Matrix4().makeTranslation(-F.x, -F.y, -F.z));
   for (const r of d.rows) { r.m.matrixAutoUpdate = false; r.m.matrix.copy(d.Ginv).multiply(d.M).multiply(r.W0); r.m.matrixWorldNeedsUpdate = true; }   // shown as it will be; baked when the mouse is let go
-  const pc = (x) => `${Math.round(x * 1000) / 10}%`;
-  setStatus(sc.mode === '3d' ? `Scale (all directions): ${pc(d.f[0])}` : `Scale: width ${pc(d.f[0])} · height ${pc(d.f[1])}`, 'info', 1500);
+  d.cur = { B, C: C.clone().applyMatrix4(d.M), half: half.map((x, i) => x * f[i]) };
+  sc.camKey = '';
+  const pc = (x) => `${Math.round(x * 1000) / 10}%`, names = ['X', 'Y', 'Z'];
+  setStatus(`Scale: ${f.map((x, i) => (Math.abs(x - 1) > 1e-6 ? `${names[i]} ${pc(x)}` : null)).filter(Boolean).join(' · ') || '100%'}${(alt ? ' · from the centre' : ' · Alt = from the centre') + (d.type === 'axis' ? (shift ? ' · all directions' : ' · Shift = all directions') : (shift ? ' · proportions kept' : ' · Shift = keep the proportions'))}`, 'info', 2500);
   sceneCore.requestRender?.(60);
 }
 /** The gesture ends: bake it (commit) or put everything back. */
 function _scaleFinish(commit) {
   const sc = _s?.scale, d = sc?.drag; if (!d) return;
-  sc.drag = null;
+  sc.drag = null; sc.dirty = true; sc.camKey = '';
   window.removeEventListener('pointermove', d.move, true);
   window.removeEventListener('pointerup', d.end, true);
   window.removeEventListener('pointercancel', d.end, true);
+  window.removeEventListener('keydown', d.key, true);
+  window.removeEventListener('keyup', d.key, true);
   const Th = T();
-  for (const r of d.rows) { r.m.matrixAutoUpdate = true; r.m.updateMatrix(); r.m.matrixWorldNeedsUpdate = true; }
+  for (const r of d.rows) { r.m.matrixAutoUpdate = true; r.m.updateMatrix(); r.m.matrixWorldNeedsUpdate = true; r.m.updateMatrixWorld(true); }
   const changed = commit && d.f.some(x => Math.abs(x - 1) > 1e-6);
   if (!changed) { sceneCore.requestRender?.(120); return; }
-  const G = _s.group.matrixWorld;
-  const partRows = d.rows.map(r => {
-    const m = r.m, pos1 = new Th.Vector3().setFromMatrixPosition(r.W0).applyMatrix4(d.M).applyMatrix4(d.Ginv);   // the pivot goes with it
+  _scaleCommit(d.M.clone(), 'Scale');
+}
+const _sclOf = (it) => it.scl || (it.scl = [1, 1, 1]);
+/**
+ * Bake a stretch (M, world space) into the selected parts: their vertices, their pivots, the pivots of the
+ * selected folders — and everybody's scale record (how much longer each of its OWN axes became; for an object
+ * that is turned against the stretch that is the nearest true statement, and typing 100 % back is then
+ * approximate). One undo step.
+ */
+function _scaleCommit(M, label = 'Scale') {
+  const Th = T();
+  _s.group.updateWorldMatrix(true, true);
+  const G = _s.group.matrixWorld, Ginv = G.clone().invert(), A = new Th.Matrix3().setFromMatrix4(M), gq = _groupQuat();
+  const grow = (q, scl) => [0, 1, 2].map(i => scl[i] * new Th.Vector3(i === 0 ? 1 : 0, i === 1 ? 1 : 0, i === 2 ? 1 : 0).applyQuaternion(q).applyMatrix3(A).length());
+  const partRows = _selectedPartIds().map(id => {
+    const it = _s.items.get(id), m = it.mesh, W0 = m.matrixWorld.clone();
+    const pos1 = new Th.Vector3().setFromMatrixPosition(W0).applyMatrix4(M).applyMatrix4(Ginv);     // the pivot goes with it
     const F1w = new Th.Matrix4().multiplyMatrices(G, new Th.Matrix4().compose(pos1, m.quaternion, m.scale));
-    const V = F1w.invert().multiply(d.M).multiply(r.W0);                                  // old own space → new own space
-    const poly = _polyApply(clonePoly(r.it.poly), V);
-    return { it: r.it, before: { poly: clonePoly(r.it.poly), pos: m.position.clone() }, after: { poly, pos: pos1 } };
+    const V = F1w.invert().multiply(M).multiply(W0);                                        // old own space → new own space
+    return { it, before: { poly: clonePoly(it.poly), pos: m.position.clone(), scl: _sclOf(it).slice() }, after: { poly: _polyApply(clonePoly(it.poly), V), pos: pos1, scl: grow(m.getWorldQuaternion(new Th.Quaternion()), _sclOf(it)) } };
   });
-  const folderRows = d.frows.map(r => ({ it: r.it, before: r.p0.clone(), after: r.p0.clone().applyMatrix4(G).applyMatrix4(d.M).applyMatrix4(d.Ginv) }));
+  const folderRows = _foldersInSelection().map(f => ({ it: f,
+    before: { p: f.frame.p ? f.frame.p.clone() : null, scl: _sclOf(f).slice() },
+    after: { p: f.frame.p ? f.frame.p.clone().applyMatrix4(G).applyMatrix4(M).applyMatrix4(Ginv) : null, scl: grow(gq.clone().multiply(f.frame.q), _sclOf(f)) } }));
   const put = (key) => {
-    for (const r of partRows) { r.it.poly = clonePoly(r[key].poly); r.it.mesh.position.copy(r[key].pos); r.it.mesh.updateMatrixWorld(true); _refreshPartMesh(r.it); _partChanged(r.it.id); }
-    for (const r of folderRows) r.it.frame.p = r[key].clone();
+    for (const r of partRows) { r.it.poly = clonePoly(r[key].poly); r.it.mesh.position.copy(r[key].pos); r.it.scl = r[key].scl.slice(); r.it.mesh.updateMatrixWorld(true); _refreshPartMesh(r.it); _partChanged(r.it.id); }
+    for (const r of folderRows) { r.it.frame.p = r[key].p ? r[key].p.clone() : null; r.it.scl = r[key].scl.slice(); }
   };
   put('after');
-  _push(sc.mode === '3d' ? 'Scale (3D)' : 'Scale', () => put('before'), () => put('after'));
+  _push(label, () => put('before'), () => put('after'));
   _syncScene(); _emit('tree');
+}
+/** The scale record of the ONE selected object, in % of how it came in ([x, y, z] along its own axes) — or null. */
+function _scalePct() { const one = _singleTop(); return one ? _sclOf(one).map(x => Math.round(x * 1000) / 10) : null; }
+/** Typed numbers: the one selected object is rescaled, about its pivot and along its own axes, to those % of how it came in. */
+export function polySetScalePercent(pct) {
+  if (!_s) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  const one = _singleTop(); if (!one) return false;
+  const cur = _sclOf(one), f = [0, 1, 2].map(i => { const v = Number(pct?.[i]); return Number.isFinite(v) && v >= 1 && cur[i] > 1e-9 ? (v / 100) / cur[i] : 1; });
+  if (f.every(x => Math.abs(x - 1) < 1e-6)) return false;
+  const Th = T();
+  _s.group.updateWorldMatrix(true, true);
+  const pl = _pivotLocal(one); if (!pl) return false;
+  const F = _s.group.localToWorld(pl), q = one.kind === 'part' ? one.mesh.getWorldQuaternion(new Th.Quaternion()) : _groupQuat().multiply(one.frame.q);
+  const Rm = new Th.Matrix4().makeRotationFromQuaternion(q);
+  const M = new Th.Matrix4().makeTranslation(F.x, F.y, F.z).multiply(Rm).multiply(new Th.Matrix4().makeScale(f[0], f[1], f[2])).multiply(Rm.clone().transpose()).multiply(new Th.Matrix4().makeTranslation(-F.x, -F.y, -F.z));
+  _scaleCommit(M, 'Scale (typed)');
+  return true;
+}
+
+// ── "as it came in" (V0.3.5.28): what ↩ Restore puts back ─────────────────────
+// A part: its shape, pivot + axes and colour as they were when it came into the editor (from the saved file,
+// from the scene — or as it was made here). A folder: its pivot + axes. Kept for the whole session.
+function _stampOrigs() {
+  if (!_s) return;
+  for (const it of _s.items.values()) {
+    if (it.orig) continue;
+    if (it.kind === 'part') { if (it.mesh) it.orig = { poly: clonePoly(it.poly), pos: it.mesh.position.clone(), quat: it.mesh.quaternion.clone(), color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited }; }
+    else if (it.frame) it.orig = { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null };
+  }
+}
+/** The selection goes back to how it came in — the rest of the edit stays. One undo step. */
+export function polyRestoreSelected() {
+  if (!_s) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  const items = [..._selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.orig && it.mesh), ..._foldersInSelection().filter(f => f.orig)];
+  if (!items.length) { setStatus('Select what should be restored first.', 'warn', 3500); return false; }
+  const now = (it) => (it.kind === 'part'
+    ? { poly: clonePoly(it.poly), pos: it.mesh.position.clone(), quat: it.mesh.quaternion.clone(), color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited, scl: _sclOf(it).slice() }
+    : { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null, scl: _sclOf(it).slice() });
+  const rows = items.map(it => ({ it, before: now(it), after: { ...it.orig, scl: [1, 1, 1] } }));
+  const put = (key) => {
+    for (const { it, [key]: s } of rows) {
+      it.scl = s.scl.slice();
+      if (it.kind !== 'part') { it.frame.q.copy(s.q); it.frame.p = s.p ? s.p.clone() : null; continue; }
+      it.poly = clonePoly(s.poly); it.mesh.position.copy(s.pos); it.mesh.quaternion.copy(s.quat);
+      it.color = s.color.slice(); it.presetId = s.presetId; it.colorEdited = s.edited;
+      it.mesh.updateMatrixWorld(true); _refreshPartMesh(it); _paintPart(it); _partChanged(it.id);
+    }
+  };
+  put('after');
+  _push('Restore', () => put('before'), () => put('after'));
+  _syncScene(); _emit('tree');
+  const n = items.filter(it => it.kind === 'part').length;
+  setStatus(`${n} part${n === 1 ? '' : 's'} restored to how ${n === 1 ? 'it' : 'they'} came in${_s.reedit ? ' (the saved file)' : ''}. Ctrl+Z takes it back.`, 'success', 5000);
+  return true;
 }
 
 // ── the right-click menu of a part / folder ──────────────────────────────────
@@ -1665,10 +1862,8 @@ export function polyShowMenu(x, y) {
     { label: '📍 Align to a surface… (a face of it, then where it goes)', disabled: !nParts, action: () => polyAlignToSurface() },
     { label: '⊚ Align by 3 points… (a circle on it, then the circle it goes to)', disabled: !nParts, action: () => polyAlignBy3Points() },
     { separator: true },
-    { label: '⤢ Scale', disabled: !nParts, submenu: [
-      { label: `${_s.scale?.mode === '2d' ? '✔ ' : ''}2D — width / height as you see it (a corner = both equally)`, action: () => polySetScaleMode(_s.scale?.mode === '2d' ? null : '2d') },
-      { label: `${_s.scale?.mode === '3d' ? '✔ ' : ''}3D — equally in all directions`, action: () => polySetScaleMode(_s.scale?.mode === '3d' ? null : '3d') },
-    ] },
+    { label: `${_s.scale ? '✔ ' : ''}⤢ Scale (the box with handles)`, disabled: !nParts, action: () => polySetScaleMode(!_s.scale) },
+    { label: _s.reedit ? '↩ Restore from the saved file (as it came in)' : '↩ Restore (as it came in)', disabled: !nParts, action: () => polyRestoreSelected() },
     { label: '✛ Pivot', disabled: !one, submenu: [
       { label: _s.pivotMode ? '✔ Moving the pivot only — click to finish' : '✛ Move the pivot only (with the gizmo)', action: () => polySetPivotMode(!_s.pivotMode) },
       { separator: true },
@@ -1718,14 +1913,15 @@ function _attachInput() {
       if (e.button !== 0) return;
       if (_s.pick) { swallow(e); _pickClick(e); return; }
       if (isPolyEditing()) return;                         // the sub-object editor's own listener (added later) takes it
+      if (_s.scale && _scaleDown(e)) { swallow(e); return; }   // a handle of the scale box was grabbed
       if (polyRefsEditing() && polyRefsPointerDown(e)) { swallow(e); return; }   // a reference picture (or one of its corners) was grabbed
       swallow(e);
       if (gizmo.activeTarget === _target && gizmo.onPointerDown(e.clientX, e.clientY, false)) { try { dom.setPointerCapture(e.pointerId); } catch { /* fine */ } return; }
       _clickSelect(_pickPart(e), e);
     },
     click: (e) => { if (_s) { e.preventDefault(); e.stopImmediatePropagation(); } },          // the app's click handler never runs here
-    move: (e) => { if (_s?.pick) _pickHover(e); },         // the pin under the cursor (nothing is swallowed: the camera still orbits)
-    dbl: (e) => { if (!_s) return; e.preventDefault(); e.stopImmediatePropagation(); if (isPolyEditing() || _s.pick) return; const id = _pickPart(e); if (id) polyEnterSub('face', id); },
+    move: (e) => { if (_s?.pick) _pickHover(e); else if (_s?.scale) _scaleHover(e); },   // the pin / the handle under the cursor (nothing is swallowed: the camera still orbits)
+    dbl: (e) => { if (!_s) return; e.preventDefault(); e.stopImmediatePropagation(); if (isPolyEditing() || _s.pick) return; if (_s.scale && _scaleHit(e)) return; /* two quick pulls of a handle are not a double-click on the part behind it */ const id = _pickPart(e); if (id) polyEnterSub('face', id); },
     menu: (e) => {
       if (!_s) return;
       e.preventDefault(); e.stopImmediatePropagation();
@@ -1782,6 +1978,7 @@ function _onKey(e) {
   if (!_s || document.querySelector('dialog[open]')) return;
   // A focused <select> (the Colours panel's Outline list) is not a text field: the app's Ctrl+Z acts there,
   // so the "only what was done in the editor" guard below must run for it too.
+  if (e.key === 'Escape' && _s.scale?.drag) { e.preventDefault(); e.stopImmediatePropagation(); _scaleFinish(false); return; }   // also with Alt / Shift held: they are the pull's own modifiers
   const undoKey = (e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || e.code === 'KeyY');
   if (_typing() && !(undoKey && document.activeElement?.tagName === 'SELECT')) return;
   // the right-click menu closes on Esc through a listener this handler would cut off: close it here, and nothing else
@@ -1823,7 +2020,7 @@ function _onKey(e) {
 
 function _hint() {
   if (!_s) return;
-  if (_s.scale) { setStickyStatus(_s.scale.mode === '3d' ? '⬚ SCALE 3D — pull any handle of the box: everything grows / shrinks equally in all directions · the opposite side stays · Esc ends it' : '⬚ SCALE 2D — pull a side handle = width or height (as you see it) · a corner = both equally · the opposite side stays · Esc ends it', 'info', 'polySession'); return; }
+  if (_s.scale) { setStickyStatus('⬚ SCALE — pyramid ▲ = stretch that side (the opposite side stays · Alt = from the centre · Shift = every direction equally) · corner triangle ◣ = that face\'s two directions (the opposite corner stays · Shift = keep the proportions · Alt = from the centre) · Esc ends it', 'info', 'polySession'); return; }
   if (_s.pivotMode) { setStickyStatus(`⬚ PIVOT mode — the gizmo moves / turns only the pivot of ${_singleTop()?.name || 'the object'}; the geometry stays · Esc ends it (or right-click ▸ Pivot)`, 'info', 'polySession'); return; }
   setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
 }
@@ -1999,7 +2196,7 @@ async function _applyUpdate() {
     _teardown('applied');
     try { state.setSelection?.(re.modelId, new Set([re.modelId])); } catch { /* fine */ }
     const what = r.added || r.gone || r.moved ? ` (${[r.added ? `+${r.added} new` : '', r.gone ? `−${r.gone} removed` : '', r.moved ? `${r.moved} moved` : ''].filter(Boolean).join(', ')})` : '';
-    setStatus(`Replaced ${re.file} — the same model, in every step${what}.${r.backup ? ' The previous version is in backups/.' : ''} Undo history was cleared.`, 'success', 10000);
+    setStatus(`Replaced ${re.file} — the same model, in every step${what}.${r.backup ? ' The previous version is in backups/.' : ''} ${r.undoable ? 'Ctrl+Z brings the previous file back.' : 'Undo history was cleared.'}`, 'success', 10000);
     if (others.length) {
       // A picked container that still holds a part of this asset (the user parked it there) is not an
       // "original": archiving it would hide the part that was just updated. Only its other content is.

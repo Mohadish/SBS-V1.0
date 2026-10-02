@@ -37,6 +37,8 @@ import { createNode } from '../core/schema.js';
 import { polyPartNodeId, parsePolyGlb, adoptPolyMesh, geomFingerprint, polyContentHash } from '../io/importers.js';
 import { makeManifest, manifestHasUids, manifestFromSpec, diffManifests, patchSteps, attachedToGone, spliceGoneFromTree, isEmptyDiff, structureChanged } from './poly-asset-reconcile.js';
 import { subDir, joinPath } from '../core/project-paths.js';
+import { cloneShareStrings } from '../core/clone.js';
+import { setStatus } from '../ui/status.js';
 
 const _nodeById = () => state.get('nodeById');
 const _assetOf = (assetId) => (state.get('assets') || []).find(a => a.id === assetId) || null;
@@ -233,28 +235,128 @@ function _refreshMeshNode(node, mesh) {
   } catch (err) { console.warn('[poly asset] bbox', node.id, err); }
 }
 
+// ── ⬚ V0.3.5.28 — a Replace can be taken back ───────────────────────────────────
+// His ask: "we save, we override it, and then we see we did a horrible mistake — undo should reload the old
+// GLB that is stored in memory". The old file's bytes are kept (however big), and so is what the project knew
+// about the asset before the Replace. Ctrl+Z writes the old file back, puts its parts back in the scene and
+// restores every step exactly; Ctrl+Y does the Replace again.
+/** A manifest → the parts list an update takes (top-down). */
+function _partsOfManifest(M) {
+  const kids = new Map(), out = [];
+  for (const [id, e] of Object.entries(M?.nodes || {})) { if (!kids.has(e.p)) kids.set(e.p, []); kids.get(e.p).push(id); }
+  (function walk(pid, parentUid) {
+    for (const id of kids.get(pid) || []) { const e = M.nodes[id]; out.push({ uid: e.u, kind: e.k === 'm' ? 'part' : 'folder', name: e.n, parentUid, frame: e.fr || null, tint: null }); walk(id, e.u); }
+  })(M.root, null);
+  return out;
+}
+/**
+ * What the project holds about the asset right now. An update gives a step it changes NEW objects (a new
+ * snapshot, or new tree / visibility / transforms inside the same one), so the old ones are kept by
+ * reference — the ★ logic knows a step by its snapshot object, a copy would star the whole timeline. Only
+ * the colour maps are written in place: those are copied.
+ */
+function _assetState(model) {
+  return {
+    steps: (state.get('steps') || []).map(st => {
+      const s = st?.snapshot || null;
+      return { st, snap: s, tree: s?.tree, visibility: s?.visibility, transforms: s?.transforms, materials: s?.materials ? { ...s.materials } : s?.materials, altered: st?.altered };
+    }),
+    presets: cloneShareStrings(state.get('colorPresets') || []),
+    defaults: { ...materials.meshDefaultColors }, assign: { ...materials.meshColorAssignments },
+    manifest: model.polyManifest,
+  };
+}
+function _putAssetState(model, s) {
+  const list = s.steps.map(r => {
+    const st = r.st;
+    if (r.snap) {
+      st.snapshot = r.snap;
+      Object.assign(r.snap, { tree: r.tree, visibility: r.visibility, transforms: r.transforms, materials: r.materials ? { ...r.materials } : r.materials });
+    }
+    if (r.altered === undefined) delete st.altered; else st.altered = r.altered;
+    return st;
+  });
+  materials.meshDefaultColors = { ...s.defaults };
+  materials.meshColorAssignments = { ...s.assign };
+  model.polyManifest = s.manifest;
+  state.setState({ steps: list, colorPresets: cloneShareStrings(s.presets) });
+  state.emit('materials:defaultColorsChanged');
+}
+const _toArrayBuffer = (d) => (d instanceof ArrayBuffer ? d : ArrayBuffer.isView(d) ? d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength) : null);
+let _flipQueue = Promise.resolve();
+/**
+ * The one undo entry a Replace leaves: A = the asset as it was (file + state), B = as the Replace made it.
+ * It holds only while the project is the one the Replace left: a model or steps brought in since are not on
+ * the undo stack, and putting the old steps back would wipe them — then the entry refuses and goes away
+ * (his rule: "once you proceed with the work, undo will not help you any more"; backups/ still has the file).
+ */
+function _pushReplaceUndo(modelId, file, A, B) {
+  const mark = () => `${(state.get('assets') || []).map(a => a.id).join()}|${(state.get('steps') || []).map(s => s.id).join()}`;
+  let at = B, seen = mark();                               // which of the two the project holds right now · what it held then
+  const moved = () => {
+    if (mark() === seen) return false;
+    setStatus(`${file}: models or steps were added or removed since the Replace — it can no longer be undone here. The previous file is in backups/.`, 'warn', 12000);
+    return true;
+  };
+  const go = (to, from, verb) => {
+    _flipQueue = _flipQueue.then(async () => {
+      if (at === to) return;
+      const model = _nodeById()?.get(modelId);
+      let r = null;
+      if (!model?.polyManifest || !to.state) r = { ok: false, reason: 'the asset is no longer in the project as it was' };
+      else {
+        setStatus(`${verb === 'undo' ? 'Bringing back the previous' : 'Writing the replaced'} ${file}…`, 'info', 60000);
+        r = await updatePolyAssetInPlace(modelId, to.parts, to.bytes, { restore: to.state });
+      }
+      if (r?.ok) {
+        at = to; from.state = r.state; seen = mark();      // r.state = what the project held just before: where the opposite key comes back to
+        setStatus(verb === 'undo' ? `${file} is back as it was before the Replace — the file on disk too. Ctrl+Y replaces it again.` : `${file} was replaced again.`, 'success', 8000);
+        return;
+      }
+      undoManager.moveBack(undo, verb === 'undo');         // it did not happen: the same key can be tried again
+      setStatus(`${file} could not be ${verb === 'undo' ? 'brought back' : 'replaced again'}: ${r?.reason === 'attached' ? `${r.attached.length} thing${r.attached.length === 1 ? '' : 's'} now hang${r.attached.length === 1 ? 's' : ''} on parts that would go` : (r?.reason || 'unknown error')}.${verb === 'undo' ? ' The previous version is also in backups/.' : ''}`, 'danger', 12000);
+    }).catch(err => {
+      console.warn('[poly asset] undo of a Replace', err);
+      undoManager.moveBack(undo, verb === 'undo');
+      setStatus(`That did not work: ${err?.message || err}`, 'danger', 10000);
+    });
+  };
+  const undo = () => { if (moved()) return false; go(A, B, 'undo'); };   // false = the undo manager drops the entry
+  const redo = () => { if (!moved()) go(B, A, 'redo'); };
+  undoManager.push(`Replace ${file}`, undo, redo);
+}
+
 const _samePoly = (a, b) => { try { return !!a && !!b && JSON.stringify(a) === JSON.stringify(b); } catch { return false; } };
 
 /**
  * Apply ▸ replace (or, with opts.path, ▸ "save a copy and use it in place of the old model").
  * parts = what the new file holds; glb = its bytes (ArrayBuffer).
- * → { ok: true, added, gone, moved, reshaped, stepsChanged, backup, file } | { ok: false, reason, attached? }
+ * opts.restore = a state from _assetState(): this call is the undo / redo of an earlier Replace — the same
+ * work on the scene, then that state is put back as it was instead of being worked out again.
+ * → { ok: true, added, gone, moved, reshaped, stepsChanged, backup, file, undoable } | { ok: false, reason, attached? }
  */
 export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   const plan = planPolyAssetUpdate(modelId, parts, opts);
   if (!plan.ok) return plan;
   if (plan.attached.length) return { ok: false, reason: 'attached', attached: plan.attached };
-  if (steps._animRunning) return { ok: false, reason: 'A step is still animating — try again in a moment.' };
+  if (steps._animRunning) {
+    if (!opts.restore) return { ok: false, reason: 'A step is still animating — try again in a moment.' };
+    try { steps.snapCurrentToFinal?.(); } catch (err) { console.warn('[poly asset] settle', err); }   // an undo does not wait for a transition: it is finished at once
+  }
   const nat = window.sbsNative;
   if (!nat?.writeFile) return { ok: false, reason: 'Saving needs the desktop app.' };
   const { assetId, oldM, newM, idOf, diff, swap } = plan;
   const path = plan.target, newFile = path.split(/[\\/]/).pop();
+  const restore = opts.restore || null;
+  glb = _toArrayBuffer(glb);
+  if (!glb) return { ok: false, reason: 'The file content is not readable.' };
   steps.flushSync();
 
   // ── the file: the old one to backups/, the new one in its place (a swap leaves the old file alone) ──
-  let backup = null;
-  if (!swap) try {
+  let backup = null, oldBytes = null;
+  if (!swap && !restore) try {
     const old = await nat.readFile(path, 'buffer');
+    if (old?.ok) oldBytes = _toArrayBuffer(old.data);        // kept in memory: what Ctrl+Z writes back
     const dir = subDir('backups');
     if (old?.ok && dir) {
       try { await nat.mkdir?.(dir); } catch { /* writeFile makes the folder too */ }
@@ -273,7 +375,12 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   try { st = await nat.statFile?.(path); } catch { /* "now" will do */ }
 
   // ── from here on everything is synchronous: no step sync can see a half-swapped scene ──
+  // (an undo runs on the open project, not behind the editor: a step change started during the file work is
+  // finished first, or its animation would re-stage the tree it began with over the restored one)
+  if (restore) { try { if (steps._animRunning) steps.snapCurrentToFinal?.(); steps.flushSync(); } catch (err) { console.warn('[poly asset] settle', err); } }
   const nb = _nodeById(), model = nb.get(modelId);
+  if (!model) return { ok: false, reason: 'the model is no longer in the project' };
+  const before = swap || (!restore && !oldBytes) ? null : _assetState(model);   // what an undo of this Replace (or the opposite key) puts back
   const outer = steps.object3dById.get(modelId) ?? model.object3d;
   const root = state.get('treeData');
   const uidOfId = new Map([...idOf].map(([uid, id]) => [id, uid]));
@@ -339,10 +446,10 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
     nb.set(id, node);
     addedMeshIds.push(id);
   }
-  _colourNewMeshes(assetId, addedMeshIds);
+  if (!restore) _colourNewMeshes(assetId, addedMeshIds);     // (an undo puts the colours it had back, below)
 
   // ── every step ─────────────────────────────────────────────────────────────
-  const r = patchSteps(state.get('steps') || [], _reconcileCtx(modelId, oldM, newM, diff, reshaped));
+  const r = restore ? { steps: state.get('steps') || [], changed: 0 } : patchSteps(state.get('steps') || [], _reconcileCtx(modelId, oldM, newM, diff, reshaped));
   if (Array.isArray(opts.refs) && opts.refs.length) newM.refs = opts.refs;   // ⬚ V0.3.5.25 — the reference pictures stay with the asset
   model.polyManifest = newM;
   if (relabel.size) for (const s of r.steps) (function w(n) { if (!n) return; if (relabel.has(n.id)) n.name = relabel.get(n.id); (n.children || []).forEach(w); })(s?.snapshot?.tree);   // a spec's name renames the live node when its step is opened
@@ -352,7 +459,8 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   state.setState({ steps: r.steps, assets, nodeById: buildNodeMap(root) });
 
   // the scene's colours chosen in the editor: on the new parts, and on the parts recoloured in this edit
-  try { const added = new Set(addedMeshIds); applyPolyPartColours(assetId, parts, presetsBefore, (p, id) => added.has(id) || !!p.tint?.edited); } catch (err) { console.warn('[poly asset] colours', err); }
+  if (!restore) { try { const added = new Set(addedMeshIds); applyPolyPartColours(assetId, parts, presetsBefore, (p, id) => added.has(id) || !!p.tint?.edited); } catch (err) { console.warn('[poly asset] colours', err); } }
+  else _putAssetState(model, restore);                       // an undo / redo: every step, the colours and the manifest exactly as they were
 
   // ── the scene: source transform on the new vertices, colours, the active step re-staged from its patched snapshot ──
   try { applyNodeSourceTransformToObject3D(model, outer, steps.object3dById); } catch (err) { console.warn('[poly asset] source transform', err); }
@@ -360,9 +468,16 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   const active = (state.get('steps') || []).find(s => s.id === state.get('activeStepId'));
   if (active?.snapshot) steps.applySnapshotInstant(active.snapshot, { suppressCamera: true });
   state.emit('change:treeData', state.get('treeData'));
-  undoManager.clear();                                       // the file is overwritten: nothing before this can be undone
   state.markDirty();
-  return { ok: true, added: diff.added.length, gone: diff.gone.length, moved: diff.moved.length, reshaped: reshaped.size, stepsChanged: r.changed, backup, file: newFile, swapped: swap };
+  let undoable = false;
+  if (!restore) {
+    undoManager.clear();                                     // the file is overwritten: nothing BEFORE this can be undone…
+    if (before && oldBytes) {                                // …but the Replace itself can: the old file is kept in memory
+      _pushReplaceUndo(modelId, plan.file, { bytes: oldBytes, state: before, parts: _partsOfManifest(oldM) }, { bytes: glb, state: null, parts });
+      undoable = true;
+    }
+  }
+  return { ok: true, added: diff.added.length, gone: diff.gone.length, moved: diff.moved.length, reshaped: reshaped.size, stepsChanged: r.changed, backup, file: newFile, swapped: swap, undoable, state: restore ? before : null };
 }
 
 /**
