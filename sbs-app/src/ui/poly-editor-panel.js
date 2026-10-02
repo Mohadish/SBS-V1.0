@@ -287,7 +287,8 @@ const _p = (text) => el('div', 'font-size:13px;line-height:1.45;margin-bottom:8p
 function _nameInput(value) {
   const input = el('input', 'width:100%;box-sizing:border-box;padding:7px 9px;border-radius:8px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:14px;margin-bottom:6px;');
   input.value = value || '';
-  input.addEventListener('keydown', (e) => e.stopPropagation());
+  // Enter takes the name as it stands: the first button of the dialog (the one that goes on)
+  input.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); input.closest('dialog')?.querySelector('button')?.click(); } });
   setTimeout(() => { try { input.focus(); input.select(); } catch { /* fine */ } }, 0);
   return input;
 }
@@ -305,6 +306,20 @@ export function askPolySaveHow({ file, canReplace, whyNot, changed }) {
     [`＋ Save as a new asset… (${file} is left as it is)`, 'new', canReplace ? '' : 'font-weight:600;'],
     ['Cancel', null, ''],
   ]);
+}
+
+/** Opening the editor on objects of the project (or empty): the name of the new object → name | null (Cancel = do not open). */
+export async function askPolyStartName({ name, count = 0 }) {
+  const input = _nameInput(name);
+  const ok = await _dialog('⬚ Poly Editor — name the object', [
+    _p(count ? `${count === 1 ? 'This object goes' : `These ${count} objects go`} into one folder in the editor. What is it called?` : 'A new, empty object. What is it called?'),
+    input,
+    _p('It is the name of its folder, and the name the .glb is saved under (it can be changed at Apply). Press Enter to take this name.'),
+  ], [
+    ['✔ Open the editor', 'ok', 'font-weight:600;'],
+    ['Cancel', null, ''],
+  ]);
+  return ok ? (input.value.trim() || name) : null;
 }
 
 /** A new asset: what is it called? → name | null. keeps = the asset it was made from (it stays as it is). */

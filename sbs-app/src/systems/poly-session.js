@@ -81,7 +81,7 @@ export function polySessionInfo() {
   };
   const selParts = _selectedPartIds(), prim = _s.items.get(selParts.includes(_s.primary) ? _s.primary : selParts[0]);
   return {
-    name: _s.name, view: _s.view, level: isPolyEditing() ? (polyEditMode() || 'face') : 'object',
+    name: _assetName(), view: _s.view, level: isPolyEditing() ? (polyEditMode() || 'face') : 'object',
     parts: [...alive].filter(id => _s.items.get(id).kind === 'part').length,
     selected: [..._s.sel], primary: _s.primary,
     tree: _s.rootIds.map(id => row(id, 0)),
@@ -93,7 +93,29 @@ export function polySessionInfo() {
     selParts: selParts.length, selPreset: prim?.presetId || null,
   };
 }
-export function setPolySessionName(name) { if (_s) { _s.name = String(name || '').trim() || 'poly-asset'; } }
+/** The ONE folder everything of a new object sits in (null when the tree's top level is anything else). */
+function _rootFolder() {
+  if (!_s) return null;
+  if (_s.rootFolderId) {                                   // a new object: the folder made (and named) at the door
+    const it = _s.items.get(_s.rootFolderId);
+    return it && it.kind === 'folder' && _s.rootIds.includes(it.id) ? it : null;
+  }
+  if (_s.rootIds.length !== 1) return null;                // an asset being re-edited: its single top folder, if that is how it was saved
+  const it = _s.items.get(_s.rootIds[0]);
+  return it && it.kind === 'folder' ? it : null;
+}
+/**
+ * The name the asset is saved under = the name of the object's folder. It is ONE name with three doors
+ * (the panel's field, renaming the folder's row, the Apply dialog), always the last one typed — and it is
+ * not part of undo (an undo of something else must not bring an old name back).
+ */
+const _assetName = () => (!_s ? '' : (!_s.reedit && _rootFolder()?.name) || _s.name);
+export function setPolySessionName(name) {
+  if (!_s) return;
+  _s.name = String(name || '').trim() || 'poly-asset';
+  const f = !_s.reedit ? _rootFolder() : null;
+  if (f && f.name !== _s.name) { f.name = _s.name; _emit('tree'); }
+}
 
 // ── start ────────────────────────────────────────────────────────────────────
 function _collectSources(nodeIds, opts = {}) {
@@ -274,12 +296,27 @@ async function _start(nodeIds, opts = {}) {
   const empty = !!opts.empty && !plan.parts;               // ⬚ V0.3.5.18 — a new asset from scratch: nothing comes in, primitives are added inside
   if (!plan.parts && !empty) { setStatus('Nothing in the selection has a mesh the Poly Editor can take.', 'warn', 5000); return false; }
   if (plan.tris > TRI_WARN && !confirm(`These ${plan.parts} objects have ${plan.tris.toLocaleString()} triangles. Converting and editing that much is slow.\n\nGo on?`)) return false;
+  // ⬚ V0.3.5.24 (his rule) — a NEW object is ONE named folder, even when it is a single part: the name is
+  // asked at the door (Enter takes the default) and is the name the .glb is saved under; the folder's pivot
+  // is the middle of what it holds, so the object has a PARENT to be measured from — the folder sits in the
+  // world, everything in it sits relative to the folder. (An asset that is re-edited opens as it is.)
+  plan.roots.forEach((r, i) => { r.srcId = plan.rootSource[i]; });
+  if (!plan.reedit) {
+    const panel = await import('../ui/poly-editor-panel.js');
+    const asked = await panel.askPolyStartName({ name: _safeName(String(plan.name || '').replace(/\.(glb|gltf|step|stp|fbx|obj|stl|sbsobj)$/i, '')), count: plan.parts });
+    if (!asked || _s) return false;
+    const rootName = _safeName(asked);
+    plan.name = rootName; plan.named = true;                 // the user's own words: kept exactly ("Bracket v1.2" is not a file name)
+    plan.roots = plan.roots.length === 1 && plan.roots[0].kind === 'folder'
+      ? [{ ...plan.roots[0], name: rootName }]                        // already one folder: it IS the object's folder
+      : [{ kind: 'folder', name: rootName, children: plan.roots, uid: null, keepEmpty: true }];
+  }
   const Th = T();
   setStickyStatus(`⬚ Poly Editor — converting ${plan.parts} object${plan.parts === 1 ? '' : 's'}…`, 'info', 'polySession');
   await new Promise(r => setTimeout(r, 30));
   sceneCore.rootGroup.updateWorldMatrix(true, true);
   const sess = {
-    sid: ++_sidSeq, seq: 0, name: plan.name.replace(/\.[a-z0-9]+$/i, ''), items: new Map(), rootIds: [], sel: new Set(), primary: null,
+    sid: ++_sidSeq, seq: 0, name: plan.named ? plan.name : plan.name.replace(/\.[a-z0-9]+$/i, ''), items: new Map(), rootIds: [], sel: new Set(), primary: null,
     view: 'persp', space: 'world', subMode: null, sourceIds: [], group: new Th.Group(), prev: null, listeners: null, xf: null, fovPersp: sceneCore.camera?.fov || 35, edits: 0,
     reedit: plan.reedit || null,
     native: plan.native || null,                           // the asset this session was seeded from (stays when Apply can only make a NEW asset)
@@ -312,7 +349,8 @@ async function _start(nodeIds, opts = {}) {
       const it = { id: newId('f'), kind: 'folder', name: src.name, parent, children: [], uid: uidFor(src), frame: { q: ff ? ff.quat : new Th.Quaternion(), p: ff ? ff.pos : null } };
       sess.items.set(it.id, it);
       for (const c of src.children) { const cid = await add(c, it.id); if (cid) it.children.push(cid); }
-      if (!it.children.length) { sess.items.delete(it.id); return null; }
+      if (!it.children.length && !src.keepEmpty) { sess.items.delete(it.id); return null; }
+      if (src.srcId) okSources.add(src.srcId);
       return it.id;
     }
     let poly = null;
@@ -331,17 +369,20 @@ async function _start(nodeIds, opts = {}) {
     _polyApply(poly, new Th.Matrix4().compose(frame0.pos, frame0.quat, new Th.Vector3(1, 1, 1)).invert());
     const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true, frame0 };
     sess.items.set(it.id, it);
+    if (src.srcId) okSources.add(src.srcId);
     return it.id;
   };
   const okSources = new Set();                             // only what really came in counts as an "original" at Apply
-  for (let i = 0; i < plan.roots.length; i++) { const id = await add(plan.roots[i], null); if (id) { sess.rootIds.push(id); okSources.add(plan.rootSource[i]); } }
+  for (const r of plan.roots) { const id = await add(r, null); if (id) sess.rootIds.push(id); }
   sess.sourceIds = [...okSources];
+  if (empty && sess.rootIds.length === 1) { sess.sel = new Set(sess.rootIds); sess.primary = sess.rootIds[0]; }   // what is added lands in the object's folder
   clearStickyStatus('polySession');
   if (!empty && ![...sess.items.values()].some(it => it.kind === 'part')) { setStatus('None of those objects could be converted.', 'warn', 5000); return false; }
   // Saving over the asset needs ALL of it in the editor: a part that did not come in would be read as deleted.
   let noUpdate = plan.reeditBroken || null;
   if (sess.reedit && nativeFailed) { noUpdate = sess.reedit.file; sess.reedit = null; }
   _s = sess;
+  if (!sess.reedit && plan.named && sess.rootIds.length === 1 && sess.items.get(sess.rootIds[0])?.kind === 'folder') sess.rootFolderId = sess.rootIds[0];   // the object's folder
   for (const it of sess.items.values()) if (it.kind === 'part') { _buildPartMesh(it); if (it.frame0) { it.mesh.position.copy(it.frame0.pos); it.mesh.quaternion.copy(it.frame0.quat); it.frame0 = null; } }
   sceneCore.rootGroup.add(sess.group);
   sess.group.updateMatrixWorld(true);                      // the first view frames the parts where the session group puts them
@@ -549,7 +590,8 @@ function _push(label, undo, redo) {
 const _structSnap = () => ({ rootIds: _s.rootIds.slice(), items: [..._s.items.values()].map(it => ({ id: it.id, name: it.name, parent: it.parent, children: it.kind === 'folder' ? it.children.slice() : null })) });
 function _structRestore(snap) {
   _s.rootIds = snap.rootIds.slice();
-  for (const r of snap.items) { const it = _s.items.get(r.id); if (!it) continue; it.name = r.name; it.parent = r.parent; if (it.kind === 'folder') it.children = r.children.slice(); else if (it.mesh) it.mesh.name = r.name; }
+  const keepName = !_s.reedit ? _s.rootFolderId : null;      // the object's own name is not undone (see _assetName)
+  for (const r of snap.items) { const it = _s.items.get(r.id); if (!it) continue; if (r.id !== keepName) it.name = r.name; it.parent = r.parent; if (it.kind === 'folder') it.children = r.children.slice(); else if (it.mesh) it.mesh.name = r.name; }
 }
 /** Run a tree change with one undo entry (before / after structure snapshots). */
 function _treeOp(label, fn) {
@@ -578,6 +620,7 @@ export function polySelect(ids, { add = false, toggle = false } = {}) {
 export function polyRename(id, name) {
   const it = _s?.items.get(id); const n = String(name || '').trim();
   if (!it || !n || n === it.name) return false;
+  if (!_s.reedit && it.id === _s.rootFolderId) { setPolySessionName(n); return true; }   // the object's folder: its name IS the asset's name
   return _treeOp('Rename', () => { it.name = n; if (it.mesh) it.mesh.name = n; });
 }
 
@@ -589,8 +632,10 @@ export function polyNewFolder() {
     const order = [];                                      // the tree, top to bottom
     const walk = (x) => { order.push(x); const n = _s.items.get(x); if (n.kind === 'folder') n.children.forEach(walk); };
     _s.rootIds.forEach(walk);
-    const tops = order.filter(x => sel.has(x) && !_hasSelectedAncestor(x, sel));   // what gets wrapped: top-most only, in tree order
-    const parent = tops.length ? (_s.items.get(tops[0]).parent || null) : null;
+    let tops = order.filter(x => sel.has(x) && !_hasSelectedAncestor(x, sel));   // what gets wrapped: top-most only, in tree order
+    const root = !_s.reedit ? _rootFolder() : null;
+    if (root && tops.includes(root.id)) tops = [];          // the object's own folder is never wrapped: a new folder goes INSIDE it
+    const parent = tops.length ? (_s.items.get(tops[0]).parent || null) : (root?.id || null);
     const it = { id: `f${(++_s.seq).toString(36)}`, kind: 'folder', name: 'Folder', parent, children: [], uid: _newUid(), frame: { q: new (T().Quaternion)(), p: null } };
     _s.items.set(it.id, it); id = it.id;
     const listOf = () => (parent ? _s.items.get(parent).children : _s.rootIds);
@@ -600,7 +645,7 @@ export function polyNewFolder() {
     listOf().splice(at, 0, it.id);
     for (const x of tops) { _s.items.get(x).parent = it.id; it.children.push(x); }
     _s.group.updateWorldMatrix(true, true);
-    it.frame.p = _pivotLocal(it) || new (T().Vector3)();   // its pivot: the middle of what it wraps (an empty folder: the origin) — fixed from here on
+    it.frame.p = _pivotLocal(it);                          // its pivot: the middle of what it wraps, fixed from here on (an empty folder gets it from the first thing put in it)
   });
   if (id) { _s.sel = new Set([id]); _s.primary = id; _syncScene(); _emit('select'); }
   return id;
@@ -711,7 +756,7 @@ export function polyAddPrimitive(kind) {
   let id = null;
   const ok = _treeOp(`Add ${label.toLowerCase()}`, () => {
     const sel = _s.primary && alive0.has(_s.primary) ? _s.items.get(_s.primary) : null;   // lands in the selected folder, or right after the selected part
-    const parent = sel ? (sel.kind === 'folder' ? sel.id : (sel.parent || null)) : null;
+    const parent = sel ? (sel.kind === 'folder' ? sel.id : (sel.parent || null)) : (_rootFolder()?.id || null);   // nothing selected: in the object's folder
     const it = { id: `p${(++_s.seq).toString(36)}`, kind: 'part', name, parent, poly, color: [0.75, 0.79, 0.83], mesh: null, uid: _newUid() };
     _s.items.set(it.id, it); id = it.id;
     _buildPartMesh(it);
@@ -719,6 +764,8 @@ export function polyAddPrimitive(kind) {
     const list = parent ? _s.items.get(parent).children : _s.rootIds;
     const k2 = sel && sel.kind !== 'folder' ? list.indexOf(sel.id) : -1;
     list.splice(k2 >= 0 ? k2 + 1 : list.length, 0, it.id);
+    const f = parent ? _s.items.get(parent) : null;
+    if (f && !f.frame.p) { _s.group.updateWorldMatrix(true, true); f.frame.p = _pivotLocal(f); }   // an empty folder gets its pivot from the first thing put in it: the middle of it
   });
   if (!ok || !id) return null;
   _s.sel = new Set([id]); _s.primary = id; _syncScene(); _emit('select');
@@ -1633,9 +1680,9 @@ export async function applyPolySession() {
       return await _applyNew({ oldModel: 'keep' });
     }
     if (![..._aliveIds()].some(id => _s.items.get(id).kind === 'part')) { setStatus('There is nothing in the tree to save — add a primitive first.', 'warn', 5000); return false; }
-    const name = await panel.askPolyName({ name: _s.name });
+    const name = await panel.askPolyName({ name: _assetName() });
     if (!_s || !name) return false;
-    _s.name = _safeName(name);
+    setPolySessionName(_safeName(name));                     // the file, the model and the object's folder carry the same name
     return await _applyNew();
   } finally { if (_s) _s.asking = false; }
 }
