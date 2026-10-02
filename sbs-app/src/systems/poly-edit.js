@@ -384,9 +384,12 @@ const _target = {
   // where the selection's middle is: from the world's origin, or from the object's own pivot (parent)
   panelFrame(mode) {
     const Th = T(); if (!_ed || mode === 'local') return null;
-    if (mode === 'parent') return { pos: _ed.mesh.getWorldPosition(new Th.Vector3()), quat: _ed.mesh.getWorldQuaternion(new Th.Quaternion()), name: 'the object' };
-    return { pos: new Th.Vector3(), quat: new Th.Quaternion(), name: 'the world' };
+    const w = _ed.host.worldFrame?.() || null;              // a host may have a world of its own (the Poly Editor: the asset)
+    if (mode === 'parent') return { pos: _ed.mesh.getWorldPosition(new Th.Vector3()), quat: _ed.mesh.getWorldQuaternion(new Th.Quaternion()), scale: w?.scale || 1, name: 'the object' };
+    return w || { pos: new Th.Vector3(), quat: new Th.Quaternion(), name: 'the world' };
   },
+  worldQuat() { return _ed?.host?.worldFrame?.()?.quat || null; },
+  panelUnit() { return _ed?.host?.worldFrame?.()?.scale || 1; },
   onSpaceChange(mode) { if (_ed) _ed.space = mode; },   // the user's choice (L / the badge) survives hide + show
   getWorldPos() { return _ed ? _centroidWorld(_selVertexIds()) : null; },
   getWorldQuat(mode = 'local') {

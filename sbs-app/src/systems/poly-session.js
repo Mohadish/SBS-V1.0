@@ -42,7 +42,7 @@ import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEd
 import { sceneGlb } from '../io/glb-write.js';
 import { isEditing as overlayIsEditing, setEditingMode as overlaySetEditing } from './overlay.js';
 import { sourceMatrixOfModel } from '../core/transforms.js';
-import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, polyAssetRemovalBlockers, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
+import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
 import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's colours, used (and added to) from the editor
 
@@ -746,6 +746,7 @@ function _partHost(id) {
   const sid = _s.sid;
   return {
     key: `part:${sid}:${id}`, partId: id,
+    worldFrame() { return _s && _s.sid === sid ? _sessionFrame() : null; },   // the editor's world, for the vertices / faces gizmo too
     get mesh() { return _s && _s.sid === sid ? (_s.items.get(id)?.mesh || null) : null; },
     alive() { return !!_s && _s.sid === sid && _aliveIds().has(id); },
     getPoly() { const p = _s?.items.get(id); return p ? clonePoly(p.poly) : null; },
@@ -802,16 +803,18 @@ export function setPolyView(view, { fit = true, selectionOnly = false } = {}) {
     if (sceneCore.getStandardView?.()) sceneCore._exitStandardView?.();         // back to the perspective lens first
     if (view === 'persp') {
       if (box) {
-        const c = box.getCenter(new Th.Vector3()), dir = new Th.Vector3(1, 0.75, 1).normalize();
+        // V0.3.5.23 — the views are the ASSET's (the editor's world): a model the step laid on its side opens upright
+        const gq = _groupQuat(), up = new Th.Vector3(0, 1, 0).applyQuaternion(gq);
+        const c = box.getCenter(new Th.Vector3()), dir = new Th.Vector3(1, 0.75, 1).normalize().applyQuaternion(gq);
         const pos = c.clone().addScaledVector(dir, Math.max(box.getSize(new Th.Vector3()).length(), 1) * 2);
-        const q = new Th.Quaternion().setFromRotationMatrix(new Th.Matrix4().lookAt(pos, c, new Th.Vector3(0, 1, 0)));
+        const q = new Th.Quaternion().setFromRotationMatrix(new Th.Matrix4().lookAt(pos, c, up));
         const fov = cam.fov < 5 ? (_s.fovPersp || 35) : cam.fov;
-        sceneCore.applyCameraState({ position: [pos.x, pos.y, pos.z], quaternion: [q.x, q.y, q.z, q.w], pivot: [c.x, c.y, c.z], up: [0, 1, 0], fov, orbitPivot: null });
+        sceneCore.applyCameraState({ position: [pos.x, pos.y, pos.z], quaternion: [q.x, q.y, q.z, q.w], pivot: [c.x, c.y, c.z], up: [up.x, up.y, up.z], fov, orbitPivot: null });
         if (fit) sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.3), 0);
       }
     } else {
       if (box && fit) sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.3), 0);   // frame it in the current lens …
-      sceneCore.applyStandardView(view, 0);                                                // … then look along the axis, flat
+      sceneCore.applyStandardView(view, 0, { frameQuat: _groupQuat() });                   // … then look along the ASSET's axis, flat
     }
   } catch (err) { console.warn('[poly session] view', err); }
   _s.view = view;
@@ -826,7 +829,7 @@ export function polyFit() {
     const std = sceneCore.getStandardView?.();
     if (std) sceneCore._exitStandardView?.();              // frame in the perspective lens, then go flat again (keeps the lens to return to)
     sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.3), 0);
-    if (std) sceneCore.applyStandardView(std, 0);
+    if (std) sceneCore.applyStandardView(std, 0, { frameQuat: _groupQuat() });
   } catch (err) { console.warn('[poly session] fit', err); }
   sceneCore.requestRender?.(300);
 }
@@ -866,6 +869,19 @@ function _pivotLocal(it) {
   return box ? _s.group.worldToLocal(box.getCenter(new (T().Vector3)())) : null;
 }
 const _groupQuat = () => _s.group.getWorldQuaternion(new (T().Quaternion)());
+/**
+ * The editor's own WORLD (V0.3.5.23, his answer: "relative to the asset"): the asset's origin, axes and
+ * units — the session group. Editing an asset whose model a step has moved / turned, a part on the
+ * asset's origin reads 0, 0, 0 from whichever step the editor was opened. A plain session's group is the
+ * scene itself, so there it is simply the scene's world.
+ */
+function _sessionFrame() {
+  const Th = T();
+  _s.group.updateWorldMatrix(true, false);
+  const pos = new Th.Vector3(), quat = new Th.Quaternion(), sc = new Th.Vector3();
+  _s.group.matrixWorld.decompose(pos, quat, sc);
+  return { pos, quat, scale: Math.max(Math.abs(sc.x), Math.abs(sc.y), Math.abs(sc.z)) || 1, name: _s.reedit ? "the asset's origin" : 'the world' };
+}
 /** The ONE item the selection is (a part, or a folder with everything in it) — null for a multi-selection. */
 function _singleTop() {
   if (!_s) return null;
@@ -897,16 +913,19 @@ const _target = {
   // folder the object sits in (no folder = the world is its folder). LOCAL = the object itself: nothing to read.
   panelFrame(mode) {
     const Th = T(); if (!_s || mode === 'local') return null;
+    const w = _sessionFrame();
     if (mode === 'parent') {
       const sub = _subject(), f = sub ? _nearestFolder(sub) : null, p = f ? _pivotLocal(f) : null;
-      if (f && p) return { pos: _s.group.localToWorld(p), quat: _groupQuat().multiply(f.frame.q), name: `“${f.name}”` };
+      if (f && p) return { pos: _s.group.localToWorld(p), quat: w.quat.clone().multiply(f.frame.q), scale: w.scale, name: `“${f.name}”` };
     }
-    return { pos: new Th.Vector3(), quat: new Th.Quaternion(), name: 'the world' };
+    return w;                                               // the world — and the "folder" of what sits in no folder
   },
   panelWorldQuat() { return _s && _subject() ? _target.getWorldQuat('local') : null; },
+  worldQuat() { return _s ? _groupQuat() : null; },        // the gizmo's WORLD axes = the asset's
+  panelUnit() { return _s ? _sessionFrame().scale : 1; },
   panelNudge: true,
   panelTitle: () => { if (!_s) return 'Poly Editor'; const one = _singleTop(), n = _selectedPartIds().length; return `${_s.pivotMode ? 'Pivot of ' : ''}${one ? one.name : `${n} parts`}`; },
-  panelHint: () => (_s?.pivotMode ? 'Pivot mode: only the pivot moves, the geometry stays where it is.' : "LOCAL = the object's own axes · PARENT = its folder's axes (no folder = the world)."),
+  panelHint: () => (_s?.pivotMode ? 'Pivot mode: only the pivot moves, the geometry stays where it is.' : `${_s?.reedit ? "WORLD = the asset's own origin and axes · " : ''}PARENT = its folder's (no folder = the world) · LOCAL = the object's own axes.`),
   onSpaceChange(m) { if (_s) _s.space = m; },
   getWorldPos() {
     if (!_s) return null;
@@ -922,7 +941,7 @@ const _target = {
     const Th = T(); if (!_s) return new Th.Quaternion();
     const sub = _subject(); if (!sub) return new Th.Quaternion();
     const gq = _groupQuat();
-    if (mode === 'parent') { const f = _nearestFolder(sub); return f ? gq.multiply(f.frame.q) : new Th.Quaternion(); }
+    if (mode === 'parent') { const f = _nearestFolder(sub); return f ? gq.multiply(f.frame.q) : gq; }   // no folder: the editor's world is its folder
     const po = _s.xf?.pivotOnly; if (po) return gq.multiply(po.quat);
     return sub.kind === 'part' ? sub.mesh.getWorldQuaternion(new Th.Quaternion()) : gq.multiply(sub.frame.q);
   },
@@ -1582,16 +1601,14 @@ function _assetLayout(space = 'scene') {
 }
 
 /**
- * APPLY — always asks (his rule, V0.3.5.17).
+ * APPLY — two outcomes and no follow-up questions (his decision, V0.3.5.23: "we'll just have replace and
+ * save as new asset; if you want more, you resolve it in the application").
  * Editing an asset that is already in the project:
- *   REPLACE (the default)  the edit is saved over the file and the same model is updated in every step —
- *                          a head-to-head swap, no question about "the old one";
- *   SAVE AS A COPY         asks for the copy's name and what happens to the old model:
- *                            swap    the project uses the copy IN PLACE of the old model (same node, same
- *                                    place in every step's tree — the same reconcile, written to a new file;
- *                                    the old file is not touched),
- *                            keep    the copy is added beside the old model,
- *                            remove  the copy is added and the old model is removed from the scene.
+ *   REPLACE (the default)  the edit is saved over the file and the same model is updated in every step;
+ *   SAVE AS A NEW ASSET    asks only for a name; the new .glb is added to the scene as a separate model
+ *                          where it stands. The old model is not touched, nothing follows, nothing is
+ *                          removed — taking its place, following an object, archiving or deleting the old
+ *                          one are things the user does in the project (Files ▸ Browse, Follow, Archive).
  * Anything else (objects → a new asset): asks for the name, writes the .glb, loads it as a model.
  */
 export async function applyPolySession() {
@@ -1610,21 +1627,10 @@ export async function applyPolySession() {
       const how = await panel.askPolySaveHow({ file: re.file, canReplace: plan.ok, whyNot: plan.ok ? '' : plan.reason, changed });
       if (!_s || !how) return false;
       if (how === 'replace') return await _applyUpdate();
-      const copy = await panel.askPolyCopy({ file: re.file, name: `${re.file.replace(/\.glb$/i, '')}-copy` });
-      if (!_s || !copy) return false;
-      if (copy.action === 'remove') {
-        // Removing must leave nothing behind. With something attached to its parts, or parts that sit
-        // outside its model row, the delete would leave ghost boxes / stray parts — say so BEFORE writing.
-        const b = polyAssetRemovalBlockers(re.modelId);
-        if (b.attached.length || b.outside) {
-          const why = [b.attached.length ? `${b.attached.length} thing${b.attached.length === 1 ? ' is' : 's are'} attached to its parts (notes, shapes, cable ends, followers)` : '', b.outside ? `${b.outside} of its parts sit outside its model row in the tree` : ''].filter(Boolean).join(' and ');
-          setStatus(`${re.file} cannot simply be removed: ${why}. Choose Swap (everything stays on the same parts) or Keep both. Nothing was saved.`, 'warn', 14000);
-          return false;
-        }
-      }
-      _s.name = _safeName(copy.name);
-      if (copy.action === 'swap') return await _applyUpdate({ swapName: _s.name });
-      return await _applyNew({ oldModel: copy.action === 'remove' ? 'remove' : 'keep' });
+      const name = await panel.askPolyName({ name: `${re.file.replace(/\.glb$/i, '')}-copy`, keeps: re.file });
+      if (!_s || !name) return false;
+      _s.name = _safeName(name);
+      return await _applyNew({ oldModel: 'keep' });
     }
     if (![..._aliveIds()].some(id => _s.items.get(id).kind === 'part')) { setStatus('There is nothing in the tree to save — add a primitive first.', 'warn', 5000); return false; }
     const name = await panel.askPolyName({ name: _s.name });
@@ -1634,24 +1640,20 @@ export async function applyPolySession() {
   } finally { if (_s) _s.asking = false; }
 }
 
-async function _applyUpdate({ swapName = null } = {}) {
+async function _applyUpdate() {
   const re = _s.reedit;
   const { roots, parts } = _assetLayout('asset');
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
-  let swapPath = null;
-  if (swapName) { swapPath = await _targetPath(swapName); if (!swapPath || !_s) return false; }
-  const opts = swapPath ? { path: swapPath } : {};
-  const plan = planPolyAssetUpdate(re.modelId, parts, opts);
-  if (!plan.ok) { setStatus(`${plan.reason} Save it as a copy instead.`, 'warn', 9000); return false; }
+  const plan = planPolyAssetUpdate(re.modelId, parts);
+  if (!plan.ok) { setStatus(`${plan.reason} Save it as a new asset instead.`, 'warn', 9000); return false; }
   const panel = await import('../ui/poly-editor-panel.js');
   if (plan.attached.length) { await panel.showPolyBlocked(plan.attached, re.file); return false; }
   _s.applying = true;
   const name = _safeName(_s.name), others = _s.sourceIds.filter(id => id !== re.modelId);
-  const outFile = swapPath ? swapPath.split(/[\\/]/).pop() : re.file;
   try {
-    setStickyStatus(`⬚ Poly Editor — ${swapPath ? `saving ${outFile}` : `updating ${re.file}`}…`, 'info', 'polySession');
-    const glb = sceneGlb({ roots, name: outFile.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1 } });
-    const r = await updatePolyAssetInPlace(re.modelId, parts, glb, opts);   // the session stays open until this has worked
+    setStickyStatus(`⬚ Poly Editor — updating ${re.file}…`, 'info', 'polySession');
+    const glb = sceneGlb({ roots, name: re.file.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1 } });
+    const r = await updatePolyAssetInPlace(re.modelId, parts, glb);   // the session stays open until this has worked
     if (!r.ok) {
       if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
       if (r.reason === 'attached') { await panel.showPolyBlocked(r.attached, re.file); return false; }
@@ -1661,9 +1663,7 @@ async function _applyUpdate({ swapName = null } = {}) {
     _teardown('applied');
     try { state.setSelection?.(re.modelId, new Set([re.modelId])); } catch { /* fine */ }
     const what = r.added || r.gone || r.moved ? ` (${[r.added ? `+${r.added} new` : '', r.gone ? `−${r.gone} removed` : '', r.moved ? `${r.moved} moved` : ''].filter(Boolean).join(', ')})` : '';
-    setStatus(r.swapped
-      ? `The project now uses ${r.file} in place of ${re.file} — the same model, in every step${what}. ${re.file} was not changed. Undo history was cleared.`
-      : `Replaced ${re.file} — the same model, in every step${what}.${r.backup ? ' The previous version is in backups/.' : ''} Undo history was cleared.`, 'success', 10000);
+    setStatus(`Replaced ${re.file} — the same model, in every step${what}.${r.backup ? ' The previous version is in backups/.' : ''} Undo history was cleared.`, 'success', 10000);
     if (others.length) {
       // A picked container that still holds a part of this asset (the user parked it there) is not an
       // "original": archiving it would hide the part that was just updated. Only its other content is.
@@ -1729,12 +1729,8 @@ async function _applyNew({ oldModel = null } = {}) {
       if (archUids.length && modelNode.assetId) { try { actions.archiveNodes(archUids.map(u => polyPartNodeId(modelNode.assetId, u, true))); } catch (err) { console.warn('[poly session] re-archive', err); } }
     }
     if (native && oldModel) {
-      // "Save as a copy" already answered for the old model; only objects merged in from outside it are still a question.
-      if (oldModel === 'remove') {
-        try { actions.deleteTopLevelAssembly(native.modelId); } catch (err) { console.warn('[poly session] remove the old model', err); }
-        const left = strays.filter(id => state.get('nodeById')?.has(id));   // (checked before saving: there should be none)
-        if (left.length) { try { actions.archiveNodes(left); } catch (err) { console.warn('[poly session] archive strays', err); } }
-      }
+      // A new asset made from an asset that is in the project: the old model is left exactly as it is
+      // (V0.3.5.23). Only objects merged in from OUTSIDE it are still asked about.
       const others = sourceIds.filter(id => id !== native.modelId);
       if (others.length) await _settleOriginals(others, name, modelNode.id, askPolyOriginals);
       return true;

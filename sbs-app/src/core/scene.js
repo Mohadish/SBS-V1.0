@@ -1241,7 +1241,11 @@ export class SceneCore extends Emitter {
     const dist = Math.max(distForFrame(H, fov, this.camera.zoom), 1e-4);
 
     const up  = new THREE.Vector3(...V.up);
-    const pos = focus.clone().addScaledVector(new THREE.Vector3(...V.eye), dist);
+    const eye = new THREE.Vector3(...V.eye);
+    // ⬚ V0.3.5.23 — opts.frameQuat: "top / front / …" of a frame that is not the scene's (the Poly Editor
+    // editing an asset whose model the step has turned: its Front is the ASSET's front). Absent = the scene's.
+    if (opts.frameQuat) { eye.applyQuaternion(opts.frameQuat); up.applyQuaternion(opts.frameQuat); }
+    const pos = focus.clone().addScaledVector(eye, dist);
     const q = new THREE.Quaternion().setFromRotationMatrix(
       new THREE.Matrix4().lookAt(pos, focus, up));
     return {
@@ -1259,8 +1263,8 @@ export class SceneCore extends Emitter {
    * viewport instead (ui/standard-views.js), because a flight from Top to Left
    * is a long way round that tells you nothing. Pass a duration to fly.
    */
-  applyStandardView(view, durationMs = 0) {
-    const st = this.standardViewState(view);
+  applyStandardView(view, durationMs = 0, opts = {}) {
+    const st = this.standardViewState(view, opts);
     if (!st) return Promise.resolve();
     const prevFov = this._stdView ? this._stdViewFov : this.camera.fov;
     const p = this.animateCameraTo(st, durationMs, 'smooth');   // clears _stdView

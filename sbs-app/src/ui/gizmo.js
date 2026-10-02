@@ -168,7 +168,7 @@ class GizmoController {
     if (this._cableTarget) {
       const cel = this._dragEl;
       if (cel.type === 'translate') {
-        const worldD = this._axisVec(cel.axis).clone().multiplyScalar(value);
+        const worldD = this._axisVec(cel.axis).clone().multiplyScalar(value * (this._cableTarget.panelUnit?.() || 1));
         this._cableTarget.applyCumulativeDelta(worldD);
         this._lastAmount = value;
         return true;
@@ -751,8 +751,10 @@ class GizmoController {
         // axes so the visual matches the world drag axes (was always the point's
         // surface frame → gizmo looked tilted at a "weird angle"). LOCAL toggle
         // restores the surface frame.
+        // V0.3.5.23 — a target may have a WORLD of its own (target.worldQuat(): the Poly Editor's world is the
+        // asset's origin + axes, wherever the step has put the model). Without it: the scene's axes.
         const q = this._spaceMode === 'world'
-          ? null
+          ? (this._cableTarget.worldQuat ? this._cableTarget.worldQuat() : null)
           : (this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat(this._spaceMode) : null);
         if (q) {
           this._group.quaternion.copy(q);
@@ -1237,8 +1239,9 @@ class GizmoController {
         const amount = delta.dot(axVec);
         const worldD = axVec.clone().multiplyScalar(amount);
         this._cableTarget.applyCumulativeDelta(worldD);
-        this._lastAmount = amount;
-        if (this._onDragEvent) this._onDragEvent('move', { type: 'translate', axis: el.axis, value: amount, node: null, source: 'mouse' });
+        const u = this._cableTarget.panelUnit?.() || 1;      // V0.3.5.23 — what is SHOWN is in the target's own units (what is applied is not touched)
+        this._lastAmount = amount / u;
+        if (this._onDragEvent) this._onDragEvent('move', { type: 'translate', axis: el.axis, value: amount / u, node: null, source: 'mouse' });
       } else if (el.type === 'plane') {
         const delta   = curr.clone().sub(this._startWorld);
         const [a, b]  = el.axis.split('');
@@ -1248,8 +1251,9 @@ class GizmoController {
         const worldD  = axA.clone().multiplyScalar(amA)
                           .add(axB.clone().multiplyScalar(amB));
         this._cableTarget.applyCumulativeDelta(worldD);
-        this._lastAmount = { a: amA, b: amB };
-        if (this._onDragEvent) this._onDragEvent('move', { type: 'plane', axis: el.axis, value: { axisA: a, axisB: b, a: amA, b: amB }, node: null, source: 'mouse' });
+        const u = this._cableTarget.panelUnit?.() || 1;
+        this._lastAmount = { a: amA / u, b: amB / u };
+        if (this._onDragEvent) this._onDragEvent('move', { type: 'plane', axis: el.axis, value: { axisA: a, axisB: b, a: amA / u, b: amB / u }, node: null, source: 'mouse' });
       } else if (el.type === 'rotate' && this._cableTarget.applyRotateAroundAxis) {
         const center = new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
         const rel = curr.clone().sub(center);
@@ -1514,7 +1518,7 @@ class GizmoController {
     // local + pivot space modes both align gizmo handles with the
     // gizmo's reference frame (parent or pivot, per pivotEnabled).
     // World stays identity → axes are world.
-    if (this._spaceMode !== 'world') {
+    if (this._spaceMode !== 'world' || this._cableTarget?.worldQuat) {   // (a target's own world has axes too)
       // During a drag, prefer the snapshot reference so axes stay
       // stable even when the pivot/object rotates underneath us.
       const refQ = (this._dragging && this._startRefQuat)
@@ -1540,7 +1544,7 @@ class GizmoController {
     // drag-lock pose matches the world drag axes; LOCAL → the point's surface frame.
     if (this._cableTarget) {
       const T = window.THREE;
-      if (this._spaceMode === 'world') return T ? new T.Quaternion() : null;
+      if (this._spaceMode === 'world') return (this._cableTarget.worldQuat ? this._cableTarget.worldQuat() : null) || (T ? new T.Quaternion() : null);
       const q = this._cableTarget.getWorldQuat ? this._cableTarget.getWorldQuat(this._spaceMode) : null;
       return q || null;
     }
@@ -1870,7 +1874,7 @@ class GizmoController {
     if (!P) return out;
     out.frame = f; out.P = P; out.name = f.name || '';
     const inv = f.quat.clone().invert();
-    const v = P.clone().sub(f.pos).applyQuaternion(inv);
+    const v = P.clone().sub(f.pos).applyQuaternion(inv).divideScalar(f.scale || 1);   // in the frame's own units
     out.pos = [v.x, v.y, v.z];
     const Q = t.panelWorldQuat ? t.panelWorldQuat() : null;
     if (Q) {
@@ -1908,7 +1912,7 @@ class GizmoController {
     if (key[0] === 'm') {
       if (!s.pos) { this._nudgeTarget(key, value); return; }
       const np = s.pos.slice(); np[i] = value;
-      const d = new T.Vector3(np[0], np[1], np[2]).applyQuaternion(s.frame.quat).add(s.frame.pos).sub(s.P);
+      const d = new T.Vector3(np[0], np[1], np[2]).multiplyScalar(s.frame.scale || 1).applyQuaternion(s.frame.quat).add(s.frame.pos).sub(s.P);
       if (d.lengthSq() < 1e-20) return;
       t.beginMove?.(); t.applyCumulativeDelta(d); t.commitMove?.();
     } else {
@@ -1942,7 +1946,7 @@ class GizmoController {
       t.commitRotate?.();
     } else {
       t.beginMove?.();
-      t.applyCumulativeDelta(axis.clone().multiplyScalar(value));
+      t.applyCumulativeDelta(axis.clone().multiplyScalar(value * (t.panelUnit?.() || 1)));   // an amount in the target's own units
       t.commitMove?.();
     }
     this._tick();
