@@ -40,7 +40,7 @@ import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEd
 import { sceneGlb } from '../io/glb-write.js';
 import { isEditing as overlayIsEditing, setEditingMode as overlaySetEditing } from './overlay.js';
 import { sourceMatrixOfModel } from '../core/transforms.js';
-import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
+import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, polyAssetRemovalBlockers } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
 
 const T = () => window.THREE;
@@ -88,7 +88,7 @@ export function polySessionInfo() {
 export function setPolySessionName(name) { if (_s) { _s.name = String(name || '').trim() || 'poly-asset'; } }
 
 // ── start ────────────────────────────────────────────────────────────────────
-function _collectSources(nodeIds) {
+function _collectSources(nodeIds, opts = {}) {
   const nodeById = state.get('nodeById');
   const picked = new Set(nodeIds || []);
   const tops = [];                                         // top-most selected only
@@ -128,6 +128,43 @@ function _collectSources(nodeIds) {
     const root = state.get('treeData'); let parent = null;
     (function walk(x) { if (parent || !x?.children) return; if (x.children.includes(n)) { parent = x; return; } x.children.forEach(walk); })(root);
     if (parent?.type === 'model' && parent.children.length === 1 && !tops.includes(parent)) tops[i] = parent;
+  }
+  // ⬚ V0.3.5.17 — anything picked INSIDE an asset the Poly Editor wrote (a part, a folder) opens the WHOLE
+  // asset: that is the unit being edited — it is one file. (Parts of two different assets stay just parts.)
+  {
+    const ownerOf = new Map();
+    for (const n of nodeById?.values() || []) {
+      if (n.type !== 'model' || !polyAssetOfModel(n)) continue;
+      ownerOf.set(n.id, n); ownerOf.set(n.polyManifest.root, n);
+      for (const id of Object.keys(n.polyManifest.nodes)) ownerOf.set(id, n);
+    }
+    // A click in the viewport selects the CONTAINER of what was clicked (a locked wrapper made by "Make
+    // transformable" or by Follow Object) — a folder that is not the asset's own. So a picked folder is
+    // also resolved downwards (it holds parts of one asset and no other model's parts), and the mesh that
+    // was actually right-clicked (opts.hitId) decides for a folder that holds the asset AND something else.
+    const hitOwner = opts.hitId ? ownerOf.get(opts.hitId) : null;
+    const holds = (n, id) => { let f = false; (function w(x) { if (f || !x) return; if (x.id === id) { f = true; return; } (x.children || []).forEach(w); })(n); return f; };
+    const ownerOfTop = (n) => {
+      const own = ownerOf.get(n.id); if (own) return own;
+      if (hitOwner && holds(n, opts.hitId)) return hitOwner;
+      if (n.type !== 'folder') return null;
+      let o = null, mixed = false;
+      (function walk(x) {
+        for (const c of x.children || []) {
+          const m = ownerOf.get(c.id);
+          if (m) { if (o && o !== m) mixed = true; o = m; if (c === m) continue; }                       // the model itself: its subtree is its own
+          else if (c.type === 'mesh' || c.type === 'model' || c.type === 'replaceModel') mixed = true;   // a part of something else: this folder is not "the asset"
+          walk(c);
+        }
+      })(n);
+      return mixed ? null : o;
+    };
+    const topOwner = new Map(tops.map(n => [n, ownerOfTop(n)]));
+    const owners = new Set([...topOwner.values()].filter(Boolean));
+    if (owners.size === 1) {
+      const m = [...owners][0], rest = tops.filter(n => topOwner.get(n) !== m);
+      tops.length = 0; tops.push(m, ...rest);
+    }
   }
   // Exactly ONE asset of the Poly Editor in the selection = that asset is being re-edited (Apply can save over it).
   const polyModels = tops.filter(n => polyAssetOfModel(n));
@@ -215,16 +252,17 @@ function _sameExtent(poly, geometry) {
   } catch { return false; }
 }
 
-export async function startPolySession(nodeIds) {
+/** opts.hitId = the mesh that was right-clicked in the viewport (the selection there is its container). */
+export async function startPolySession(nodeIds, opts = {}) {
   if (_s || _starting) { setStatus('The Poly Editor is already open — Apply or Discard first.', 'warn', 4000); return false; }
   if (state.get('_exporting')) { setStatus('Not while an export is running.', 'warn', 4000); return false; }
   _starting = true;                                        // the conversion below yields: a second start must not slip in
-  try { return await _start(nodeIds); } finally { _starting = false; }
+  try { return await _start(nodeIds, opts); } finally { _starting = false; }
 }
 
-async function _start(nodeIds) {
+async function _start(nodeIds, opts = {}) {
   if (isPolyEditing()) exitPolyEdit();
-  const plan = _collectSources(nodeIds);
+  const plan = _collectSources(nodeIds, opts);
   if (!plan.parts) { setStatus('Nothing in the selection has a mesh the Poly Editor can take.', 'warn', 5000); return false; }
   if (plan.tris > TRI_WARN && !confirm(`These ${plan.parts} objects have ${plan.tris.toLocaleString()} triangles. Converting and editing that much is slow.\n\nGo on?`)) return false;
   const Th = T();
@@ -299,7 +337,7 @@ async function _start(nodeIds) {
   _emit('open');
   setPolyView('persp');
   _hint();
-  setStatus(`Poly Editor: ${[...sess.items.values()].filter(i => i.kind === 'part').length} part(s)${failed ? `, ${failed} could not be converted` : ''}${plan.skipped ? `, ${plan.skipped} skipped (not meshes)` : ''}.${noUpdate ? ` Not every part of ${noUpdate} could come in — this edit can only be saved as a NEW asset.` : ''}`, failed || noUpdate ? 'warn' : 'success', noUpdate ? 11000 : 6000);
+  setStatus(`Poly Editor: ${sess.reedit ? `editing ${sess.reedit.file} (the whole asset) — ` : ''}${[...sess.items.values()].filter(i => i.kind === 'part').length} part(s)${failed ? `, ${failed} could not be converted` : ''}${plan.skipped ? `, ${plan.skipped} skipped (not meshes)` : ''}.${noUpdate ? ` Not every part of ${noUpdate} could come in — this edit can only be saved as a NEW asset.` : ''}`, failed || noUpdate ? 'warn' : 'success', noUpdate ? 11000 : 6000);
   return true;
 }
 
@@ -883,38 +921,75 @@ function _assetLayout(space = 'scene') {
 }
 
 /**
- * APPLY. Re-editing an asset: by default the edit is saved OVER it and the same model in the
- * project is updated (mode 'new' = a new file and a new model instead; the app suggests that
- * itself when the tree was changed — other projects that use the asset would get the new tree).
- * Otherwise: the tree is written as a new .glb into the project and loaded as a model.
+ * APPLY — always asks (his rule, V0.3.5.17).
+ * Editing an asset that is already in the project:
+ *   REPLACE (the default)  the edit is saved over the file and the same model is updated in every step —
+ *                          a head-to-head swap, no question about "the old one";
+ *   SAVE AS A COPY         asks for the copy's name and what happens to the old model:
+ *                            swap    the project uses the copy IN PLACE of the old model (same node, same
+ *                                    place in every step's tree — the same reconcile, written to a new file;
+ *                                    the old file is not touched),
+ *                            keep    the copy is added beside the old model,
+ *                            remove  the copy is added and the old model is removed from the scene.
+ * Anything else (objects → a new asset): asks for the name, writes the .glb, loads it as a model.
  */
-export async function applyPolySession({ mode = 'auto' } = {}) {
-  if (!_s) return false;
-  if (_s.applying) return false;
+export async function applyPolySession() {
+  if (!_s || _s.applying || _s.asking) return false;
   if (isPolyEditing()) exitPolyEdit();
-  if (_s.reedit && mode !== 'new') return _applyUpdate(mode);
-  return _applyNew();
+  _s.asking = true;
+  try {
+    const panel = await import('../ui/poly-editor-panel.js');
+    if (_s.reedit) {
+      const re = _s.reedit;
+      const { roots, parts } = _assetLayout('asset');
+      if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
+      const plan = planPolyAssetUpdate(re.modelId, parts);
+      const d = plan.ok && plan.structureChanged ? plan.diff : null;
+      const changed = d ? [d.added.length ? `${d.added.length} added` : '', d.gone.length ? `${d.gone.length} removed` : '', d.moved.length ? `${d.moved.length} moved to another folder` : ''].filter(Boolean).join(' · ') : '';
+      const how = await panel.askPolySaveHow({ file: re.file, canReplace: plan.ok, whyNot: plan.ok ? '' : plan.reason, changed });
+      if (!_s || !how) return false;
+      if (how === 'replace') return await _applyUpdate();
+      const copy = await panel.askPolyCopy({ file: re.file, name: `${re.file.replace(/\.glb$/i, '')}-copy` });
+      if (!_s || !copy) return false;
+      if (copy.action === 'remove') {
+        // Removing must leave nothing behind. With something attached to its parts, or parts that sit
+        // outside its model row, the delete would leave ghost boxes / stray parts — say so BEFORE writing.
+        const b = polyAssetRemovalBlockers(re.modelId);
+        if (b.attached.length || b.outside) {
+          const why = [b.attached.length ? `${b.attached.length} thing${b.attached.length === 1 ? ' is' : 's are'} attached to its parts (notes, shapes, cable ends, followers)` : '', b.outside ? `${b.outside} of its parts sit outside its model row in the tree` : ''].filter(Boolean).join(' and ');
+          setStatus(`${re.file} cannot simply be removed: ${why}. Choose Swap (everything stays on the same parts) or Keep both. Nothing was saved.`, 'warn', 14000);
+          return false;
+        }
+      }
+      _s.name = _safeName(copy.name);
+      if (copy.action === 'swap') return await _applyUpdate({ swapName: _s.name });
+      return await _applyNew({ oldModel: copy.action === 'remove' ? 'remove' : 'keep' });
+    }
+    const name = await panel.askPolyName({ name: _s.name });
+    if (!_s || !name) return false;
+    _s.name = _safeName(name);
+    return await _applyNew();
+  } finally { if (_s) _s.asking = false; }
 }
 
-async function _applyUpdate(mode) {
+async function _applyUpdate({ swapName = null } = {}) {
   const re = _s.reedit;
   const { roots, parts } = _assetLayout('asset');
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
-  const plan = planPolyAssetUpdate(re.modelId, parts);
-  if (!plan.ok) { setStatus(`${plan.reason} Use "Save as a new asset" instead.`, 'warn', 9000); return false; }
+  let swapPath = null;
+  if (swapName) { swapPath = await _targetPath(swapName); if (!swapPath || !_s) return false; }
+  const opts = swapPath ? { path: swapPath } : {};
+  const plan = planPolyAssetUpdate(re.modelId, parts, opts);
+  if (!plan.ok) { setStatus(`${plan.reason} Save it as a copy instead.`, 'warn', 9000); return false; }
   const panel = await import('../ui/poly-editor-panel.js');
   if (plan.attached.length) { await panel.showPolyBlocked(plan.attached, re.file); return false; }
-  if (plan.structureChanged && mode !== 'update') {
-    const choice = await panel.askPolyTreeChanged({ file: re.file, added: plan.diff.added.length, gone: plan.diff.gone.length, moved: plan.diff.moved.length });
-    if (!_s || !choice) return false;
-    if (choice === 'new') return _applyNew();
-  }
   _s.applying = true;
   const name = _safeName(_s.name), others = _s.sourceIds.filter(id => id !== re.modelId);
+  const outFile = swapPath ? swapPath.split(/[\\/]/).pop() : re.file;
   try {
-    setStickyStatus(`⬚ Poly Editor — updating ${re.file}…`, 'info', 'polySession');
-    const glb = sceneGlb({ roots, name: re.file.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1 } });
-    const r = await updatePolyAssetInPlace(re.modelId, parts, glb);   // the session stays open until this has worked
+    setStickyStatus(`⬚ Poly Editor — ${swapPath ? `saving ${outFile}` : `updating ${re.file}`}…`, 'info', 'polySession');
+    const glb = sceneGlb({ roots, name: outFile.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1 } });
+    const r = await updatePolyAssetInPlace(re.modelId, parts, glb, opts);   // the session stays open until this has worked
     if (!r.ok) {
       if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
       if (r.reason === 'attached') { await panel.showPolyBlocked(r.attached, re.file); return false; }
@@ -923,7 +998,10 @@ async function _applyUpdate(mode) {
     }
     _teardown('applied');
     try { state.setSelection?.(re.modelId, new Set([re.modelId])); } catch { /* fine */ }
-    setStatus(`Updated ${re.file} — the same model, in every step${r.added || r.gone || r.moved ? ` (${[r.added ? `+${r.added} new` : '', r.gone ? `−${r.gone} removed` : '', r.moved ? `${r.moved} moved` : ''].filter(Boolean).join(', ')})` : ''}.${r.backup ? ' The previous version is in backups/.' : ''} Undo history was cleared.`, 'success', 10000);
+    const what = r.added || r.gone || r.moved ? ` (${[r.added ? `+${r.added} new` : '', r.gone ? `−${r.gone} removed` : '', r.moved ? `${r.moved} moved` : ''].filter(Boolean).join(', ')})` : '';
+    setStatus(r.swapped
+      ? `The project now uses ${r.file} in place of ${re.file} — the same model, in every step${what}. ${re.file} was not changed. Undo history was cleared.`
+      : `Replaced ${re.file} — the same model, in every step${what}.${r.backup ? ' The previous version is in backups/.' : ''} Undo history was cleared.`, 'success', 10000);
     if (others.length) {
       // A picked container that still holds a part of this asset (the user parked it there) is not an
       // "original": archiving it would hide the part that was just updated. Only its other content is.
@@ -948,7 +1026,7 @@ async function _applyUpdate(mode) {
   }
 }
 
-async function _applyNew() {
+async function _applyNew({ oldModel = null } = {}) {
   const { roots } = _assetLayout('scene');
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
   _s.applying = true;
@@ -984,6 +1062,17 @@ async function _applyNew() {
         for (const id of native.meshIds) if (all.has(id) && !under.has(id) && nb?.has(id) && !strays.includes(id)) strays.push(id);
       }
       if (archUids.length && modelNode.assetId) { try { actions.archiveNodes(archUids.map(u => polyPartNodeId(modelNode.assetId, u, true))); } catch (err) { console.warn('[poly session] re-archive', err); } }
+    }
+    if (native && oldModel) {
+      // "Save as a copy" already answered for the old model; only objects merged in from outside it are still a question.
+      if (oldModel === 'remove') {
+        try { actions.deleteTopLevelAssembly(native.modelId); } catch (err) { console.warn('[poly session] remove the old model', err); }
+        const left = strays.filter(id => state.get('nodeById')?.has(id));   // (checked before saving: there should be none)
+        if (left.length) { try { actions.archiveNodes(left); } catch (err) { console.warn('[poly session] archive strays', err); } }
+      }
+      const others = sourceIds.filter(id => id !== native.modelId);
+      if (others.length) await _settleOriginals(others, name, modelNode.id, askPolyOriginals);
+      return true;
     }
     await _settleOriginals([...sourceIds, ...strays], name, modelNode.id, askPolyOriginals);
     return true;

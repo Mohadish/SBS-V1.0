@@ -83,21 +83,42 @@ function _attached(oldM, newM, gone) {
   return [...found.values()].map(a => ({ ...a, onName: nameOf(a.on) }));
 }
 
-/** What an update would do, without doing it. */
-export function planPolyAssetUpdate(modelId, parts) {
+const _normPath = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
+
+/**
+ * What an update would do, without doing it. opts.path = write the edit to THAT file and point the
+ * model at it (the project swaps to a copy; the old file is not touched) instead of saving over the old one.
+ */
+export function planPolyAssetUpdate(modelId, parts, opts = {}) {
   const model = _nodeById()?.get(modelId);
   const info = polyAssetOfModel(model);
   if (!info) return { ok: false, reason: 'That model is not an asset of the Poly Editor that can be updated (or its file is unknown).' };
-  const norm = (p) => String(p || '').replace(/\\/g, '/').toLowerCase();
+  const norm = _normPath;
+  const swap = !!opts.path && norm(opts.path) !== norm(info.path);
   let twins = 0;
   for (const n of _nodeById()?.values() || []) {
     if (n.assetId && n.assetId !== info.assetId && !n.missing && (n.type === 'model' || n.type === 'replaceModel') && norm(_assetOf(n.assetId)?.originalPath) === norm(info.path)) twins++;
   }
-  if (twins) return { ok: false, reason: `${info.file} is loaded ${twins + 1} times in this project — saving over it would leave the other cop${twins === 1 ? 'y' : 'ies'} out of date.` };
+  if (twins && !swap) return { ok: false, reason: `${info.file} is loaded ${twins + 1} times in this project — saving over it would leave the other cop${twins === 1 ? 'y' : 'ies'} out of date.` };
   const oldM = model.polyManifest;
   const { manifest: newM, idOf } = _manifestOfParts(info.assetId, oldM.root, parts);
   const diff = diffManifests(oldM, newM);
-  return { ok: true, ...info, model, oldM, newM, idOf, diff, structureChanged: structureChanged(diff), attached: _attached(oldM, newM, diff.gone) };
+  return { ok: true, ...info, model, oldM, newM, idOf, diff, swap, target: swap ? opts.path : info.path, structureChanged: structureChanged(diff), attached: _attached(oldM, newM, diff.gone) };
+}
+
+/**
+ * Would removing this asset's model from the scene leave something behind?
+ * → { attached: what hangs on its parts (live tree, every step, cables, followers), outside: parts that sit outside its model row }
+ */
+export function polyAssetRemovalBlockers(modelId) {
+  const nb = _nodeById(), model = nb?.get(modelId), M = model?.polyManifest;
+  if (!M?.nodes) return { attached: [], outside: 0 };
+  const gone = Object.keys(M.nodes);
+  const attached = _attached(M, makeManifest(M.root, []), gone);
+  const under = new Set();
+  (function w(n) { if (!n) return; under.add(n.id); (n.children || []).forEach(w); })(model);
+  const outside = gone.filter(id => M.nodes[id].k === 'm' && nb.has(id) && !under.has(id)).length;
+  return { attached, outside };
 }
 
 /** A new part's colour: a preset this asset already uses with the same hex, else a new one — its default from now on. */
@@ -159,22 +180,24 @@ function _refreshMeshNode(node, mesh) {
 const _samePoly = (a, b) => { try { return !!a && !!b && JSON.stringify(a) === JSON.stringify(b); } catch { return false; } };
 
 /**
- * Apply ▸ update. parts = what the new file holds; glb = its bytes (ArrayBuffer).
- * → { ok: true, added, gone, moved, reshaped, stepsChanged, backup } | { ok: false, reason, attached? }
+ * Apply ▸ replace (or, with opts.path, ▸ "save a copy and use it in place of the old model").
+ * parts = what the new file holds; glb = its bytes (ArrayBuffer).
+ * → { ok: true, added, gone, moved, reshaped, stepsChanged, backup, file } | { ok: false, reason, attached? }
  */
-export async function updatePolyAssetInPlace(modelId, parts, glb) {
-  const plan = planPolyAssetUpdate(modelId, parts);
+export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
+  const plan = planPolyAssetUpdate(modelId, parts, opts);
   if (!plan.ok) return plan;
   if (plan.attached.length) return { ok: false, reason: 'attached', attached: plan.attached };
   if (steps._animRunning) return { ok: false, reason: 'A step is still animating — try again in a moment.' };
   const nat = window.sbsNative;
   if (!nat?.writeFile) return { ok: false, reason: 'Saving needs the desktop app.' };
-  const { assetId, path, oldM, newM, idOf, diff } = plan;
+  const { assetId, oldM, newM, idOf, diff, swap } = plan;
+  const path = plan.target, newFile = path.split(/[\\/]/).pop();
   steps.flushSync();
 
-  // ── the file: the old one to backups/, the new one in its place ────────────
+  // ── the file: the old one to backups/, the new one in its place (a swap leaves the old file alone) ──
   let backup = null;
-  try {
+  if (!swap) try {
     const old = await nat.readFile(path, 'buffer');
     const dir = subDir('backups');
     if (old?.ok && dir) {
@@ -224,6 +247,13 @@ export async function updatePolyAssetInPlace(modelId, parts, glb) {
     reshaped.add(id);
   }
   for (const { id, name } of diff.renamed) { const node = nb.get(id); if (node) { node.name = name; const o = steps.object3dById.get(id); if (o) o.name = name; } }
+  // A swap to another file: the model row and its inner folder are named after the file — unless the user named them.
+  const relabel = new Map();
+  if (swap) {
+    const oldBase = plan.file.replace(/\.glb$/i, ''), inner = nb.get(newM.root);
+    if (model.name === plan.file) { model.name = newFile; if (outer) outer.name = newFile; relabel.set(modelId, newFile); }
+    if (inner && inner.name === oldBase) { inner.name = newFile.replace(/\.glb$/i, ''); relabel.set(inner.id, inner.name); }
+  }
 
   for (const id of diff.gone) {                              // GONE
     const node = nb.get(id), obj = steps.object3dById.get(id) ?? node?.object3d;
@@ -257,7 +287,10 @@ export async function updatePolyAssetInPlace(modelId, parts, glb) {
   // ── every step ─────────────────────────────────────────────────────────────
   const r = patchSteps(state.get('steps') || [], _reconcileCtx(modelId, oldM, newM, diff, reshaped));
   model.polyManifest = newM;
-  const assets = (state.get('assets') || []).map(a => (a.id === assetId ? { ...a, fileSize: glb.byteLength, lastModified: st?.mtimeMs ? Math.round(st.mtimeMs) : Date.now() } : a));
+  if (relabel.size) for (const s of r.steps) (function w(n) { if (!n) return; if (relabel.has(n.id)) n.name = relabel.get(n.id); (n.children || []).forEach(w); })(s?.snapshot?.tree);   // a spec's name renames the live node when its step is opened
+  const assets = (state.get('assets') || []).map(a => (a.id === assetId
+    ? { ...a, fileSize: glb.byteLength, lastModified: st?.mtimeMs ? Math.round(st.mtimeMs) : Date.now(), ...(swap ? { originalPath: path, relativePath: '', name: newFile } : {}) }
+    : a));
   state.setState({ steps: r.steps, assets, nodeById: buildNodeMap(root) });
 
   // ── the scene: source transform on the new vertices, colours, the active step re-staged from its patched snapshot ──
@@ -268,7 +301,7 @@ export async function updatePolyAssetInPlace(modelId, parts, glb) {
   state.emit('change:treeData', state.get('treeData'));
   undoManager.clear();                                       // the file is overwritten: nothing before this can be undone
   state.markDirty();
-  return { ok: true, added: diff.added.length, gone: diff.gone.length, moved: diff.moved.length, reshaped: reshaped.size, stepsChanged: r.changed, backup };
+  return { ok: true, added: diff.added.length, gone: diff.gone.length, moved: diff.moved.length, reshaped: reshaped.size, stepsChanged: r.changed, backup, file: newFile, swapped: swap };
 }
 
 /**

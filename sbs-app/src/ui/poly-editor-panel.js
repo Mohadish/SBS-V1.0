@@ -66,8 +66,10 @@ function _render() {
 
   const nameRow = el('div', 'display:flex;align-items:center;gap:6px;margin-top:8px;');
   const name = el('input', 'flex:1;min-width:0;padding:6px 8px;border-radius:8px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:13px;');
-  name.id = 'poly-editor-name'; name.value = info.name; name.title = 'The name of the asset (the .glb file and the model in the tree)';
-  name.addEventListener('input', () => setPolySessionName(name.value));
+  name.id = 'poly-editor-name'; name.value = info.reedit ? info.reedit.file : info.name;
+  name.title = info.reedit ? 'The asset being edited. Apply asks: replace it, or save a copy under another name' : 'The name of the asset (the .glb file and the model in the tree) — Apply asks again';
+  if (info.reedit) { name.readOnly = true; name.style.opacity = '.75'; }
+  name.addEventListener('input', () => { if (!info.reedit) setPolySessionName(name.value); });
   name.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === 'Escape') name.blur(); });
   nameRow.append(el('span', 'font-size:12px;opacity:.7;', 'Asset'), name);
   _root.append(nameRow);
@@ -75,18 +77,15 @@ function _render() {
   const act = row(); act.style.marginTop = '8px';
   const green = 'flex:1;background:#14532d;border-color:#22c55e;color:#dcfce7;font-weight:600;';
   if (info.reedit) {
-    // re-editing an asset that is already in the project: saving over it is the default
+    // re-editing an asset that is already in the project: Apply asks — replace it (the default) or save a copy
     act.append(
-      btn(`✔ Apply — update ${info.reedit.file}`, 'Save the edit over this asset: the same file, the same model in the project, in every step', () => applyPolySession(), green),
+      btn('✔ Apply…', `Save the edit: replace ${info.reedit.file} (the same model, updated in every step) or save it as a copy`, () => applyPolySession(), green),
       btn('✕ Discard', 'Close the editor; the project stays exactly as it was', () => discardPolySession()),
     );
     _root.append(act);
-    const alt = row(); alt.style.marginTop = '5px';
-    alt.append(btn('＋ Save as a new asset instead', 'Leave the old asset as it is and write a new .glb (named as above) — a new model in the project', () => applyPolySession({ mode: 'new' }), 'flex:1;'));
-    _root.append(alt);
   } else {
     act.append(
-      btn('✔ Apply — save & load', 'Write the tree as one .glb into the project\'s models folder and load it into the scene', () => applyPolySession(), green),
+      btn('✔ Apply…', 'Name the asset, write the tree as one .glb into the project\'s models folder and load it into the scene', () => applyPolySession(), green),
       btn('✕ Discard', 'Close the editor; the project stays exactly as it was', () => discardPolySession()),
     );
     _root.append(act);
@@ -198,20 +197,57 @@ function _dialog(title, bodyNodes, buttons) {
 }
 const _p = (text) => el('div', 'font-size:13px;line-height:1.45;margin-bottom:8px;', text);
 
+function _nameInput(value) {
+  const input = el('input', 'width:100%;box-sizing:border-box;padding:7px 9px;border-radius:8px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:14px;margin-bottom:6px;');
+  input.value = value || '';
+  input.addEventListener('keydown', (e) => e.stopPropagation());
+  setTimeout(() => { try { input.focus(); input.select(); } catch { /* fine */ } }, 0);
+  return input;
+}
+
 /**
- * The tree of an asset that is already in use was changed → 'new' | 'update' | null.
- * A new version is the suggestion: other projects that use the asset would get the new tree.
+ * Apply on an asset that is already in the project → 'replace' | 'copy' | null.
+ * Replace is the default: the same file, the same model, every step. `changed` = what was done to the tree.
  */
-export function askPolyTreeChanged({ file, added, gone, moved }) {
-  const what = [added ? `${added} added` : '', gone ? `${gone} removed` : '', moved ? `${moved} moved to another folder` : ''].filter(Boolean).join(' · ');
-  return _dialog('You changed the tree of this asset', [
-    _p(`${file}: ${what}.`),
-    _p('In this project the model is brought up to date in every step. Other projects that use this asset get the new tree the next time they open: new parts appear, removed parts disappear. As long as the tree stays the same, they only get the changed shapes.'),
-  ], [
-    ['＋ Save as a new version (the other projects are not touched)', 'new', 'font-weight:600;'],
-    [`✔ Update ${file} anyway`, 'update', ''],
+export function askPolySaveHow({ file, canReplace, whyNot, changed }) {
+  const body = [_p(`You edited ${file}. How should it be saved?`)];
+  if (changed && canReplace) body.push(_p(`You changed its tree (${changed}). Replacing brings this project up to date in every step; other projects that use ${file} get the new tree the next time they open.`));
+  if (!canReplace) body.push(_p(`It cannot be replaced: ${whyNot}`));
+  return _dialog('Save the edit', body, [
+    ...(canReplace ? [[`✔ Replace ${file} — the same model, updated in the project`, 'replace', 'font-weight:600;']] : []),
+    ['＋ Save as a copy…', 'copy', canReplace ? '' : 'font-weight:600;'],
     ['Cancel', null, ''],
   ]);
+}
+
+/** A copy: its name, and what happens to the old model → { action: 'swap' | 'keep' | 'remove', name } | null. */
+export async function askPolyCopy({ file, name }) {
+  const input = _nameInput(name);
+  const action = await _dialog('Save as a copy', [
+    _p('What should the copy be called?'),
+    input,
+    _p(`And the old model (${file})? The file itself is not changed.`),
+  ], [
+    [`⇄ Swap — the project uses the copy in place of ${file} (same place in the tree, every step)`, 'swap', 'font-weight:600;'],
+    [`＋ Keep both — the copy is added beside ${file}`, 'keep', ''],
+    [`🗑 Remove ${file} from the scene — only the copy stays`, 'remove', ''],
+    ['Cancel', null, ''],
+  ]);
+  if (!action) return null;
+  return { action, name: input.value.trim() || name };
+}
+
+/** A new asset: what is it called? → name | null */
+export async function askPolyName({ name }) {
+  const input = _nameInput(name);
+  const ok = await _dialog('Save the asset', [
+    _p('What should this model be called? It is written as one .glb into the project\'s models folder and loaded into the scene.'),
+    input,
+  ], [
+    ['✔ Save & load', 'ok', 'font-weight:600;'],
+    ['Cancel', null, ''],
+  ]);
+  return ok ? (input.value.trim() || name) : null;
 }
 
 /** The update was refused: these hang on parts that were removed in the editor. */
@@ -222,7 +258,7 @@ export function showPolyBlocked(attached, file) {
   return _dialog(`${file} was not changed`, [
     _p('You removed parts that still have something attached to them in the project:'),
     list,
-    _p('Move or delete those in the project first, or keep the parts — or save this edit as a new asset.'),
+    _p('Move or delete those in the project first, or keep the parts — or save the edit as a copy and keep both.'),
   ], [['OK', null, 'justify-content:center;font-weight:600;']]);
 }
 

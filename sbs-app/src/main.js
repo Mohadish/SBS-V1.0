@@ -4760,7 +4760,7 @@ canvas.addEventListener('contextmenu', e => {
       });
     }
     // ⬚ V0.3.5.14 — the selection goes to the Poly Editor (every object becomes an editable poly there).
-    items.push({ label: multiIds.size > 1 ? `⬚ Edit ${multiIds.size} objects in Poly Editor…` : '⬚ Edit in Poly Editor…', action: () => import('./systems/poly-session.js').then(m => m.startPolySession([...multiIds])) });
+    items.push({ label: multiIds.size > 1 ? `⬚ Edit ${multiIds.size} objects in Poly Editor…` : '⬚ Edit in Poly Editor…', action: () => import('./systems/poly-session.js').then(m => m.startPolySession([...multiIds], { hitId: noteMeshId || null })) });
     // ── Archive / Unarchive ─────────────────────────────────────────────
     // Mirrors the tree r-click menu. Toggle is here so the user can lock
     // a node out of the scene without ever opening the tree. Scene root
