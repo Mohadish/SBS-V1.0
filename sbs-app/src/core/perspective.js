@@ -28,6 +28,15 @@ export const WIDE_FOV_DEG = 78;
 
 export const K_ORTHO = Math.tan(ORTHO_FOV_DEG * RAD / 2);
 export const K_WIDE  = Math.tan(WIDE_FOV_DEG  * RAD / 2);
+/**
+ * ⬚ V0.3.5.38 — an even longer lens is allowed for whoever asks for it (the Poly Editor's flat views, where
+ * vertices are lined up against reference pictures: at 0.5° a part as deep as the frame is tall still
+ * converges ~0.9 %, a visible drift). The wheel and the slider still stop at ORTHO_FOV_DEG; isOrtho covers
+ * everything at or below it. Not lower than this: the camera stands ~1150× the frame away at 0.05°, and the
+ * depth buffer's precision falls with that distance.
+ */
+export const MIN_FOV_DEG = 0.05;
+export const K_MIN = Math.tan(MIN_FOV_DEG * RAD / 2);
 
 /** k = tan(fov/2) — the perspective amount of a vertical fov in degrees. */
 export function kOf(fovDeg) {
@@ -47,7 +56,7 @@ export function fovOf(k) {
 export function clampK(k) {
   const v = Number(k);
   if (!Number.isFinite(v)) return K_ORTHO;
-  return Math.min(Math.max(v, K_ORTHO), K_WIDE);
+  return Math.min(Math.max(v, K_MIN), K_WIDE);
 }
 
 /** Same, in degrees — the only place a fov should be clamped. */
@@ -136,7 +145,7 @@ export function stepK(k, notches, speed = 1) {
 
 /** 0 (orthographic) … 1 (widest) — a geometric slider position for k. */
 export function perspectiveFraction(fovDeg) {
-  const k = clampK(kOf(fovDeg));
+  const k = Math.max(clampK(kOf(fovDeg)), K_ORTHO);       // a lens past the flat end sits at the slider's end
   return Math.log(k / K_ORTHO) / Math.log(K_WIDE / K_ORTHO);
 }
 

@@ -996,6 +996,11 @@ function _sessionBox(onlySelected = false) {
   return box.isEmpty() ? null : box;
 }
 
+// ⬚ V0.3.5.38 — the editor's flat views: a ten times longer lens than the project's "orthographic" 0.5°. His
+// finding: at 0.5° vertices far behind still drift against the ones in front (the parallax of a real, if long,
+// lens) — modelling against a reference picture needs them to line up. (A true orthographic camera would
+// change every part of the renderer that reads the camera; see core/perspective.js.)
+const POLY_FLAT_FOV = 0.05;
 export function setPolyView(view, { fit = true, selectionOnly = false } = {}) {
   if (!_s) return;
   const Th = T(); const cam = sceneCore.camera;
@@ -1015,7 +1020,7 @@ export function setPolyView(view, { fit = true, selectionOnly = false } = {}) {
       }
     } else {
       if (box && fit) sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.3), 0);   // frame it in the current lens …
-      sceneCore.applyStandardView(view, 0, { frameQuat: _groupQuat() });                   // … then look along the ASSET's axis, flat
+      sceneCore.applyStandardView(view, 0, { frameQuat: _groupQuat(), fov: POLY_FLAT_FOV });   // … then look along the ASSET's axis, flat
     }
   } catch (err) { console.warn('[poly session] view', err); }
   _s.view = view;
@@ -1031,7 +1036,7 @@ export function polyFit() {
     const std = sceneCore.getStandardView?.();
     if (std) sceneCore._exitStandardView?.();              // frame in the perspective lens, then go flat again (keeps the lens to return to)
     sceneCore.animateCameraTo(sceneCore.fitStateForBox(box, 1.3), 0);
-    if (std) sceneCore.applyStandardView(std, 0, { frameQuat: _groupQuat() });
+    if (std) sceneCore.applyStandardView(std, 0, { frameQuat: _groupQuat(), fov: POLY_FLAT_FOV });
   } catch (err) { console.warn('[poly session] fit', err); }
   sceneCore.requestRender?.(300);
 }
