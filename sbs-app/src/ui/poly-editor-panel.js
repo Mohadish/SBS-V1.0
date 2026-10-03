@@ -8,11 +8,12 @@
  * .glb. Everything here calls systems/poly-session.js; this file only draws.
  */
 import { undoManager } from '../systems/undo.js';
+import state from '../core/state.js';                      // ⬚ V0.3.5.40 — the face-angle setting is the project's
 import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
-  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent,
+  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent, polyNewShape, polyShapeFromFace,
   setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection, polyBakeProjection,
 } from '../systems/poly-session.js';
 import { quadForExtent, quadCoords, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
@@ -201,6 +202,25 @@ function _render(what) {
     sz.append(btn('↺', 'Back to 100 / 100 / 100: the proportions it came with', () => polySetScalePercent([100, 100, 100]), 'padding:4px 7px;'));
     _root.append(sz);
   }
+
+  // ⬚ V0.3.5.40 — shapes: the project's flat-shape tool (draw on a face / on the view, or take a face), extruded in Faces
+  _root.append(section('Shapes'));
+  const shOn = 'background:#1d4ed8;border-color:#60a5fa;color:#fff;', flatView = REF_VIEWS.includes(info.view);
+  const sh = row();
+  sh.append(
+    btn('✏ New shape on a face', 'Click a face of a part (or empty space), then click the corners; click the first corner again (or right-click / Enter) to close it', () => polyNewShape('face'), `flex:1;${info.shapeTool === 'new' ? shOn : ''}`),
+    btn('✏ New shape on the view', flatView ? 'Draw on the flat view you are looking from, through the object\'s centre — whatever geometry is there' : 'Go to a flat view first (Top, Front, Left…)', () => polyNewShape('view'), `flex:1;${flatView ? '' : 'opacity:.5;'}`),
+  );
+  _root.append(sh);
+  const sf = row(); sf.style.marginTop = '5px'; sf.style.alignItems = 'center';
+  sf.append(btn('⬚ Shape from a face', 'Click a face of a part: it and its neighbours within the angle become a flat shape on it', () => polyShapeFromFace(), `flex:1;${info.shapeTool === 'face' ? shOn : ''}`));
+  const ang = el('input', 'width:52px;padding:4px 5px;border-radius:7px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:12px;');
+  ang.type = 'number'; ang.min = '0'; ang.max = '90'; ang.step = '1'; ang.value = String(info.faceAngle); ang.title = 'How far a neighbouring face may turn and still belong to the same face (the project\'s setting too)';
+  ang.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') ang.blur(); });
+  ang.addEventListener('change', () => { const v = Math.max(0, Math.min(90, Number(ang.value) || 0)); state.setState({ shapeFaceAngleThreshold: v }); });
+  sf.append(el('span', 'font-size:12px;opacity:.7;', 'within ±'), ang, el('span', 'font-size:12px;opacity:.7;', '°'));
+  _root.append(sf);
+  _root.append(_note(`Double-click a shape to edit its outline (a corner = delete, an edge = a new corner). To make it a solid: Faces (4), click its face, Shift + drag the gizmo.`));
 
   // ⬚ V0.3.5.18 — primitives made inside the editor: editable polys from the first moment
   _root.append(section('Add'));

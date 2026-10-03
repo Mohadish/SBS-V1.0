@@ -10180,7 +10180,7 @@ function _enterShapeEditAtInstance(instanceId, templateId) {
 // list to the template, ripple instance meshes, and push ONE undo entry
 // per operation. `reason` becomes the undo label.
 state.on('shapeEditor:vertexEdit', ({ templateId, polygons, reason }) => {
-  if (!templateId) return;
+  if (!templateId || String(templateId).startsWith('poly:')) return;   // ⬚ a shape of the Poly Editor: its own (poly-session.js)
   const list = state.get('shapeTemplates') || [];
   const tpl  = list.find(t => t.id === templateId);
   if (!tpl) return;
@@ -10243,7 +10243,7 @@ function _findParentNode(nodeById, childId) {
  * module load — actions.js is imported eagerly from main.js so this lands
  * before the user can possibly start drawing.
  */
-state.on('shapeEditor:commit', (payload) => onShapeEditorCommit(payload));
+state.on('shapeEditor:commit', (payload) => { if (state.get('polySession')) return; onShapeEditorCommit(payload); });   // ⬚ in the Poly Editor a shape becomes a part (poly-session.js)
 
 /**
  * Handle a successful editor commit. Creates a new template (or updates
@@ -11227,6 +11227,8 @@ export function createShapeFromFaceAtClick(clientX, clientY) {
  *   4. Project each loop to plane-local 2D.
  *   5. Sort by polygon area — largest = outer; rest = holes.
  */
+/** ⬚ V0.3.5.40 — the same cross-section for the Poly Editor's "shape from a face" (a hit on one of its parts). */
+export function computeFaceCrossSection(hit, plane) { return _computeFaceCrossSection(hit, plane); }
 function _computeFaceCrossSection(hit, plane) {
   const T = window.THREE;
   const mesh = hit.object;

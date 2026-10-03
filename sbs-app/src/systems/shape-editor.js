@@ -44,6 +44,13 @@
 import { sceneCore }     from '../core/scene.js';
 import state             from '../core/state.js';
 import { xorPolygonList } from './flat-shapes.js';
+import { setStatus }      from '../ui/status.js';
+
+// ⬚ V0.3.5.40 — whoever hosts the editor can say where a click lands (the Poly Editor: its own parts, not the
+// project's meshes). fn(clientX, clientY) → a plane (buildShapePlane) or null = the usual pick.
+let _planePicker = null;
+export function setPlanePicker(fn) { _planePicker = typeof fn === 'function' ? fn : null; }
+export function buildShapePlane(origin, normal, anchorNodeId = null) { return _buildPlane(origin, normal, anchorNodeId); }
 
 // ── Tunables ─────────────────────────────────────────────────────────────
 const SNAP_PIXELS         = 12;     // close-snap radius (screen-space)
@@ -324,34 +331,44 @@ export function onPointerDown(clientX, clientY, button = 0) {
 }
 
 /**
- * Double-click on a vertex selects ALL vertices of the polygon containing
- * that vertex. The whole polygon turns green and Delete / Backspace
- * removes it (rather than just the one vertex).
- *
+ * ⬚ V0.3.5.40 — double-click in EDIT, his ask (the same as the overlay's lines):
+ *   on a corner  → that corner goes (a polygon keeps at least 3);
+ *   on an edge   → a new corner there;
+ *   inside a polygon → the whole polygon is selected (its move / turn / scale gizmo; Delete removes it).
  * Returns true if the editor consumed the event.
  */
 export function onDoubleClick(clientX, clientY) {
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit') return false;
-  const hit = _pickVertex(clientX, clientY, dr);
-  if (!hit) {
-    if (dr.selection?.allVertices) {
-      state.setState({ shapeDrawing: { ...dr, selection: null } });
-      _renderAll();
-    }
-    return false;
-  }
-  state.setState({
-    shapeDrawing: {
-      ...dr,
-      selection: { polyIdx: hit.polyIdx, allVertices: true },
-    },
-  });
-  // Cancel any in-flight single-vertex drag — a polygon-level selection
-  // doesn't drag, only deletes.
   _editDragging = false;
-  _renderAll();
-  return true;
+  const hit = _pickVertex(clientX, clientY, dr);
+  if (hit) {
+    state.setState({ shapeDrawing: { ...dr, selection: { polyIdx: hit.polyIdx, vIdx: hit.vIdx } } });
+    if (!deleteSelectedVertex()) { setStatus('A shape keeps at least three corners.', 'info', 2500); _renderAll(); }
+    return true;
+  }
+  if (_pickEdge(clientX, clientY, dr)) { addPointOnEdge(clientX, clientY); return true; }
+  const p = _projectOntoPlane(clientX, clientY, dr.plane);
+  const polys = _polygons(dr);
+  const idx = p ? polys.findIndex(poly => _pointInRing(p, poly.outer || [])) : -1;
+  if (idx >= 0) {
+    state.setState({ shapeDrawing: { ...dr, selection: { polyIdx: idx, allVertices: true } } });
+    _renderAll();
+    return true;
+  }
+  if (dr.selection?.allVertices) {
+    state.setState({ shapeDrawing: { ...dr, selection: null } });
+    _renderAll();
+  }
+  return false;
+}
+function _pointInRing([x, y], ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-30) + xi) inside = !inside;
+  }
+  return inside;
 }
 
 /** End vertex / gizmo drag. Pushes the LIVE polygons to the template. */
@@ -709,6 +726,7 @@ export function applyPolyScale(factor) {
 function _planeFromClick(clientX, clientY) {
   const T = window.THREE;
   if (!T) return null;
+  if (_planePicker) { try { const pl = _planePicker(clientX, clientY); if (pl) return pl; } catch (err) { console.warn('[shape editor] plane picker', err); } }
   const hit = sceneCore.pick(clientX, clientY);
   if (hit && hit.face) {
     const origin = [hit.point.x, hit.point.y, hit.point.z];

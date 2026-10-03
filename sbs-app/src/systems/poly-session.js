@@ -45,7 +45,9 @@ import { sourceMatrixOfModel } from '../core/transforms.js';
 import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
 import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's colours, used (and added to) from the editor
-import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef, polyRefProjectors } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
+import * as shapeEditor from './shape-editor.js';         // ⬚ V0.3.5.40 — the project's flat-shape tool, drawing the editor's shapes
+import { xorPolygonList } from './flat-shapes.js';
+import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef, polyRefProjectors, REF_VIEWS } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
@@ -100,6 +102,8 @@ export function polySessionInfo() {
     baked: [...alive].filter(id => _s.items.get(id)?.bake).length,       // ⬚ V0.3.5.35 — parts with a baked texture
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
     scale: !!_s.scale,                                       // ⬚ V0.3.5.28 — the scale box is up
+    shapeTool: _s.shapeFacePick ? 'face' : _s.shapeEdit ? 'edit' : _s.shapeNew ? 'new' : null,   // ⬚ V0.3.5.40 — the shape tool is up
+    faceAngle: Number(state.get('shapeFaceAngleThreshold') ?? 5),
     scl: _scalePct(),                                        //   the scale record of the one selected object, % of how it came in
   };
 }
@@ -581,6 +585,7 @@ export function setPolyTab(tab) {
   if (!_s) return;
   _s.tab = tab === 'colors' || tab === 'env' || tab === 'refs' ? tab : 'model';
   if (_s.tab !== 'model' && _s.scale) { _scaleEnd(); _hint(); _syncScene(); }   // the scale box belongs to the Model tab
+  if (_s.tab !== 'model') _endShapeEdit();                 // so does the shape tool
   if (_s.tab !== 'refs' && polyRefsEditing()) setPolyRefsEdit(false);   // "move / scale pictures" belongs to the Refs tab: elsewhere a click must reach the parts
   _emit('view');
 }
@@ -735,8 +740,8 @@ function _push(label, undo, redo) {
   const sid = _s.sid;
   _noteEdit();
   undoManager.push(label,
-    () => { if (!_s || _s.sid !== sid) return false; undo(); _syncScene(); _emit('undo'); },
-    () => { if (!_s || _s.sid !== sid) return false; redo(); _syncScene(); _emit('undo'); },
+    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); undo(); _syncScene(); _emit('undo'); },
+    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); redo(); _syncScene(); _emit('undo'); },
     { scope: SCOPE });
 }
 const _structSnap = () => ({ rootIds: _s.rootIds.slice(), items: [..._s.items.values()].map(it => ({ id: it.id, name: it.name, parent: it.parent, children: it.kind === 'folder' ? it.children.slice() : null })) });
@@ -963,6 +968,7 @@ function _partHost(id) {
 export function polyEnterSub(mode = 'face', id = null) {
   if (!_s) return false;
   _scaleEnd();
+  _endShapeEdit();
   const target = id || _s.primary || _selectedPartIds()[0];
   const it = _s.items.get(target);
   if (!it || it.kind !== 'part') { setStatus('Select ONE part first, then choose vertices or faces.', 'warn', 3500); return false; }
@@ -1418,6 +1424,7 @@ function _startPick({ need, what, miss = null, allow = null, circles = false, do
   if (!_s) return;
   _endPick(true);
   _scaleEnd();
+  _endShapeEdit();
   const Th = T(), group = new Th.Group(), marks = new Th.Group(), pivots = new Th.Group(), hover = new Th.Group();
   group.name = 'sbs:poly-pick';
   group.add(marks, pivots, hover);
@@ -1584,7 +1591,7 @@ export function polySetScaleMode(on) {
   if (want && !_selectedPartIds().length) { setStatus('Select what should be scaled first.', 'warn', 3500); return false; }
   if (want && isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
-  if (want) { if (_s.pick) _endPick(true); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); }
+  if (want) { if (_s.pick) _endPick(true); _endShapeEdit(); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); }
   else _scaleEnd();
   _hint(); _syncScene(); _emit('mode');
   return true;
@@ -2233,6 +2240,235 @@ export function polyRemoveProjection() {
   return true;
 }
 
+// ── ⬚ V0.3.5.40 — SHAPES: the project's flat-shape tool inside the editor ───────────────────────
+// His ask: "exactly there again in the 3D modeler". The project's shape editor draws them (same grid, same
+// clicks, same edit: drag a corner, double-click a corner = delete it, an edge = a new corner, inside = the
+// whole polygon); here a finished shape becomes a PART — a flat, two-sided sheet in its own frame (the
+// plane it was drawn on: X / Y in the plane, Z its normal, so turning it turns its system). Double-click it
+// to edit its outline again; in Faces (4) Shift + drag its face to extrude it into a solid.
+const SHAPE_TPL = 'poly:';
+const _gs = () => _sessionFrame().scale || 1;              // world units per part unit
+const _scalePolys = (polys, k) => (polys || []).map(p => ({ outer: (p.outer || []).map(([x, y]) => [x * k, y * k]), holes: (p.holes || []).map(h => h.map(([x, y]) => [x * k, y * k])) }));
+const _ringArea = (r) => { let a = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) a += (r[j][0] + r[i][0]) * (r[j][1] - r[i][1]); return -a / 2; };
+/** A hole joined to its outline by a hair-thin cut (the corners at both ends appear twice): one ring a face can hold. */
+function _bridgeHole(outer, hole) {
+  let hi = 0; hole.forEach((p, i) => { if (p[0] > hole[hi][0]) hi = i; });
+  const hp = hole[hi]; let oi = 0, best = Infinity;
+  outer.forEach((p, i) => { const d = (p[0] - hp[0]) ** 2 + (p[1] - hp[1]) ** 2; if (d < best) { best = d; oi = i; } });
+  return [...outer.slice(0, oi + 1), ...hole.slice(hi), ...hole.slice(0, hi), hole[hi], outer[oi], ...outer.slice(oi + 1)];
+}
+/** The shape's polygons (XOR'd, as the project draws them) → a flat two-sided sheet: front facing +Z, back facing −Z. */
+function _sheetPoly(polygons) {
+  const clean = (ring) => { const r = (ring || []).map(p => [Number(p[0]) || 0, Number(p[1]) || 0]); if (r.length > 1 && Math.hypot(r[0][0] - r[r.length - 1][0], r[0][1] - r[r.length - 1][1]) < 1e-12) r.pop(); return r; };
+  const v = [], f = [];
+  for (const piece of xorPolygonList(polygons) || []) {
+    let outer = clean(piece[0]);
+    if (outer.length < 3 || Math.abs(_ringArea(outer)) < 1e-18) continue;
+    if (_ringArea(outer) < 0) outer.reverse();             // counter-clockwise seen from +Z = the front faces +Z
+    let ring = outer;
+    for (const h0 of piece.slice(1)) { const h = clean(h0); if (h.length < 3) continue; if (_ringArea(h) > 0) h.reverse(); ring = _bridgeHole(ring, h); }
+    const base = v.length / 3;
+    for (const [x, y] of ring) v.push(x, y, 0);
+    const front = ring.map((_, i) => base + i);
+    f.push(front, front.slice().reverse());
+  }
+  return f.length ? { v, f } : null;
+}
+/** Is the part still a flat sheet in its own XY plane (a shape that was not extruded)? */
+function _isSheet(it) {
+  const p = it?.poly; if (!p?.v?.length || !p.f?.length) return false;
+  let ext = 0, zmax = 0;
+  for (let i = 0; i < p.v.length; i += 3) { ext = Math.max(ext, Math.abs(p.v[i]), Math.abs(p.v[i + 1])); zmax = Math.max(zmax, Math.abs(p.v[i + 2])); }
+  if (zmax > Math.max(ext, 1e-9) * 1e-6) return false;
+  return p.f.every((_, fi) => Math.abs(faceNormal(p, fi)[2]) > 0.999);
+}
+/** A sheet's outline back as the shape editor's polygons (part units): kept from the last draw, or read off its front faces. */
+function _sheetPolygons(it) {
+  if (it.shape?.poly === it.poly && Array.isArray(it.shape.polygons)) return it.shape.polygons;
+  const p = it.poly;
+  return p.f.filter((_, fi) => faceNormal(p, fi)[2] > 0).map(fc => ({ outer: fc.map(i => [p.v[i * 3], p.v[i * 3 + 1]]), holes: [] }));
+}
+/** A part's own frame as a plane of the shape editor (world). */
+function _partPlane(it) {
+  const Th = T(); it.mesh.updateWorldMatrix(true, false);
+  const o = it.mesh.getWorldPosition(new Th.Vector3()), q = it.mesh.getWorldQuaternion(new Th.Quaternion());
+  const X = new Th.Vector3(1, 0, 0).applyQuaternion(q), Y = new Th.Vector3(0, 1, 0).applyQuaternion(q), N = new Th.Vector3(0, 0, 1).applyQuaternion(q);
+  return { origin: [o.x, o.y, o.z], normal: [N.x, N.y, N.z], qx: [X.x, X.y, X.z], qy: [Y.x, Y.y, Y.z], worldQuaternion: [q.x, q.y, q.z, q.w], anchorNodeId: null };
+}
+/** Where a click lands for a new shape: a face of a part (a hair above it), else a plane facing you through the object's centre. */
+function _shapePlanePick(clientX, clientY) {
+  if (!_s) return null;
+  const Th = T(), rect = sceneCore.renderer.domElement.getBoundingClientRect(), cam = sceneCore.camera;
+  const rc = _s.rc || (_s.rc = new Th.Raycaster());
+  rc.setFromCamera(new Th.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1), cam);
+  const alive = _aliveIds();
+  const meshes = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id)).map(it => it.mesh);
+  const hit = rc.intersectObjects(meshes, false)[0];
+  const size = (() => { const b = _sessionBox(false); return b ? b.getSize(new Th.Vector3()).length() : 100; })();
+  if (hit?.face) {
+    const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+    if (n.dot(rc.ray.direction) > 0) n.negate();             // the side that was clicked
+    const o = hit.point.clone().addScaledVector(n, size * 2e-4);   // a hair above the face: no flicker with it
+    return shapeEditor.buildShapePlane([o.x, o.y, o.z], [n.x, n.y, n.z], null);
+  }
+  const a = _s.group.localToWorld(_refsHost.anchor()), n = cam.getWorldDirection(new Th.Vector3()).negate();
+  return shapeEditor.buildShapePlane([a.x, a.y, a.z], [n.x, n.y, n.z], null);
+}
+/** The plane of the flat view you are looking from, through the object's centre — its X to the right on screen. */
+function _viewPlane() {
+  const Th = T(), cam = sceneCore.camera; cam.updateMatrixWorld();
+  const a = _s.group.localToWorld(_refsHost.anchor());
+  const X = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 0).normalize(), Y = new Th.Vector3().setFromMatrixColumn(cam.matrixWorld, 1).normalize(), N = new Th.Vector3().crossVectors(X, Y).normalize();
+  const q = new Th.Quaternion().setFromRotationMatrix(new Th.Matrix4().makeBasis(X, Y, N));
+  return { origin: [a.x, a.y, a.z], normal: [N.x, N.y, N.z], qx: [X.x, X.y, X.z], qy: [Y.x, Y.y, Y.z], worldQuaternion: [q.x, q.y, q.z, q.w], anchorNodeId: null };
+}
+function _endShapeEdit() {
+  if (!_s) return;
+  const was = !!(_s.shapeEdit || _s.shapeNew || _s.shapeFacePick || shapeEditor.isDrawing());
+  if (shapeEditor.isDrawing()) { try { shapeEditor.cancel(); } catch { /* fine */ } }
+  _s.shapeEdit = null; _s.shapeNew = null; _s.shapeFacePick = null;
+  if (was) { _hint(); _syncGizmo(); _emit('mode'); }
+}
+function _shapesReady() {
+  if (!_s) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  _endShapeEdit(); if (_s.pick) _endPick(true); _scaleEnd(); _s.pivotMode = false;
+  if (polyRefsEditing()) setPolyRefsEdit(false);
+  shapeEditor.setPlanePicker(_shapePlanePick);
+  if (gizmo.activeTarget === _target) gizmo.hide();
+  return true;
+}
+/** ✏ A new shape: on = 'face' (click a face of a part — or empty space — then the corners) | 'view' (on the flat view you look from). */
+export function polyNewShape(on = 'face') {
+  if (!_shapesReady()) return false;
+  if (on === 'view') {
+    if (!REF_VIEWS.includes(_s.view)) { setStatus('Go to a flat view first (Top, Front, Left…) — the shape is drawn on it.', 'warn', 4500); return false; }
+    _s.shapeNew = { on };
+    shapeEditor.startDrawing(null, { seedPlane: _viewPlane() });
+  } else {
+    _s.shapeNew = { on };
+    shapeEditor.startDrawing(null);
+  }
+  _hint(); _emit('mode');
+  return true;
+}
+/** ⬚ A shape from a face: the next click on a part takes that face (and its neighbours within the angle) as a new shape. */
+export function polyShapeFromFace() {
+  if (!_shapesReady()) return false;
+  _s.shapeFacePick = { mode: 'new' };
+  _hint(); _emit('mode');
+  return true;
+}
+/** Double-click a shape: its outline in the shape editor again. */
+export function polyEditShape(id) {
+  const it = _s?.items.get(id);
+  if (!it || it.kind !== 'part' || !it.mesh || !_isSheet(it)) return false;
+  if (!_shapesReady()) return false;
+  _s.sel = new Set([id]); _s.primary = id; _syncScene();
+  _s.shapeEdit = { id };
+  shapeEditor.startDrawing(SHAPE_TPL + id, { seedPlane: _partPlane(it), seedPolygons: _scalePolys(_sheetPolygons(it), _gs()), mode: 'edit' });
+  _hint(); _emit('mode');
+  return true;
+}
+/** Into Faces (4) on the shape being edited — click its face, Shift + drag the gizmo = extrude. */
+function _shapeToFaces() {
+  const id = _s?.shapeEdit?.id; if (!id) return;
+  _endShapeEdit();
+  polyEnterSub('face', id);
+  setStatus('Click the face, then Shift + drag the gizmo\'s arrow: the face is extruded into a solid.', 'info', 7000);
+}
+/** A finished shape (the editor's commit) becomes a part in its own frame. */
+function _addShapePart(planeWorld, polygonsLocal, label = 'Shape') {
+  const poly = _sheetPoly(polygonsLocal);
+  if (!poly) { setStatus('That shape has no area.', 'warn', 3500); return null; }
+  const Th = T(); _s.group.updateWorldMatrix(true, false);
+  const pos = _s.group.worldToLocal(new Th.Vector3(...planeWorld.origin));
+  const quat = _groupQuat().invert().multiply(new Th.Quaternion(...planeWorld.worldQuaternion)).normalize();
+  const alive0 = _aliveIds(), names = new Set([...alive0].map(x => _s.items.get(x).name));
+  let name = label; for (let n = 2; names.has(name); n++) name = `${label} ${n}`;
+  let id = null;
+  const ok = _treeOp(`Add ${label.toLowerCase()}`, () => {
+    const sel = _s.primary && alive0.has(_s.primary) ? _s.items.get(_s.primary) : null;
+    const parent = sel ? (sel.kind === 'folder' ? sel.id : (sel.parent || null)) : (_rootFolder()?.id || null);
+    const it = { id: `p${(++_s.seq).toString(36)}`, kind: 'part', name, parent, poly, color: [0.53, 0.75, 0.94], mesh: null, uid: _newUid(), shape: { polygons: polygonsLocal, poly } };
+    _s.items.set(it.id, it); id = it.id;
+    _buildPartMesh(it);
+    it.mesh.position.copy(pos); it.mesh.quaternion.copy(quat);
+    const list = parent ? _s.items.get(parent).children : _s.rootIds;
+    const k2 = sel && sel.kind !== 'folder' ? list.indexOf(sel.id) : -1;
+    list.splice(k2 >= 0 ? k2 + 1 : list.length, 0, it.id);
+    const f = parent ? _s.items.get(parent) : null;
+    if (f && !f.frame.p) { _s.group.updateWorldMatrix(true, true); f.frame.p = _pivotLocal(f); }
+  });
+  if (!ok || !id) return null;
+  _s.sel = new Set([id]); _s.primary = id; _syncScene(); _emit('select');
+  setStatus(`${name} added — double-click it to edit its outline; in Faces (${keyLabel('polyFaces')}) Shift + drag its face to extrude it.`, 'success', 8000);
+  return id;
+}
+state.on('shapeEditor:commit', (payload) => {
+  if (!_s || !payload?.plane) return;
+  _s.shapeNew = null;
+  _addShapePart(payload.plane, _scalePolys(payload.polygons, 1 / _gs()));
+  _hint(); _emit('mode');
+});
+state.on('shapeEditor:vertexEdit', ({ templateId, polygons, reason }) => {
+  if (!_s || !String(templateId || '').startsWith(SHAPE_TPL)) return;
+  const it = _s.items.get(String(templateId).slice(SHAPE_TPL.length)); if (!it?.mesh) return;
+  const local = _scalePolys(polygons, 1 / _gs()), poly = _sheetPoly(local);
+  if (!poly) { setStatus('A shape needs at least one outline with an area.', 'info', 3000); return; }
+  const before = { poly: it.poly, shape: it.shape || null }, after = { poly, shape: { polygons: local, poly } };
+  const put = (s) => { it.poly = s.poly; it.shape = s.shape; _refreshPartMesh(it); _partChanged(it.id); };
+  put(after);
+  const label = reason === 'delete' ? 'Delete corner' : reason === 'addOnEdge' ? 'Add corner' : reason === 'addPolygon' ? 'Add to shape' : reason === 'deletePolygon' ? 'Remove from shape' : reason === 'transformPolygon' ? 'Transform shape' : 'Move corner';
+  _push(label, () => put(before), () => put(after));
+  _syncScene(); _emit('tree');
+});
+/** A click while "shape from a face" waits: the face under it (a new shape, or an outline added to the shape being edited). */
+function _shapeFaceClick(e) {
+  const k = _s.shapeFacePick; if (!k) return;
+  const Th = T(), rect = sceneCore.renderer.domElement.getBoundingClientRect();
+  const rc = _s.rc || (_s.rc = new Th.Raycaster());
+  rc.setFromCamera(new Th.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1), sceneCore.camera);
+  const alive = _aliveIds();
+  const meshes = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id) && (k.mode !== 'add' || it.id !== _s.shapeEdit?.id)).map(it => it.mesh);
+  const hit = rc.intersectObjects(meshes, false)[0];
+  if (!hit?.face) { setStatus('Click a face of a part (Esc cancels).', 'info', 3000); return; }
+  if (k.mode === 'add') {
+    const dr = state.get('shapeDrawing'); _s.shapeFacePick = null;
+    let loops = null;
+    try { loops = actions.computeFaceCrossSection(hit, dr?.plane); } catch (err) { console.warn('[poly session] face outline', err); }
+    if (!loops?.length || loops[0].length < 3 || !shapeEditor.addPolygonFromFace(loops)) setStatus('No outline could be taken from that face.', 'warn', 4000);
+    _hint(); return;
+  }
+  _s.shapeFacePick = null;
+  const size = (() => { const b = _sessionBox(false); return b ? b.getSize(new Th.Vector3()).length() : 100; })();
+  const n = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize();
+  if (n.dot(rc.ray.direction) > 0) n.negate();
+  const o = hit.point.clone().addScaledVector(n, size * 2e-4);
+  const plane = shapeEditor.buildShapePlane([o.x, o.y, o.z], [n.x, n.y, n.z], null);
+  let loops = null;
+  try { loops = actions.computeFaceCrossSection(hit, plane); } catch (err) { console.warn('[poly session] face outline', err); }
+  if (!loops?.length || loops[0].length < 3) { setStatus('No outline could be taken from that face — try another spot or a wider angle.', 'warn', 5000); _hint(); return; }
+  _addShapePart(plane, _scalePolys([{ outer: loops[0], holes: loops.slice(1).filter(l => l.length >= 3) }], 1 / _gs()), 'Shape');
+  _hint(); _emit('mode');
+}
+/** The right-click menu while a shape's outline is edited (the project's own, plus the way to extrude). */
+function _shapeMenu(e) {
+  const edge = shapeEditor.pickEdgeForMenu(e.clientX, e.clientY), items = [];
+  if (edge) {
+    items.push({ label: '＋ Add a corner here  (or double-click the edge)', action: () => shapeEditor.addPointOnEdge(e.clientX, e.clientY) });
+    items.push({ label: '🗑 Delete this outline', action: () => shapeEditor.deleteSelectedPolygon(edge.polyIdx) });
+  } else {
+    items.push({ label: '⊕ Add an outline (XOR with the shape)', action: () => shapeEditor.newShape() });
+    items.push({ label: '⊕ Add an outline from a face', action: () => { if (_s) { _s.shapeFacePick = { mode: 'add' }; _hint(); } } });
+  }
+  items.push({ separator: true });
+  items.push({ label: `⬆ Extrude — Faces (${keyLabel('polyFaces')}): click the face, Shift + drag`, action: () => _shapeToFaces() });
+  items.push({ label: '✖ Done  [Esc]', action: () => _endShapeEdit() });
+  showContextMenu(items, e.clientX, e.clientY);
+}
+
 // ── the right-click menu of a part / folder ──────────────────────────────────
 export function polyShowMenu(x, y) {
   if (!_s || !_s.sel.size) return;
@@ -2269,6 +2505,7 @@ export function polyShowMenu(x, y) {
 
 function _syncGizmo() {
   if (!_s || isPolyEditing() || _s.pick) return;
+  if (shapeEditor.isDrawing() || _s.shapeFacePick) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (_s.scale) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }   // the scale box has the stage: no gizmo under its handles
   if (_s.pivotMode && !_singleTop()) {                       // a pivot belongs to ONE object
     _s.pivotMode = false;
@@ -2292,9 +2529,15 @@ function _attachInput() {
   const L = {
     down: (e) => {
       if (!_s) return;
-      if (e.button === 2) { _s.rmb = { x: e.clientX, y: e.clientY }; return; }
+      if (e.button === 2) {
+        _s.rmb = { x: e.clientX, y: e.clientY };
+        if (shapeEditor.isDrawing() && state.get('shapeDrawing')?.phase === 'addVertices') { swallow(e); shapeEditor.onPointerDown(e.clientX, e.clientY, 2); }   // right-click closes the outline being drawn
+        return;
+      }
       if (e.button !== 0) return;
       if (_s.pick) { swallow(e); _pickClick(e); return; }
+      if (_s.shapeFacePick) { if (e.button === 0) { swallow(e); _shapeFaceClick(e); } return; }   // ⬚ shape from a face
+      if (shapeEditor.isDrawing()) { if (e.button === 0) { swallow(e); shapeEditor.onPointerDown(e.clientX, e.clientY, 0); } return; }   // the shape editor draws (its moves / ups arrive through main.js)
       if (isPolyEditing()) return;                         // the sub-object editor's own listener (added later) takes it
       if (_s.scale && _scaleDown(e)) { swallow(e); return; }   // a handle of the scale box was grabbed
       if (polyRefsEditing() && polyRefsPointerDown(e)) { swallow(e); return; }   // a reference picture (or one of its corners) was grabbed
@@ -2304,13 +2547,22 @@ function _attachInput() {
     },
     click: (e) => { if (_s) { e.preventDefault(); e.stopImmediatePropagation(); } },          // the app's click handler never runs here
     move: (e) => { if (_s?.pick) _pickHover(e); else if (_s?.scale) _scaleHover(e); },   // the pin / the handle under the cursor (nothing is swallowed: the camera still orbits)
-    dbl: (e) => { if (!_s) return; e.preventDefault(); e.stopImmediatePropagation(); if (isPolyEditing() || _s.pick) return; if (_s.scale && _scaleHit(e)) return; /* two quick pulls of a handle are not a double-click on the part behind it */ const id = _pickPart(e); if (id) polyEnterSub('face', id); },
+    dbl: (e) => {
+      if (!_s) return; e.preventDefault(); e.stopImmediatePropagation();
+      if (shapeEditor.isDrawing()) { shapeEditor.onDoubleClick(e.clientX, e.clientY); return; }   // corner = delete, edge = new corner, inside = the whole outline
+      if (isPolyEditing() || _s.pick || _s.shapeFacePick) return;
+      if (_s.scale && _scaleHit(e)) return;                 // two quick pulls of a handle are not a double-click on the part behind it
+      const id = _pickPart(e); if (!id) return;
+      if (_isSheet(_s.items.get(id))) polyEditShape(id); else polyEnterSub('face', id);   // a flat shape: its outline; anything else: its faces
+    },
     menu: (e) => {
       if (!_s) return;
       e.preventDefault(); e.stopImmediatePropagation();
       const r = _s.rmb; _s.rmb = null;
       if (r && Math.hypot(e.clientX - r.x, e.clientY - r.y) > 5) return;      // the button was dragged: not a menu click
       if (_s.pick) { _endPick(); setStatus('Cancelled.', 'info', 2000); return; }
+      if (_s.shapeFacePick) { _s.shapeFacePick = null; _hint(); setStatus('Cancelled.', 'info', 2000); return; }
+      if (shapeEditor.isDrawing()) { if (state.get('shapeDrawing')?.phase === 'edit' && _s.shapeEdit) _shapeMenu(e); return; }
       if (gizmo.onRightClick(e.clientX, e.clientY)) return;                    // on the gizmo: move / rotate by an amount · world / local / parent
       if (isPolyEditing()) return;
       const id = _pickPart(e);
@@ -2366,6 +2618,14 @@ function _onKey(e) {
   if (_typing() && !(undoKey && document.activeElement?.tagName === 'SELECT')) return;
   // the right-click menu closes on Esc through a listener this handler would cut off: close it here, and nothing else
   if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return; }
+  // ⬚ V0.3.5.40 — the shape tool has the keys while it is up (the project's handler does not run in the editor)
+  if (_s.shapeFacePick && e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _s.shapeFacePick = null; _hint(); setStatus('Cancelled.', 'info', 2000); return; }
+  if (shapeEditor.isDrawing() && !(e.ctrlKey || e.metaKey)) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _endShapeEdit(); return; }
+    if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopImmediatePropagation(); shapeEditor.deleteSelected(); return; }
+    if (keyMatches('polyFaces', e) && _s.shapeEdit) { e.preventDefault(); e.stopImmediatePropagation(); _shapeToFaces(); return; }
+    if (e.key === 'Enter' && state.get('shapeDrawing')?.phase === 'addVertices') { e.preventDefault(); e.stopImmediatePropagation(); shapeEditor.commit(); return; }
+  }
   const mod = e.ctrlKey || e.metaKey;
   // Undo / redo stay inside the editor: the shared stack also holds the project's entries underneath.
   if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
@@ -2403,6 +2663,14 @@ function _onKey(e) {
 
 function _hint() {
   if (!_s) return;
+  if (_s.shapeFacePick) { setStickyStatus(_s.shapeFacePick.mode === 'add' ? '⬚ Click a face — its outline is laid onto the shape (Esc cancels)' : `⬚ SHAPE FROM A FACE — click a face of a part: it and its neighbours within ${Number(state.get('shapeFaceAngleThreshold') ?? 5)}° become a shape (Esc cancels)`, 'info', 'polySession'); return; }
+  if (shapeEditor.isDrawing()) {
+    const ph = state.get('shapeDrawing')?.phase;
+    setStickyStatus(ph === 'pickPlane' ? '⬚ NEW SHAPE — click a face of a part to draw on it (or empty space: a plane facing you) · Esc cancels'
+      : ph === 'addVertices' ? '⬚ Click the corners · click the first corner (or right-click, or Enter) to close the outline · Esc cancels'
+      : `⬚ SHAPE — drag a corner · double-click a corner = delete it, an edge = a new corner, inside = the whole outline (move / turn / scale) · right-click = more · ${keyLabel('polyFaces')} = Faces, to extrude · Esc = done`, 'info', 'polySession');
+    return;
+  }
   if (_s.scale) { setStickyStatus('⬚ SCALE — pyramid ▲ = stretch that side (the opposite side stays · Alt = from the centre · Shift = every direction) · coloured corner ◣ = that face\'s two directions (the opposite corner stays · Shift = keep the proportions · Alt = from the centre) · WHITE corner tip = everything equally (the corner across the box stays · Alt = from the centre) · Esc ends it', 'info', 'polySession'); return; }
   if (_s.pivotMode) { setStickyStatus(`⬚ PIVOT mode — the gizmo moves / turns only the pivot of ${_singleTop()?.name || 'the object'}; the geometry stays · Esc ends it (or right-click ▸ Pivot)`, 'info', 'polySession'); return; }
   setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
@@ -2414,6 +2682,8 @@ function _teardown(how = 'discard') {
   if (isPolyEditing()) exitPolyEdit();
   _endPick(true);
   _scaleEnd();
+  _endShapeEdit();
+  try { shapeEditor.setPlanePicker(null); } catch { /* fine */ }
   try { disposePolyRefs(); } catch (err) { console.warn('[poly session] reference pictures', err); }
   try { hideContextMenu(); } catch { /* not up */ }
   if (gizmo.activeTarget === _target) gizmo.hide();

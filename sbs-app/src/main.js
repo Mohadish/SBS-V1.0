@@ -3705,6 +3705,10 @@ canvas.addEventListener('dblclick', e => {
   const hit = sceneCore.pick(e.clientX, e.clientY);
   if (!hit) return;
 
+  // ⬚ V0.3.5.40 — double-click a flat shape → straight into editing it (his ask: no right-click ▸ Edit shape first)
+  const fsId = hit.object.userData?.flatShapeNodeId;
+  if (fsId && nbm.get(fsId)?.type === 'flatShape') { actions.editShapeInstance(fsId); return; }
+
   const meshNodeId = hit.object.userData?.meshNodeId;
   if (!meshNodeId) return;
 
