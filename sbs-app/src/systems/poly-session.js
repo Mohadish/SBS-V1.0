@@ -2253,8 +2253,11 @@ const _ringArea = (r) => { let a = 0; for (let i = 0, j = r.length - 1; i < r.le
 /** A hole joined to its outline by a hair-thin cut (the corners at both ends appear twice): one ring a face can hold. */
 function _bridgeHole(outer, hole) {
   let hi = 0; hole.forEach((p, i) => { if (p[0] > hole[hi][0]) hi = i; });
-  const hp = hole[hi]; let oi = 0, best = Infinity;
-  outer.forEach((p, i) => { const d = (p[0] - hp[0]) ** 2 + (p[1] - hp[1]) ** 2; if (d < best) { best = d; oi = i; } });
+  const hp = hole[hi]; let oi = -1, best = Infinity;
+  // only to the RIGHT of the hole's right-most corner: nothing of the hole lies there, so the cut cannot cross it
+  const pick = (ok) => outer.forEach((p, i) => { if (!ok(p)) return; const d = (p[0] - hp[0]) ** 2 + (p[1] - hp[1]) ** 2; if (d < best) { best = d; oi = i; } });
+  pick(p => p[0] >= hp[0]);
+  if (oi < 0) pick(() => true);
   return [...outer.slice(0, oi + 1), ...hole.slice(hi), ...hole.slice(0, hi), hole[hi], outer[oi], ...outer.slice(oi + 1)];
 }
 /** The shape's polygons (XOR'd, as the project draws them) → a flat two-sided sheet: front facing +Z, back facing −Z. */
@@ -2266,7 +2269,9 @@ function _sheetPoly(polygons) {
     if (outer.length < 3 || Math.abs(_ringArea(outer)) < 1e-18) continue;
     if (_ringArea(outer) < 0) outer.reverse();             // counter-clockwise seen from +Z = the front faces +Z
     let ring = outer;
-    for (const h0 of piece.slice(1)) { const h = clean(h0); if (h.length < 3) continue; if (_ringArea(h) > 0) h.reverse(); ring = _bridgeHole(ring, h); }
+    // holes joined right-most first (a later cut cannot cross an earlier hole)
+    const holes = piece.slice(1).map(clean).filter(h => h.length >= 3).sort((a, b) => Math.max(...b.map(p => p[0])) - Math.max(...a.map(p => p[0])));
+    for (const h of holes) { if (_ringArea(h) > 0) h.reverse(); ring = _bridgeHole(ring, h); }
     const base = v.length / 3;
     for (const [x, y] of ring) v.push(x, y, 0);
     const front = ring.map((_, i) => base + i);

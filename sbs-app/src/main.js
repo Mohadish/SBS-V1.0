@@ -3675,9 +3675,8 @@ canvas.addEventListener('dblclick', e => {
   // entire polygon — Delete / Backspace then removes the whole polygon
   // instead of one vertex. Lets the editor consume the event before the
   // generic mesh-container double-click logic runs.
-  if (shapeEditor.isDrawing()
-      && state.get('shapeDrawing')?.phase === 'edit'
-      && shapeEditor.onDoubleClick(e.clientX, e.clientY)) {
+  if (shapeEditor.isDrawing()) {                        // ⬚ V0.3.5.42 — while it is up nothing falls through (a double-click mid-drawing must not reopen a shape)
+    if (state.get('shapeDrawing')?.phase === 'edit') shapeEditor.onDoubleClick(e.clientX, e.clientY);
     e.preventDefault();
     e.stopPropagation();
     return;

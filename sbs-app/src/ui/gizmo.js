@@ -1000,8 +1000,9 @@ class GizmoController {
         const l = Math.hypot(tx, ty);
         if (l > 1e-6) {
           tx /= l; ty /= l;
-          this._edgeRot = { ax, s0, center: center.clone(), x0: clientX, y0: clientY, tx, ty };
-          this._startWorld = center.clone().add(s0);         // a point on the ring, so the angle bookkeeping below works as for any drag
+          const sR = s0.clone().multiplyScalar(Math.max(cam.position.distanceTo(center), 1e-6));   // a real radius: a branch measuring from a slightly other centre loses only a hair of angle
+          this._edgeRot = { ax, s0: sR, center: center.clone(), x0: clientX, y0: clientY, tx, ty };
+          this._startWorld = center.clone().add(sR);         // a point on the ring, so the angle bookkeeping below works as for any drag
         }
       }
     }
@@ -1663,13 +1664,19 @@ class GizmoController {
   _atan2ForAxisInSpace(rel, axis) {
     const T = window.THREE;
     let r = rel.clone();
-    // Same snapshot-vs-live guard as _axisVec — atan2 needs to project
-    // onto a STABLE plane through the drag, not a live one that drifts
-    // as the object/pivot rotates.
-    const refQ = (this._dragging && this._startRefQuat)
-      ? this._startRefQuat
-      : this._gizmoReferenceQuat();
-    if (refQ) r.applyQuaternion(refQ.clone().invert());
+    // ⬚ V0.3.5.42 — measured in the SAME frame _axisVec gives the ring (and the drag plane) — in WORLD that is
+    // the world, not the pivot's / the parent's frame. It always un-turned by the pivot: with a turned pivot
+    // (or a turned parent) in World, the cursor's circle was read through a tilted frame — the angle jumped
+    // and covered only ~180° (his "very snappy, only 180 degrees with the mouse").
+    if (this._spaceMode !== 'world' || this._cableTarget?.worldQuat) {
+      // Same snapshot-vs-live guard as _axisVec — atan2 needs to project
+      // onto a STABLE plane through the drag, not a live one that drifts
+      // as the object/pivot rotates.
+      const refQ = (this._dragging && this._startRefQuat)
+        ? this._startRefQuat
+        : this._gizmoReferenceQuat();
+      if (refQ) r.applyQuaternion(refQ.clone().invert());
+    }
     return this._atan2ForAxis(r, axis);
   }
 
