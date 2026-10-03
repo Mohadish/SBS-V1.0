@@ -2135,7 +2135,7 @@ function _bakeFromFile(src, poly) {
   if (faceUV.some((uv, fi) => uv.length !== poly.f[fi].length)) return null;
   const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
   canvas.getContext('2d').drawImage(img, 0, 0);
-  return { id: String(sb.sig || `bk-file-${(++_bakeSeq).toString(36)}`), canvas, faceUV, tex: null, jpeg: null };
+  return { id: String(sb.sig || `bk-file-${(++_bakeSeq).toString(36)}`), canvas, faceUV, tex: null, jpeg: null, fromFile: true };
 }
 /** 🔥 Bake the projection of the selected parts (none selected = every projected part). One undo step. */
 export async function polyBakeProjection({ quiet = false } = {}) {
@@ -2143,7 +2143,7 @@ export async function polyBakeProjection({ quiet = false } = {}) {
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
   const alive = _aliveIds();
-  let parts = _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.proj && it.mesh);
+  let parts = quiet ? [] : _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.proj && it.mesh);   // Apply (quiet): every live projection, whatever is selected
   if (!parts.length && (!_s.sel.size || quiet)) parts = [..._s.items.values()].filter(it => it.kind === 'part' && it.proj && it.mesh && alive.has(it.id));
   if (!parts.length) { if (!quiet) setStatus('Nothing selected has a projection to bake — project the pictures first.', 'info', 4000); return false; }
   let P = polyRefProjectors();
@@ -2167,10 +2167,14 @@ export async function polyBakeProjection({ quiet = false } = {}) {
   return true;
 }
 /** For Apply: the white colour a textured part wears in the project (a colour multiplies its texture). */
-function _whitePresetId() {
-  let p = (state.get('colorPresets') || []).find(x => typeof x.color === 'string' && x.color.toLowerCase() === '#ffffff');
-  if (!p) { try { p = materials.createPreset({ color: '#ffffff', name: 'Texture (white)', roughness: 0.8, metalness: 0 }); } catch { p = null; } }
-  return p?.id || null;
+const WHITE_NAME = 'Texture (white)';
+function _whitePresetId({ make = true } = {}) {
+  const all = state.get('colorPresets') || [];
+  const fit = (x) => typeof x?.color === 'string' && x.color.toLowerCase() === '#ffffff' && !x.removeTextures && (x.solidness ?? 1) >= 0.999 && !x.flatMirror;
+  // its own first; else a white that keeps the texture and is fully solid (a white ghost would show the texture see-through)
+  let p = all.find(x => x?.name === WHITE_NAME && fit(x)) || all.find(fit);
+  if (!p && make) { try { p = materials.createPreset({ color: '#ffffff', name: WHITE_NAME, roughness: 0.8, metalness: 0 }); } catch { p = null; } }
+  return p?.id || (make ? null : 'white');
 }
 function _jpegOf(bake) {
   if (!bake.jpeg) {
@@ -2442,7 +2446,7 @@ async function _targetPath(name) {
  * baked in — in the SCENE's space for a new asset (it lands where it stands), in the ASSET's own
  * space when saving over the asset being re-edited.
  */
-function _assetLayout(space = 'scene') {
+function _assetLayout(space = 'scene', { dry = false } = {}) {   // dry: read only (Apply's question) — no colour is made
   const Th = T();
   sceneCore.rootGroup.updateWorldMatrix(true, true);
   const rootInv = (space === 'asset' ? _s.group.matrixWorld : sceneCore.rootGroup.matrixWorld).clone().invert();
@@ -2469,8 +2473,10 @@ function _assetLayout(space = 'scene') {
     M.decompose(fp, fq, new Th.Vector3());
     const pfr = frameOut(fp, fq);
     const tex = _bakeValid(it) ? it.bake : null;              // ⬚ V0.3.5.35 — a baked part is written with its texture
-    const white = tex ? (whiteId ??= _whitePresetId()) : null;
-    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr, tint: white ? { presetId: white, edited: true } : it.presetId ? { presetId: it.presetId, edited: !!it.colorEdited } : null });
+    const white = tex ? (whiteId ??= _whitePresetId({ make: !dry })) : null;
+    // a bake made here replaces the colour the open step showed; one read back from the file and left alone is
+    // not a recolouring (a step that ghosts the part keeps its own colour)
+    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr, tint: white ? { presetId: white, edited: !tex.fromFile } : it.presetId ? { presetId: it.presetId, edited: !!it.colorEdited } : null });
     const baked = clonePoly(it.poly), v = new Th.Vector3(), flip = M.determinant() < 0;
     for (let i = 0; i < baked.v.length; i += 3) { v.set(baked.v[i], baked.v[i + 1], baked.v[i + 2]).applyMatrix4(M); baked.v[i] = v.x; baked.v[i + 1] = v.y; baked.v[i + 2] = v.z; }
     if (flip) baked.f = baked.f.map(f => f.slice().reverse());
@@ -2514,7 +2520,7 @@ export async function applyPolySession() {
     const panel = await import('../ui/poly-editor-panel.js');
     if (_s.reedit) {
       const re = _s.reedit;
-      const { roots, parts } = _assetLayout('asset');
+      const { roots, parts } = _assetLayout('asset', { dry: true });
       if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
       const plan = planPolyAssetUpdate(re.modelId, parts);
       const d = plan.ok && plan.structureChanged ? plan.diff : null;
