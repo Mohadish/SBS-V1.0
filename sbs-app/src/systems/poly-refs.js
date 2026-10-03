@@ -162,19 +162,76 @@ export function syncPolyRefs() {
 }
 
 /**
- * ⬚ V0.3.5.30 — what a box projection needs: per view, the picture on top of that view's stack (loaded; hidden
- * or not — hiding a picture is for seeing the model, not for taking its projection away) → { tex, uv(p) },
- * p in the session group's space: where p falls on the picture, straight along the view's axis (0…1 inside it).
+ * ⬚ V0.3.5.30 / .32 — what a box projection needs, per view: ONE picture made of every picture of that view
+ * that takes part (🎯, on by default), merged the way they lie on the view — the higher in the stack covers the
+ * lower, like layers merged in Photoshop: a close-up squared up and enlarged over the whole shot, a sticker on
+ * top. Around it a clear border: outside the pictures a face keeps the part's colour (no smeared edge pixels).
+ * → { view: { tex, uv(p) } }, p in the session group's space: where p falls on the merged picture, straight
+ * along the view's axis. `stale` (not enumerable): a merge was held back (a drag in progress) — ask again soon.
  */
+const COMP_MAX = 4096;                                       // the merged picture's longest side, px
+const _comp = new Map();                                     // view → { sig, canvas, tex, rel: [x0, y0, x1, y1] from the first picture's corner, t }
+function _dropComp(view) {
+  const c = _comp.get(view); if (!c) return;
+  _comp.delete(view);
+  requestAnimationFrame(() => requestAnimationFrame(() => { try { c.tex.dispose(); } catch { /* fine */ } }));   // a skin may draw with it one more frame
+}
 export function polyRefProjectors() {
   const out = {};
-  if (!_h) return out;
-  const a = _h.anchor(), top = {};
-  for (const r of _refs) if (r.mesh && r.w > 0 && r.h > 0 && r.size > 0) top[r.view] = r;   // bottom → top: the last one wins
-  for (const [view, r] of Object.entries(top)) {
-    const b = _basis(view), c = a.clone().addScaledVector(b.right, r.u).addScaledVector(b.up, r.v), W = r.size, H = r.size * r.h / r.w;
-    out[view] = { tex: r.mesh.material.map, ref: r.id, uv: (p) => { const dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z; return [(dx * b.right.x + dy * b.right.y + dz * b.right.z) / W + 0.5, (dx * b.up.x + dy * b.up.y + dz * b.up.z) / H + 0.5]; } };
+  let stale = false;
+  if (_h) {
+    const a = _h.anchor(), byView = new Map();
+    for (const r of _refs) {                               // bottom → top
+      if (r.proj === false || !r.mesh || !(r.w > 0) || !(r.h > 0) || !(r.size > 0) || !r.mesh.material.map?.image) continue;
+      if (!byView.has(r.view)) byView.set(r.view, []);
+      byView.get(r.view).push(r);
+    }
+    for (const view of REF_VIEWS) {
+      const list = byView.get(view);
+      if (!list) { _dropComp(view); continue; }
+      // each picture's rectangle on the view's plane: x along its right, y along its up, from the anchor
+      const rects = list.map(r => { const hh = r.size * r.h / r.w / 2; return { r, src: r.mesh.material.map.image, x0: r.u - r.size / 2, x1: r.u + r.size / 2, y0: r.v - hh, y1: r.v + hh }; });
+      const f = rects[0];
+      let X0 = Math.min(...rects.map(q => q.x0)), X1 = Math.max(...rects.map(q => q.x1)), Y0 = Math.min(...rects.map(q => q.y0)), Y1 = Math.max(...rects.map(q => q.y1));
+      let ppu = Math.max(...rects.map(q => q.r.w / q.r.size));      // the sharpest picture keeps its own pixels…
+      ppu = Math.min(ppu, (COMP_MAX - 4) / Math.max(X1 - X0, Y1 - Y0));   // …within the limit
+      const pad = 2 / ppu; X0 -= pad; X1 += pad; Y0 -= pad; Y1 += pad;
+      const r6 = (x) => Math.round(x * 1e6) / 1e6;
+      // what the merge depends on: which pictures (and their pixels), and where they lie RELATIVE to each other —
+      // moving them all together, or the only one, needs no new merge (only the coordinates follow)
+      const sig = rects.map(q => `${q.r.id}:${q.r.mesh.material.map.uuid}:${r6(q.x0 - f.x0)}:${r6(q.y0 - f.y0)}:${r6(q.r.size)}`).join('|');
+      let c = _comp.get(view);
+      if (!c || c.sig !== sig) {
+        const now = performance.now();
+        if (c && now - c.t < 80) stale = true;             // a picture is being dragged: the last merge stands in, the next one comes soon
+        else {
+          const W = Math.max(1, Math.ceil((X1 - X0) * ppu)), H = Math.max(1, Math.ceil((Y1 - Y0) * ppu));
+          const same = c && c.canvas.width === W && c.canvas.height === H;
+          const canvas = same ? c.canvas : document.createElement('canvas');
+          if (!same) { canvas.width = W; canvas.height = H; }
+          const g = canvas.getContext('2d');
+          g.clearRect(0, 0, W, H);
+          g.imageSmoothingQuality = 'high';
+          for (const q of rects) g.drawImage(q.src, (q.x0 - X0) * ppu, (Y1 - q.y1) * ppu, (q.x1 - q.x0) * ppu, (q.y1 - q.y0) * ppu);   // the canvas runs down, the plane's up runs up
+          let tex = same ? c.tex : null;
+          if (tex) tex.needsUpdate = true;
+          else { if (c) _dropComp(view); tex = _texture(canvas); }
+          c = { sig, canvas, tex, rel: [X0 - f.x0, Y0 - f.y0, X1 - f.x0, Y1 - f.y0], t: now };
+          _comp.set(view, c);
+        }
+      }
+      const b = _basis(view), [rx0, ry0, rx1, ry1] = c.rel;
+      const x0 = f.x0 + rx0, y0 = f.y0 + ry0, sx = 1 / (rx1 - rx0), sy = 1 / (ry1 - ry0);
+      out[view] = {
+        tex: c.tex,
+        uv: (p) => {
+          const dx = p.x - a.x, dy = p.y - a.y, dz = p.z - a.z;
+          return [((dx * b.right.x + dy * b.right.y + dz * b.right.z) - x0) * sx, ((dx * b.up.x + dy * b.up.y + dz * b.up.z) - y0) * sy];
+        },
+      };
+    }
   }
+  Object.defineProperty(out, 'stale', { value: stale, enumerable: false });
   return out;
 }
 
@@ -210,7 +267,7 @@ function _syncHelpers() {
 // ── what the panel reads ─────────────────────────────────────────────────────
 export function polyRefsInfo() {
   if (!_h) return { edit: false, sel: null, view: 'persp', list: [] };
-  return { edit: _edit, sel: _sel, view: _h.view(), list: _refs.map(r => ({ id: r.id, view: r.view, name: r.name, opacity: r.opacity, front: !!r.front, visible: !!r.visible, size: r.size, squared: !!r.quad, missing: !r.mesh })) };
+  return { edit: _edit, sel: _sel, view: _h.view(), list: _refs.map(r => ({ id: r.id, view: r.view, name: r.name, opacity: r.opacity, front: !!r.front, visible: !!r.visible, size: r.size, squared: !!r.quad, missing: !r.mesh, proj: r.proj !== false })) };
 }
 /**
  * For the asset: the file's path, never its pixels. Each entry carries the anchor it was measured from (`a`),
@@ -235,6 +292,7 @@ export function polyRefsForSave(X = null) {
     }
     out.push({ view, name: r.name, path: r.path, quad: r.quad ? r.quad.map(p => ({ x: r6(p.x), y: r6(p.y) })) : null, aspect: r.aspect || null,
       ...(r.quad && r.sq ? { sq: r.sq } : {}),               // how the square-up dialog was left (its corners + the frame), to open it the same way
+      ...(r.proj === false ? { proj: false } : {}),          // left out of the projection
       a: [r6(a.x), r6(a.y), r6(a.z)], u: r6(r.u * k), v: r6(r.v * k), size: r6(r.size * k), opacity: r6(r.opacity), front: !!r.front, visible: !!r.visible });
   }
   return out;
@@ -255,7 +313,7 @@ export function initPolyRefs(host, saved = null) {
   for (const s of Array.isArray(saved) ? saved : []) {
     if (!s || !REF_VIEWS.includes(s.view) || typeof s.path !== 'string') continue;
     const quad = Array.isArray(s.quad) && s.quad.length === 4 && s.quad.every(p => Number.isFinite(p?.x) && Number.isFinite(p?.y)) ? s.quad.map(p => ({ x: p.x, y: p.y })) : null;
-    const ref = { id: `r${++_seq}`, view: s.view, name: String(s.name || s.path.split(/[\\/]/).pop() || 'picture'), path: s.path, quad, aspect: s.aspect > 0 ? s.aspect : null, sq: quad && s.sq && typeof s.sq === 'object' ? s.sq : null,
+    const ref = { id: `r${++_seq}`, view: s.view, name: String(s.name || s.path.split(/[\\/]/).pop() || 'picture'), path: s.path, quad, aspect: s.aspect > 0 ? s.aspect : null, sq: quad && s.sq && typeof s.sq === 'object' ? s.sq : null, proj: s.proj !== false,
       u: Number(s.u) || 0, v: Number(s.v) || 0, size: s.size > 0 ? s.size : 100, opacity: s.opacity > 0 ? s.opacity : 0.6, front: !!s.front, visible: s.visible !== false, w: 1, h: 1, mesh: null, mode: null };
     if (Array.isArray(s.a) && s.a.length === 3 && s.a.every(Number.isFinite)) {   // measured from another anchor than today's: same spot, new numbers
       const d = new Th.Vector3(s.a[0], s.a[1], s.a[2]).sub(A), b = _basis(ref.view);
@@ -271,6 +329,7 @@ export function initPolyRefs(host, saved = null) {
   syncPolyRefs();
 }
 export function disposePolyRefs() {
+  for (const v of [..._comp.keys()]) _dropComp(v);         // the merged projection pictures
   _gen++;
   _endDrag(false);
   try { if (_camFn) sceneCore.off?.('controls:change', _camFn); } catch { /* fine */ }
@@ -366,7 +425,7 @@ export function setPolyRefsEdit(on) {
   _changed();
 }
 
-const _PROPS = new Set(['opacity', 'front', 'visible', 'size', 'u', 'v', 'view', 'name']);
+const _PROPS = new Set(['opacity', 'front', 'visible', 'size', 'u', 'v', 'view', 'name', 'proj']);
 let _live = null;   // { id, before } while a slider is dragged: one undo step when it is let go
 /**
  * props = { opacity?, front?, visible?, size?, u?, v?, view?, name? }; live = a slider being dragged (no undo

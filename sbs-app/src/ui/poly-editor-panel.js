@@ -243,6 +243,7 @@ function _renderRefs(info) {
       name.title = 'Select it (and go to its view)';
       name.addEventListener('click', () => selectPolyRef(r.id));
       line.append(eye, name,
+        btn(r.proj ? '🎯' : '⊘', r.proj ? 'Used in the projection (merged with the other pictures of this view) — click to leave it out' : 'Left out of the projection — click to use it', () => setPolyRefProps(r.id, { proj: !r.proj }), `padding:2px 6px;${r.proj ? '' : 'opacity:.55;'}`),
         btn('▲', 'Bring it forward (over the other pictures of this view)', () => movePolyRefOrder(r.id, 1), 'padding:2px 6px;'),
         btn('▼', 'Send it back', () => movePolyRefOrder(r.id, -1), 'padding:2px 6px;'),
         btn('⌗', 'Square it up again — four corners onto what should be a rectangle', () => squarePolyRef(r.id), 'padding:2px 6px;'),
@@ -285,6 +286,7 @@ function _renderRefs(info) {
   );
   _root.append(pr);
   _root.append(_note(info.projected ? `${info.projected} part${info.projected === 1 ? ' has' : 's have'} the pictures projected on. Move, scale or square a picture and its projection follows. A preview for now: Apply does not write it into the asset yet.` : 'Line the pictures up with the model (✥ Move / scale), then project. Hiding a picture does not take its projection away.'));
+  _root.append(_note('All the pictures of a view that have 🎯 are merged into one and projected together — the higher in the list covers the lower, like layers: a close-up squared up and enlarged over the whole shot, a sticker on top. Outside the pictures the part keeps its colour.'));
 }
 
 /**

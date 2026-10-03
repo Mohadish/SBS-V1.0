@@ -1924,7 +1924,8 @@ function _buildSkin(part, P) {
     g.addGroup(o * 3, list.length * 3, mats.length);
     const old = keep.get(pr.tex);
     if (old) keep.delete(pr.tex);
-    mats.push(old || new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    // clear where no picture lies (the merge has a clear border): the part's own colour shows there
+    mats.push(old || new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, transparent: true, alphaTest: 0.02, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
     for (const tri of list) {
       for (let c = 0; c < 3; c++) {
         const i = tri * 3 + c, j = o * 3 + c;
@@ -1963,6 +1964,7 @@ function _flushSkins() {
     try { _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
     if (it.skin) { it.skin.visible = !editing; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) ? 0x0b3a52 : 0x000000); }
   }
+  if (P.stale) setTimeout(() => _markSkins(), 100);        // a merge was held back during a drag: catch up when the hand rests
   sceneCore.requestRender?.(60);
 }
 /** 🎯 Project the pictures onto the selected parts (none selected = every part). Asks about sides that have no picture. */
