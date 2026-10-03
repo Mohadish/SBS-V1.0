@@ -27,14 +27,14 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.5.43';
+export const APP_VERSION  = 'V0.3.5.44';
 // The oldest CORE (electron/*.js, preload, helper pages) this interface can run on.
 // BUMP THIS whenever a change under electron/ lands — the interface then tells a
 // Ctrl+R'd session that a full restart is needed, and stays quiet otherwise.
 export const CORE_VERSION = 'V0.3.4.185';
 // Format: YYYY-MM-DD. Bump along with APP_VERSION on every build worth
 // labelling so the File tab shows you're running the expected slice.
-export const APP_RELEASED = '2026-09-30';
+export const APP_RELEASED = '2026-10-03';
 
 
 // ═══════════════════════════════════════════════════════════════════════════

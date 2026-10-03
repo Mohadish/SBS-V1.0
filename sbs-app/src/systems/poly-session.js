@@ -2615,7 +2615,7 @@ function _boolEnd(quiet = false) {
     try { st.bar?.remove(); } catch { /* gone */ }
   }
   _s.bool = null; _s.boolPick = null;
-  if (had && !quiet) { _syncScene(); _hint(); _emit('mode'); }
+  if (had) { if (!quiet) { _syncScene(); _emit('mode'); } _hint(); }   // the boolean's sticky line goes in every case (after an Apply, an undo)
 }
 
 // ── the right-click menu of a part / folder ──────────────────────────────────
@@ -2791,6 +2791,8 @@ function _onKey(e) {
   }
   const mod = e.ctrlKey || e.metaKey;
   // Undo / redo stay inside the editor: the shared stack also holds the project's entries underneath.
+  // nothing is committed while a boolean is set up: the undo key only cancels it (it must not also undo the edit before)
+  if ((_s.bool || _s.boolPick) && mod && (e.code === 'KeyZ' || e.code === 'KeyY')) { e.preventDefault(); e.stopImmediatePropagation(); _boolEnd(); setStatus('Boolean cancelled.', 'info', 2000); return; }
   if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
     const redo = e.code === 'KeyY' || e.shiftKey;
     if (!polySessionUndoOk(redo)) {
@@ -2982,6 +2984,7 @@ function _assetLayout(space = 'scene', { dry = false } = {}) {   // dry: read on
  */
 export async function applyPolySession() {
   if (!_s || _s.applying || _s.asking) return false;
+  if (_s.bool || _s.boolPick) { setStatus('A boolean is open: Apply it (Enter) or cancel it (Esc) first.', 'warn', 5000); return false; }   // the tree still holds the operands, not what is shown
   if (isPolyEditing()) exitPolyEdit();
   _s.asking = true;
   try {
