@@ -13,7 +13,7 @@ import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
-  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent, polyNewShape, polyShapeFromFace,
+  polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent, polyNewShape, polyShapeFromFace, polyBooleanStart,
   setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection, polyBakeProjection,
 } from '../systems/poly-session.js';
 import { quadForExtent, quadCoords, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
@@ -237,6 +237,15 @@ function _render(what) {
     btn('⬚ Clean edges', 'Merge coplanar faces of the selected part(s)', () => polyCleanSelected()),
   );
   _root.append(tools);
+  // ⬚ V0.3.5.43 — booleans: the selected part is kept; click the other one (or select both first)
+  const bo = row(); bo.style.marginTop = '5px';
+  const boOn = 'background:#1d4ed8;border-color:#60a5fa;color:#fff;';
+  bo.append(
+    btn('∪ Union', 'Select the part to keep, press this, click the other one — you see the result before it is applied', () => polyBooleanStart('union'), `flex:1;${info.boolOp === 'union' ? boOn : ''}`),
+    btn('− Subtract', 'Select the part to keep, press this, click what is cut away — the result shows first; Swap if the order was the wrong way round', () => polyBooleanStart('subtract'), `flex:1;${info.boolOp === 'subtract' ? boOn : ''}`),
+    btn('∩ Intersect', 'Select a part, press this, click the other one — what both share is kept', () => polyBooleanStart('intersect'), `flex:1;${info.boolOp === 'intersect' ? boOn : ''}`),
+  );
+  _root.append(bo);
 
   _root.append(section(`Tree — ${info.parts} part${info.parts === 1 ? '' : 's'} · how it is arranged here is how the objects are separated in the asset`));
   _treeEl = el('div', 'flex:1;min-height:80px;overflow:auto;border:1px solid var(--line,#334155);border-radius:10px;padding:4px 0;');

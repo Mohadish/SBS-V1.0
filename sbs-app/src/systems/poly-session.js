@@ -45,7 +45,8 @@ import { sourceMatrixOfModel } from '../core/transforms.js';
 import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
 import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's colours, used (and added to) from the editor
-import * as shapeEditor from './shape-editor.js';         // ⬚ V0.3.5.40 — the project's flat-shape tool, drawing the editor's shapes
+import * as shapeEditor from './shape-editor.js';
+import { booleanPoly, warmBooleanLib } from './poly-csg.js';   // ⬚ V0.3.5.43 — booleans between parts (the Manifold kernel the extrude already uses)         // ⬚ V0.3.5.40 — the project's flat-shape tool, drawing the editor's shapes
 import { xorPolygonList } from './flat-shapes.js';
 import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef, polyRefProjectors, REF_VIEWS } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
 
@@ -103,6 +104,7 @@ export function polySessionInfo() {
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
     scale: !!_s.scale,                                       // ⬚ V0.3.5.28 — the scale box is up
     shapeTool: _s.shapeFacePick ? 'face' : _s.shapeEdit ? 'edit' : _s.shapeNew ? 'new' : null,   // ⬚ V0.3.5.40 — the shape tool is up
+    boolOp: _s.bool?.op || _s.boolPick?.op || null,           // ⬚ V0.3.5.43 — a boolean is being set up
     faceAngle: Number(state.get('shapeFaceAngleThreshold') ?? 5),
     scl: _scalePct(),                                        //   the scale record of the one selected object, % of how it came in
   };
@@ -520,7 +522,7 @@ function _syncScene() {
   const selParts = new Set(_selectedPartIds()), editing = isPolyEditing();
   for (const it of _s.items.values()) {
     if (it.kind !== 'part' || !it.mesh) continue;
-    it.mesh.visible = alive.has(it.id);
+    it.mesh.visible = alive.has(it.id) && !(_s.bool && (_s.bool.a === it.id || _s.bool.b.includes(it.id)));   // a boolean's operands: its result is shown instead
     it.mesh.material.emissive?.setHex(selParts.has(it.id) ? 0x0b3a52 : 0x000000);
     _syncEdges(it, selParts.has(it.id) && alive.has(it.id) && !editing);   // (the sub-object editor draws its own)
   }
@@ -585,7 +587,7 @@ export function setPolyTab(tab) {
   if (!_s) return;
   _s.tab = tab === 'colors' || tab === 'env' || tab === 'refs' ? tab : 'model';
   if (_s.tab !== 'model' && _s.scale) { _scaleEnd(); _hint(); _syncScene(); }   // the scale box belongs to the Model tab
-  if (_s.tab !== 'model') _endShapeEdit();                 // so does the shape tool
+  if (_s.tab !== 'model') { _endShapeEdit(); _boolEnd(); }   // so do the shape tool and a boolean
   if (_s.tab !== 'refs' && polyRefsEditing()) setPolyRefsEdit(false);   // "move / scale pictures" belongs to the Refs tab: elsewhere a click must reach the parts
   _emit('view');
 }
@@ -740,8 +742,8 @@ function _push(label, undo, redo) {
   const sid = _s.sid;
   _noteEdit();
   undoManager.push(label,
-    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); undo(); _syncScene(); _emit('undo'); },
-    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); redo(); _syncScene(); _emit('undo'); },
+    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); _boolEnd(true); undo(); _syncScene(); _emit('undo'); },
+    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); _boolEnd(true); redo(); _syncScene(); _emit('undo'); },
     { scope: SCOPE });
 }
 const _structSnap = () => ({ rootIds: _s.rootIds.slice(), items: [..._s.items.values()].map(it => ({ id: it.id, name: it.name, parent: it.parent, children: it.kind === 'folder' ? it.children.slice() : null })) });
@@ -969,6 +971,7 @@ export function polyEnterSub(mode = 'face', id = null) {
   if (!_s) return false;
   _scaleEnd();
   _endShapeEdit();
+  _boolEnd();
   const target = id || _s.primary || _selectedPartIds()[0];
   const it = _s.items.get(target);
   if (!it || it.kind !== 'part') { setStatus('Select ONE part first, then choose vertices or faces.', 'warn', 3500); return false; }
@@ -1591,7 +1594,7 @@ export function polySetScaleMode(on) {
   if (want && !_selectedPartIds().length) { setStatus('Select what should be scaled first.', 'warn', 3500); return false; }
   if (want && isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
-  if (want) { if (_s.pick) _endPick(true); _endShapeEdit(); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); }
+  if (want) { if (_s.pick) _endPick(true); _endShapeEdit(); _boolEnd(); _s.pivotMode = false; if (polyRefsEditing()) setPolyRefsEdit(false); if (!_s.scale) _scaleBegin(); }
   else _scaleEnd();
   _hint(); _syncScene(); _emit('mode');
   return true;
@@ -2338,6 +2341,7 @@ function _shapesReady() {
   if (!_s) return false;
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
+  _boolEnd();
   _endShapeEdit(); if (_s.pick) _endPick(true); _scaleEnd(); _s.pivotMode = false;
   if (polyRefsEditing()) setPolyRefsEdit(false);
   shapeEditor.setPlanePicker(_shapePlanePick);
@@ -2474,6 +2478,146 @@ function _shapeMenu(e) {
   showContextMenu(items, e.clientX, e.clientY);
 }
 
+// ── ⬚ V0.3.5.43 — BOOLEANS between parts (his spec) ────────────────────────────────────────────
+// Right-click a part ▸ Boolean ▸ Union / Subtraction / Intersection, then click the second object (two or
+// more already selected: those). The RESULT is shown before anything changes — the operands hidden, the
+// result in their place — with Approve / Cancel; a subtraction can be SWAPPED (B − A: the wrong object was
+// kept), and the kind can still be changed there. Approve BAKES it: the kept part takes the result (its own
+// name, frame, colour), the others leave the tree — no record of the operation, one undo step.
+const _BOOL_NAME = { union: 'Union', subtract: 'Subtraction', intersect: 'Intersection' };
+/** Part O's poly in part K's own space. */
+function _polyInSpaceOf(O, K) {
+  const Th = T(); O.mesh.updateMatrix(); K.mesh.updateMatrix();
+  const M = new Th.Matrix4().copy(K.mesh.matrix).invert().multiply(O.mesh.matrix);
+  const p = _polyApply(clonePoly(O.poly), M);
+  if (M.determinant() < 0) p.f = p.f.map(f => f.slice().reverse());
+  return p;
+}
+/** ⊕ Start a boolean: the selected parts (the primary first) — or the selected one, then a click on the second. */
+export function polyBooleanStart(op = 'union') {
+  if (!_s || !_BOOL_NAME[op]) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  _boolEnd(); _endShapeEdit(); if (_s.pick) _endPick(true); _scaleEnd(); _s.pivotMode = false;
+  if (polyRefsEditing()) setPolyRefsEdit(false);
+  try { warmBooleanLib(); } catch { /* loaded on use */ }
+  const alive = _aliveIds();
+  const parts = [..._s.sel].map(id => _s.items.get(id)).filter(it => it?.kind === 'part' && it.mesh && alive.has(it.id));
+  parts.sort((a, b) => (a.id === _s.primary ? -1 : b.id === _s.primary ? 1 : 0));
+  if (!parts.length) { setStatus('Select a part first (the one that is kept), then Boolean.', 'warn', 4000); return false; }
+  if (parts.length >= 2) { _boolPreview(op, parts[0].id, parts.slice(1).map(p => p.id)); return true; }
+  _s.boolPick = { op, a: parts[0].id };
+  if (gizmo.activeTarget === _target) gizmo.hide();
+  _hint(); _emit('mode');
+  return true;
+}
+function _boolPickClick(e) {
+  const k = _s.boolPick; if (!k) return;
+  const id = _pickPart(e);
+  if (!id || id === k.a) { setStatus(id ? 'That is the first object — click the second one (Esc cancels).' : 'Click the second object (Esc cancels).', 'info', 3000); return; }
+  _s.boolPick = null;
+  _boolPreview(k.op, k.a, [id]);
+}
+function _boolPreview(op, a, b) {
+  _s.bool = { op, a, b, swap: false, result: null, keep: a, seq: 0, busy: false, error: null, mesh: null, bar: null };
+  if (gizmo.activeTarget === _target) gizmo.hide();
+  _boolBar(); _syncScene(); _hint();
+  _boolCompute();
+}
+async function _boolCompute() {
+  const st = _s?.bool; if (!st) return;
+  const seq = ++st.seq; st.busy = true; st.error = null; _boolBar();
+  const swapped = st.swap && st.op === 'subtract';
+  const keepId = swapped ? st.b[0] : st.a, others = swapped ? [st.a, ...st.b.slice(1)] : st.b;
+  const K = _s.items.get(keepId);
+  let acc = K ? clonePoly(K.poly) : null, error = null;
+  try {
+    for (const oid of others) {
+      const O = _s.items.get(oid); if (!O || !acc) break;
+      acc = await booleanPoly(acc, _polyInSpaceOf(O, K), st.op);   // A − B − C… / A ∪ B ∪ C… / A ∩ B ∩ C…
+    }
+  } catch (err) { console.warn('[poly session] boolean', err); error = err?.message || String(err); acc = null; }
+  if (!_s || _s.bool !== st || seq !== st.seq) return;     // cancelled, or a newer choice is computing
+  st.busy = false; st.keep = keepId; st.result = acc; st.error = error;
+  _boolShow(); _boolBar(); _hint();
+}
+/** The result in the kept part's place (the operands are hidden meanwhile — _syncScene). */
+function _boolShow() {
+  const st = _s?.bool; if (!st) return;
+  const Th = T();
+  if (st.mesh) { st.mesh.parent?.remove(st.mesh); st.mesh.geometry.dispose(); st.mesh.material.dispose(); st.mesh.children.forEach(c => { c.geometry?.dispose?.(); c.material?.dispose?.(); }); st.mesh = null; }
+  const K = _s.items.get(st.keep);
+  if (st.result && K?.mesh) {
+    const { positions, normals } = polyToArrays(st.result);
+    const g = new Th.BufferGeometry();
+    g.setAttribute('position', new Th.BufferAttribute(positions, 3)); g.setAttribute('normal', new Th.BufferAttribute(normals, 3));
+    const mat = new Th.MeshStandardMaterial({ color: K.mesh.material.color.clone(), metalness: 0, roughness: 0.6, side: Th.DoubleSide, emissive: new Th.Color(0x3b2a07), polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
+    const m = new Th.Mesh(g, mat); m.raycast = () => {}; m.name = 'poly:boolean-preview';
+    const eg = new Th.BufferGeometry(); eg.setAttribute('position', new Th.Float32BufferAttribute(polyEdges(st.result), 3));
+    const edges = new Th.LineSegments(eg, new Th.LineBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.9, depthWrite: false }));
+    edges.renderOrder = 9600; edges.raycast = () => {};
+    m.add(edges);
+    m.position.copy(K.mesh.position); m.quaternion.copy(K.mesh.quaternion); m.scale.copy(K.mesh.scale);
+    _s.group.add(m);
+    st.mesh = m;
+  }
+  sceneCore.requestRender?.(120);
+}
+/** The bar over the viewport: the kind, the order (a subtraction), Approve / Cancel. */
+function _boolBar() {
+  const st = _s?.bool; if (!st) return;
+  if (!st.bar) {
+    const surf = document.getElementById('viewport-surface') || sceneCore.renderer.domElement.parentElement;
+    st.bar = document.createElement('div');
+    st.bar.style.cssText = 'position:absolute;top:40px;left:50%;transform:translateX(-50%);z-index:40;display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:7px 10px;border-radius:10px;background:var(--panel,#0f172a);border:1px solid #fbbf24;box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e5e7eb);font-size:12px;max-width:94%;';
+    surf?.appendChild(st.bar);
+  }
+  const bar = st.bar; bar.innerHTML = '';
+  const b = (label, title, on, fn, extra = '') => { const x = document.createElement('button'); x.className = 'btn'; x.textContent = label; x.title = title; x.style.cssText = `height:26px;padding:0 9px;font-size:12px;${on ? 'background:#1d4ed8;border-color:#60a5fa;color:#fff;' : ''}${extra}`; x.addEventListener('click', (e) => { e.preventDefault(); fn(); x.blur(); }); return x; };
+  const nm = (id) => _s.items.get(id)?.name || '?';
+  const swapped = st.swap && st.op === 'subtract', keepName = nm(swapped ? st.b[0] : st.a), rest = (swapped ? [st.a, ...st.b.slice(1)] : st.b).map(nm);
+  const sym = st.op === 'union' ? ' ∪ ' : st.op === 'intersect' ? ' ∩ ' : ' − ';
+  const lab = document.createElement('span'); lab.style.cssText = 'font-weight:600;margin-right:4px;';
+  lab.textContent = `⊕ ${[keepName, ...rest].join(sym)}`;
+  bar.append(lab);
+  for (const op of ['union', 'subtract', 'intersect']) bar.append(b(_BOOL_NAME[op], `${_BOOL_NAME[op]} — look at the result before it is applied`, st.op === op, () => { if (st.op !== op) { st.op = op; _boolCompute(); } }));
+  if (st.op === 'subtract') bar.append(b('⇄ Swap', 'Subtract the other way round — the other object is kept, this one is cut away', st.swap, () => { st.swap = !st.swap; _boolCompute(); }));
+  const msg = document.createElement('span'); msg.style.cssText = 'opacity:.75;margin:0 4px;';
+  msg.textContent = st.busy ? 'computing…' : st.error ? `can't: ${st.error}` : !st.result ? 'nothing would be left' : `→ ${keepName} (${st.result.f.length} faces)`;
+  bar.append(msg);
+  const ok = b('✔ Apply  [Enter]', 'Bake it: the kept part takes the result, the other(s) leave the tree. One undo step.', false, () => _boolApply(), 'background:#14532d;border-color:#22c55e;color:#dcfce7;font-weight:600;');
+  ok.disabled = st.busy || !st.result;
+  bar.append(ok, b('✕ Cancel  [Esc]', 'Leave everything as it was', false, () => { _boolEnd(); setStatus('Boolean cancelled.', 'info', 2500); }));
+}
+function _boolApply() {
+  const st = _s?.bool; if (!st || st.busy || !st.result) return;
+  const K = _s.items.get(st.keep); if (!K?.mesh) return;
+  const gone = [st.a, ...st.b].filter(id => id !== st.keep);
+  const before = { poly: K.poly, bake: K.bake || null, shape: K.shape || null, struct: _structSnap() };
+  for (const id of gone) _detach(id);
+  const after = { poly: st.result, bake: null, shape: null, struct: _structSnap() };
+  const label = `${_BOOL_NAME[st.op]}${st.swap && st.op === 'subtract' ? ' (swapped)' : ''}`;
+  const put = (s) => { _structRestore(s.struct); K.poly = s.poly; K.bake = s.bake; K.shape = s.shape; _refreshPartMesh(K); _partChanged(K.id); };
+  _boolEnd(true);
+  put(after);
+  _push(label, () => put(before), () => put(after));
+  _s.sel = new Set([K.id]); _s.primary = K.id;
+  _syncScene(); _emit('tree');
+  setStatus(`${label} applied — ${K.name} is the result${gone.length ? `; ${gone.map(id => _s.items.get(id)?.name).join(', ')} left the tree` : ''}. Ctrl+Z takes it back.`, 'success', 7000);
+}
+function _boolEnd(quiet = false) {
+  if (!_s) return;
+  const had = !!(_s.bool || _s.boolPick);
+  const st = _s.bool;
+  if (st) {
+    st.seq++;                                              // a computation still running is thrown away
+    if (st.mesh) { st.mesh.parent?.remove(st.mesh); st.mesh.geometry.dispose(); st.mesh.material.dispose(); st.mesh.children.forEach(c => { c.geometry?.dispose?.(); c.material?.dispose?.(); }); }
+    try { st.bar?.remove(); } catch { /* gone */ }
+  }
+  _s.bool = null; _s.boolPick = null;
+  if (had && !quiet) { _syncScene(); _hint(); _emit('mode'); }
+}
+
 // ── the right-click menu of a part / folder ──────────────────────────────────
 export function polyShowMenu(x, y) {
   if (!_s || !_s.sel.size) return;
@@ -2484,6 +2628,12 @@ export function polyShowMenu(x, y) {
     { separator: true },
     { label: `${_s.scale ? '✔ ' : ''}⤢ Scale (the box with handles)`, disabled: !nParts, action: () => polySetScaleMode(!_s.scale) },
     { label: _s.reedit ? '↩ Restore from the saved file (as it came in)' : '↩ Restore (as it came in)', disabled: !nParts, action: () => polyRestoreSelected() },
+    { separator: true },
+    { label: '⊕ Boolean', disabled: !nParts, submenu: [
+      { label: '∪ Union — then click the other object', action: () => polyBooleanStart('union') },
+      { label: '− Subtraction — then click what is cut away', action: () => polyBooleanStart('subtract') },
+      { label: '∩ Intersection — then click the other object', action: () => polyBooleanStart('intersect') },
+    ] },
     { separator: true },
     { label: '🎯 Project the reference pictures (box)', disabled: !nParts, action: () => polyProjectPictures() },
     { label: '🔥 Bake the projection (into the part\'s own texture)', disabled: !_selectedPartIds().some(id => _s.items.get(id)?.proj), action: () => polyBakeProjection() },
@@ -2510,6 +2660,7 @@ export function polyShowMenu(x, y) {
 
 function _syncGizmo() {
   if (!_s || isPolyEditing() || _s.pick) return;
+  if (_s.bool || _s.boolPick) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (shapeEditor.isDrawing() || _s.shapeFacePick) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (_s.scale) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }   // the scale box has the stage: no gizmo under its handles
   if (_s.pivotMode && !_singleTop()) {                       // a pivot belongs to ONE object
@@ -2542,6 +2693,8 @@ function _attachInput() {
       if (e.button !== 0) return;
       if (_s.pick) { swallow(e); _pickClick(e); return; }
       if (_s.shapeFacePick) { if (e.button === 0) { swallow(e); _shapeFaceClick(e); } return; }   // ⬚ shape from a face
+      if (_s.boolPick) { if (e.button === 0) { swallow(e); _boolPickClick(e); } return; }          // ⬚ the second object of a boolean
+      if (_s.bool) { if (e.button === 0) swallow(e); return; }                                    // the result is on show: Apply or Cancel first
       if (shapeEditor.isDrawing()) { if (e.button === 0) { swallow(e); shapeEditor.onPointerDown(e.clientX, e.clientY, 0); } return; }   // the shape editor draws (its moves / ups arrive through main.js)
       if (isPolyEditing()) return;                         // the sub-object editor's own listener (added later) takes it
       if (_s.scale && _scaleDown(e)) { swallow(e); return; }   // a handle of the scale box was grabbed
@@ -2555,7 +2708,7 @@ function _attachInput() {
     dbl: (e) => {
       if (!_s) return; e.preventDefault(); e.stopImmediatePropagation();
       if (shapeEditor.isDrawing()) { shapeEditor.onDoubleClick(e.clientX, e.clientY); return; }   // corner = delete, edge = new corner, inside = the whole outline
-      if (isPolyEditing() || _s.pick || _s.shapeFacePick) return;
+      if (isPolyEditing() || _s.pick || _s.shapeFacePick || _s.boolPick || _s.bool) return;
       if (_s.scale && _scaleHit(e)) return;                 // two quick pulls of a handle are not a double-click on the part behind it
       const id = _pickPart(e); if (!id) return;
       if (_isSheet(_s.items.get(id))) polyEditShape(id); else polyEnterSub('face', id);   // a flat shape: its outline; anything else: its faces
@@ -2567,6 +2720,7 @@ function _attachInput() {
       if (r && Math.hypot(e.clientX - r.x, e.clientY - r.y) > 5) return;      // the button was dragged: not a menu click
       if (_s.pick) { _endPick(); setStatus('Cancelled.', 'info', 2000); return; }
       if (_s.shapeFacePick) { _s.shapeFacePick = null; _hint(); setStatus('Cancelled.', 'info', 2000); return; }
+      if (_s.boolPick || _s.bool) { _boolEnd(); setStatus('Boolean cancelled.', 'info', 2000); return; }
       if (shapeEditor.isDrawing()) { if (state.get('shapeDrawing')?.phase === 'edit' && _s.shapeEdit) _shapeMenu(e); return; }
       if (gizmo.onRightClick(e.clientX, e.clientY)) return;                    // on the gizmo: move / rotate by an amount · world / local / parent
       if (isPolyEditing()) return;
@@ -2625,6 +2779,10 @@ function _onKey(e) {
   if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return; }
   // ⬚ V0.3.5.40 — the shape tool has the keys while it is up (the project's handler does not run in the editor)
   if (_s.shapeFacePick && e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _s.shapeFacePick = null; _hint(); setStatus('Cancelled.', 'info', 2000); return; }
+  if ((_s.bool || _s.boolPick) && !(e.ctrlKey || e.metaKey)) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _boolEnd(); setStatus('Boolean cancelled.', 'info', 2000); return; }
+    if (e.key === 'Enter' && _s.bool) { e.preventDefault(); e.stopImmediatePropagation(); _boolApply(); return; }
+  }
   if (shapeEditor.isDrawing() && !(e.ctrlKey || e.metaKey)) {
     if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _endShapeEdit(); return; }
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopImmediatePropagation(); shapeEditor.deleteSelected(); return; }
@@ -2668,6 +2826,8 @@ function _onKey(e) {
 
 function _hint() {
   if (!_s) return;
+  if (_s.boolPick) { setStickyStatus(`⬚ ${_BOOL_NAME[_s.boolPick.op].toUpperCase()} — click the second object (Esc cancels)`, 'info', 'polySession'); return; }
+  if (_s.bool) { setStickyStatus('⬚ BOOLEAN — this is the result: Apply (Enter) bakes it, Cancel (Esc) leaves everything as it was · the bar above changes the kind or swaps a subtraction', 'info', 'polySession'); return; }
   if (_s.shapeFacePick) { setStickyStatus(_s.shapeFacePick.mode === 'add' ? '⬚ Click a face — its outline is laid onto the shape (Esc cancels)' : `⬚ SHAPE FROM A FACE — click a face of a part: it and its neighbours within ${Number(state.get('shapeFaceAngleThreshold') ?? 5)}° become a shape (Esc cancels)`, 'info', 'polySession'); return; }
   if (shapeEditor.isDrawing()) {
     const ph = state.get('shapeDrawing')?.phase;
@@ -2688,6 +2848,7 @@ function _teardown(how = 'discard') {
   _endPick(true);
   _scaleEnd();
   _endShapeEdit();
+  _boolEnd(true);
   try { shapeEditor.setPlanePicker(null); } catch { /* fine */ }
   try { disposePolyRefs(); } catch (err) { console.warn('[poly session] reference pictures', err); }
   try { hideContextMenu(); } catch { /* not up */ }
