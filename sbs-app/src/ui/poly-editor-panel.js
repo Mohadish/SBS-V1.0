@@ -220,7 +220,7 @@ function _renderRefs(info) {
   const top = row();
   top.append(
     btn(`＋ Add a picture${flat ? ` to ${cap(R.view)}` : ' (to Front)'}`, 'Choose a picture, square it up with four corners, and put it on this view', () => addPolyRef(), 'flex:1;font-weight:600;'),
-    btn('✥ Move / scale', 'Grab a picture in the view and drag it, or pull one of its corners. Where you leave it is its home. (Esc ends it.)', () => setPolyRefsEdit(!R.edit), R.edit ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''),
+    btn('✥ Move / scale', 'Grab a picture in the view and drag it, or pull one of its corners (Ctrl + a corner = stretch it wider / taller). Where you leave it is its home. (Esc ends it.)', () => setPolyRefsEdit(!R.edit), R.edit ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''),
   );
   _root.append(top);
   if (!flat) _root.append(_note('You are in Persp: the pictures are hidden. They show only in the flat views — pick Top, Front, Left… above.'));
@@ -270,6 +270,12 @@ function _renderRefs(info) {
         w.addEventListener('change', () => commitW(true));   // left by a click elsewhere: no redraw under that click
         sz.append(el('span', 'opacity:.7;', 'Width'), w, el('span', 'opacity:.55;', r.squared ? '· squared up' : '· as it is'));
         box.append(sz);
+        // ⬚ V0.3.5.33 — stretched (Ctrl + a corner): how much taller / flatter than its own proportion, and the way back
+        const st = el('div', 'display:flex;align-items:center;gap:6px;margin-top:5px;font-size:12px;');
+        const k = r.stretch || 1, off = Math.abs(k - 1) > 1e-4;
+        st.append(el('span', 'opacity:.7;flex:1;', off ? `Stretched: height ${Math.round(k * 1000) / 10} % of its own proportion` : 'Its own proportion (Ctrl + a corner stretches it)'));
+        if (off) st.append(btn('↺ Proportion', 'Back to the picture\'s own proportion (the width stays)', () => setPolyRefProps(r.id, { stretch: 1 }), 'padding:2px 8px;'));
+        box.append(st);
       }
       list.append(box);
     }
@@ -307,21 +313,25 @@ export function askPolySquareUp(src, { title = 'Reference picture', quad = null,
     const PAD = Math.max(28, Math.min(110, Math.round(Math.min(src.width, src.height) * k0 * 0.16)));
     const k = Math.min((window.innerWidth * 0.86 - 2 * PAD) / src.width, (window.innerHeight * 0.62 - 2 * PAD) / src.height, 1);
     const W = Math.max(60, Math.round(src.width * k)), H = Math.max(60, Math.round(src.height * k));
-    const wrap = el('div', `position:relative;width:${W + 2 * PAD}px;height:${H + 2 * PAD}px;margin:0 auto;user-select:none;touch-action:none;background:rgba(127,127,127,.08);border-radius:8px;overflow:hidden;`);
-    const cv = el('canvas', `position:absolute;left:${PAD}px;top:${PAD}px;display:block;`); cv.width = W; cv.height = H;
-    cv.getContext('2d').drawImage(src, 0, 0, W, H);
+    const wrap = el('div', `position:relative;width:${W + 2 * PAD}px;height:${H + 2 * PAD}px;margin:0 auto;user-select:none;touch-action:none;background:rgba(127,127,127,.08);border-radius:8px;overflow:hidden;cursor:grab;`);
+    const cv = el('canvas', 'position:absolute;left:0;top:0;display:block;'); cv.width = W + 2 * PAD; cv.height = H + 2 * PAD;
     const ov = el('canvas', 'position:absolute;left:0;top:0;pointer-events:none;'); ov.width = W + 2 * PAD; ov.height = H + 2 * PAD;
+    // ⬚ V0.3.5.33 — the view of the picture: zoom (wheel, at the cursor) and pan (drag the picture, or the middle button)
+    let vs = 1, vx = PAD, vy = PAD;
     wrap.append(cv, ov);
     const okQuad = (q) => Array.isArray(q) && q.length === 4 && q.every(p => Number.isFinite(p?.x) && Number.isFinite(p?.y));
     const start = okQuad(sq?.ref) ? sq.ref : okQuad(quad) ? quad : [{ x: 0.12, y: 0.12 }, { x: 0.88, y: 0.12 }, { x: 0.88, y: 0.88 }, { x: 0.12, y: 0.88 }];
     const pts = start.map(p => ({ x: p.x, y: p.y }));         // the reference: what should be a rectangle
     let ext = okQuad(sq?.ref) && !isUnitExtent(sq?.ext) ? sq.ext.slice() : [0, 0, 1, 1];   // the frame, in the reference's own coordinates
     const startAspect = okQuad(sq?.ref) ? (sq.aspect || null) : aspect;
-    const X = (x) => PAD + x * W, Y = (y) => PAD + y * H;
+    const X = (x) => vx + x * W * vs, Y = (y) => vy + y * H * vs;
     const dots = [], grips = [];
     const frame = () => quadForExtent(pts, ext);
     const path = (c, q) => { c.beginPath(); q.forEach((p, i) => (i ? c.lineTo(X(p.x), Y(p.y)) : c.moveTo(X(p.x), Y(p.y)))); c.closePath(); };
     const draw = () => {
+      const c0 = cv.getContext('2d'); c0.clearRect(0, 0, cv.width, cv.height);
+      c0.imageSmoothingEnabled = vs < 3;                     // close in, the picture's own pixels show as hard steps — what a corner is aimed at
+      c0.drawImage(src, vx, vy, W * vs, H * vs);
       const c = ov.getContext('2d'); c.clearRect(0, 0, ov.width, ov.height);
       const f = frame(), own = !isUnitExtent(ext) && f;
       path(c, pts);
@@ -341,7 +351,7 @@ export function askPolySquareUp(src, { title = 'Reference picture', quad = null,
     const drag = (node, onMove) => node.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       try { node.setPointerCapture(e.pointerId); } catch { /* fine */ }
-      const move = (ev) => { const r = wrap.getBoundingClientRect(); onMove((ev.clientX - r.left - PAD) / W, (ev.clientY - r.top - PAD) / H); draw(); };
+      const move = (ev) => { const r = wrap.getBoundingClientRect(); onMove((ev.clientX - r.left - vx) / (W * vs), (ev.clientY - r.top - vy) / (H * vs)); draw(); };
       const up = () => { node.removeEventListener('pointermove', move); node.removeEventListener('pointerup', up); node.removeEventListener('pointercancel', up); };
       node.addEventListener('pointermove', move); node.addEventListener('pointerup', up); node.addEventListener('pointercancel', up);
     });
@@ -355,18 +365,41 @@ export function askPolySquareUp(src, { title = 'Reference picture', quad = null,
       });
       dots.push(d); wrap.append(d);
     });
-    const padX = PAD / W, padY = PAD / H;
     for (let i = 0; i < 4; i++) {
       const g = el('div', 'position:absolute;width:16px;height:16px;border-radius:3px;background:#f59e0b;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6);touch-action:none;z-index:1;');
       g.style.cursor = i % 2 ? 'ew-resize' : 'ns-resize';
       g.title = `Pull the ${['top', 'right', 'bottom', 'left'][i]} edge of the frame out (or in) — the perspective stays`;
       drag(g, (x, y) => {
-        const e2 = slideExtent(pts, ext, i, { x: Math.min(1 + padX, Math.max(-padX, x)), y: Math.min(1 + padY, Math.max(-padY, y)) });
+        // the pointer is kept inside what is shown (the frame can still go past the picture, into the border)
+        const lo = (0 - vx) / (W * vs), hiX = (W + 2 * PAD - vx) / (W * vs), loY = (0 - vy) / (H * vs), hiY = (H + 2 * PAD - vy) / (H * vs);
+        const e2 = slideExtent(pts, ext, i, { x: Math.min(hiX, Math.max(lo, x)), y: Math.min(hiY, Math.max(loY, y)) });
         if (e2) ext = e2;
       });
       grips.push(g); wrap.append(g);
     }
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const r = wrap.getBoundingClientRect(), cx = e.clientX - r.left, cy = e.clientY - r.top;
+      const s2 = Math.min(40, Math.max(0.5, vs * (e.deltaY < 0 ? 1.25 : 1 / 1.25)));
+      vx = cx - (cx - vx) * (s2 / vs); vy = cy - (cy - vy) * (s2 / vs); vs = s2;   // the point under the cursor stays under it
+      draw();
+    }, { passive: false });
+    wrap.addEventListener('pointerdown', (e) => {
+      if (e.target !== cv && e.target !== wrap) return;      // a corner or a grip has its own drag
+      if (e.button !== 0 && e.button !== 1) return;
+      e.preventDefault();
+      try { wrap.setPointerCapture(e.pointerId); } catch { /* fine */ }
+      let lx = e.clientX, ly = e.clientY;
+      wrap.style.cursor = 'grabbing';
+      const move = (ev) => { vx += ev.clientX - lx; vy += ev.clientY - ly; lx = ev.clientX; ly = ev.clientY; draw(); };
+      const up = () => { wrap.style.cursor = 'grab'; wrap.removeEventListener('pointermove', move); wrap.removeEventListener('pointerup', up); wrap.removeEventListener('pointercancel', up); };
+      wrap.addEventListener('pointermove', move); wrap.addEventListener('pointerup', up); wrap.addEventListener('pointercancel', up);
+    });
+    wrap.addEventListener('auxclick', (e) => e.preventDefault());   // no autoscroll / paste on the middle button
+    const fit = () => { vs = 1; vx = PAD; vy = PAD; draw(); };
+    wrap.addEventListener('dblclick', (e) => { if (e.target === cv || e.target === wrap) fit(); });
     dlg.append(wrap);
+    dlg.append(el('div', 'font-size:11px;opacity:.6;margin-top:5px;text-align:center;', 'Wheel = zoom in / out at the cursor · drag the picture (or the middle button) = move around · double-click = fit'));
     const bar = el('div', 'display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;');
     const sel = el('select', 'height:28px;font-size:12px;border-radius:6px;background:var(--panel,#0f172a);color:inherit;border:1px solid var(--line,#334155);');
     sel.title = "The width : height of what the four round corners mark. Auto measures it from the corners. (The frame's own proportion follows from it.)";
@@ -381,6 +414,7 @@ export function askPolySquareUp(src, { title = 'Reference picture', quad = null,
       return { quad: f, aspect: fw.w / fw.h, sq: { ref, ext: ext.slice(), aspect: refAspect } };
     };
     bar.append(sel,
+      btn('⤢ Fit', 'Show the whole picture again', fit),
       btn('↺ Frame = the corners', 'Put the frame back on the four corners', () => { ext = [0, 0, 1, 1]; draw(); }),
       el('div', 'flex:1;'),
       btn('⌗ Square it up', 'Re-form the picture so the marked rectangle is one, and cut out the frame', () => done(result()), 'font-weight:600;background:#14532d;border-color:#22c55e;color:#dcfce7;'),

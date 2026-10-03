@@ -57,6 +57,9 @@ let _sel = null, _edit = false, _seq = 0, _drag = null, _camFn = null, _gen = 0;
 const _built = new Set();  // every picture that ever got a plane in this session (a removed one lives on in the undo stack): all are freed at the end
 
 export const polyRefsEditing = () => !!_h && _edit;
+// ⬚ V0.3.5.33 — a picture's height: its own proportion × its STRETCH (1 = as it is; Ctrl + a corner stretches freely)
+const _stretchOf = (r) => (r.stretch > 0 ? r.stretch : 1);
+const _heightOf = (r) => r.size * r.h / r.w * _stretchOf(r);
 const _ref = (id) => _refs.find(r => r.id === id) || null;
 
 function _basis(view) {
@@ -144,7 +147,7 @@ export function syncPolyRefs() {
     const b = _basis(ref.view);
     m.quaternion.setFromRotationMatrix(new Th.Matrix4().makeBasis(b.right, b.up, b.n));
     m.position.copy(a).addScaledVector(b.right, ref.u).addScaledVector(b.up, ref.v);
-    m.scale.set(ref.size, ref.size * ref.h / ref.w, 1);
+    m.scale.set(ref.size, _heightOf(ref), 1);
     const mode = ref.front ? 'front' : 'behind', mat = m.material;
     if (ref.mode !== mode) {
       ref.mode = mode;
@@ -190,7 +193,7 @@ export function polyRefProjectors() {
       const list = byView.get(view);
       if (!list) { _dropComp(view); continue; }
       // each picture's rectangle on the view's plane: x along its right, y along its up, from the anchor
-      const rects = list.map(r => { const hh = r.size * r.h / r.w / 2; return { r, src: r.mesh.material.map.image, x0: r.u - r.size / 2, x1: r.u + r.size / 2, y0: r.v - hh, y1: r.v + hh }; });
+      const rects = list.map(r => { const hh = _heightOf(r) / 2; return { r, src: r.mesh.material.map.image, x0: r.u - r.size / 2, x1: r.u + r.size / 2, y0: r.v - hh, y1: r.v + hh }; });
       const f = rects[0];
       let X0 = Math.min(...rects.map(q => q.x0)), X1 = Math.max(...rects.map(q => q.x1)), Y0 = Math.min(...rects.map(q => q.y0)), Y1 = Math.max(...rects.map(q => q.y1));
       let ppu = Math.max(...rects.map(q => q.r.w / q.r.size));      // the sharpest picture keeps its own pixels…
@@ -199,7 +202,7 @@ export function polyRefProjectors() {
       const r6 = (x) => Math.round(x * 1e6) / 1e6;
       // what the merge depends on: which pictures (and their pixels), and where they lie RELATIVE to each other —
       // moving them all together, or the only one, needs no new merge (only the coordinates follow)
-      const sig = rects.map(q => `${q.r.id}:${q.r.mesh.material.map.uuid}:${r6(q.x0 - f.x0)}:${r6(q.y0 - f.y0)}:${r6(q.r.size)}`).join('|');
+      const sig = rects.map(q => `${q.r.id}:${q.r.mesh.material.map.uuid}:${r6(q.x0 - f.x0)}:${r6(q.y0 - f.y0)}:${r6(q.r.size)}:${r6(q.y1 - q.y0)}`).join('|');
       let c = _comp.get(view);
       if (!c || c.sig !== sig) {
         const now = performance.now();
@@ -250,7 +253,7 @@ function _syncHelpers() {
   if (_helpers.parent !== _root) _root.add(_helpers);
   _helpers.visible = true;
   _helpers.position.copy(ref.mesh.position); _helpers.quaternion.copy(ref.mesh.quaternion);
-  const hw = ref.size / 2, hh = ref.size * ref.h / ref.w / 2;
+  const hw = ref.size / 2, hh = _heightOf(ref) / 2;
   const g = new Th.BufferGeometry();
   g.setAttribute('position', new Th.BufferAttribute(new Float32Array(_CORNERS.flatMap(([x, y]) => [x * hw, y * hh, 0])), 3));
   const line = new Th.LineLoop(g, new Th.LineBasicMaterial({ color: 0x38bdf8, depthTest: false, depthWrite: false, transparent: true }));
@@ -267,7 +270,7 @@ function _syncHelpers() {
 // ── what the panel reads ─────────────────────────────────────────────────────
 export function polyRefsInfo() {
   if (!_h) return { edit: false, sel: null, view: 'persp', list: [] };
-  return { edit: _edit, sel: _sel, view: _h.view(), list: _refs.map(r => ({ id: r.id, view: r.view, name: r.name, opacity: r.opacity, front: !!r.front, visible: !!r.visible, size: r.size, squared: !!r.quad, missing: !r.mesh, proj: r.proj !== false })) };
+  return { edit: _edit, sel: _sel, view: _h.view(), list: _refs.map(r => ({ id: r.id, view: r.view, name: r.name, opacity: r.opacity, front: !!r.front, visible: !!r.visible, size: r.size, squared: !!r.quad, missing: !r.mesh, proj: r.proj !== false, stretch: _stretchOf(r) })) };
 }
 /**
  * For the asset: the file's path, never its pixels. Each entry carries the anchor it was measured from (`a`),
@@ -293,6 +296,7 @@ export function polyRefsForSave(X = null) {
     out.push({ view, name: r.name, path: r.path, quad: r.quad ? r.quad.map(p => ({ x: r6(p.x), y: r6(p.y) })) : null, aspect: r.aspect || null,
       ...(r.quad && r.sq ? { sq: r.sq } : {}),               // how the square-up dialog was left (its corners + the frame), to open it the same way
       ...(r.proj === false ? { proj: false } : {}),          // left out of the projection
+      ...(Math.abs(_stretchOf(r) - 1) > 1e-6 ? { stretch: r6(_stretchOf(r)) } : {}),   // stretched wider / taller than its own proportion
       a: [r6(a.x), r6(a.y), r6(a.z)], u: r6(r.u * k), v: r6(r.v * k), size: r6(r.size * k), opacity: r6(r.opacity), front: !!r.front, visible: !!r.visible });
   }
   return out;
@@ -313,7 +317,7 @@ export function initPolyRefs(host, saved = null) {
   for (const s of Array.isArray(saved) ? saved : []) {
     if (!s || !REF_VIEWS.includes(s.view) || typeof s.path !== 'string') continue;
     const quad = Array.isArray(s.quad) && s.quad.length === 4 && s.quad.every(p => Number.isFinite(p?.x) && Number.isFinite(p?.y)) ? s.quad.map(p => ({ x: p.x, y: p.y })) : null;
-    const ref = { id: `r${++_seq}`, view: s.view, name: String(s.name || s.path.split(/[\\/]/).pop() || 'picture'), path: s.path, quad, aspect: s.aspect > 0 ? s.aspect : null, sq: quad && s.sq && typeof s.sq === 'object' ? s.sq : null, proj: s.proj !== false,
+    const ref = { id: `r${++_seq}`, view: s.view, name: String(s.name || s.path.split(/[\\/]/).pop() || 'picture'), path: s.path, quad, aspect: s.aspect > 0 ? s.aspect : null, sq: quad && s.sq && typeof s.sq === 'object' ? s.sq : null, proj: s.proj !== false, stretch: s.stretch > 0 ? s.stretch : 1,
       u: Number(s.u) || 0, v: Number(s.v) || 0, size: s.size > 0 ? s.size : 100, opacity: s.opacity > 0 ? s.opacity : 0.6, front: !!s.front, visible: s.visible !== false, w: 1, h: 1, mesh: null, mode: null };
     if (Array.isArray(s.a) && s.a.length === 3 && s.a.every(Number.isFinite)) {   // measured from another anchor than today's: same spot, new numbers
       const d = new Th.Vector3(s.a[0], s.a[1], s.a[2]).sub(A), b = _basis(ref.view);
@@ -425,7 +429,7 @@ export function setPolyRefsEdit(on) {
   _changed();
 }
 
-const _PROPS = new Set(['opacity', 'front', 'visible', 'size', 'u', 'v', 'view', 'name', 'proj']);
+const _PROPS = new Set(['opacity', 'front', 'visible', 'size', 'u', 'v', 'view', 'name', 'proj', 'stretch']);
 let _live = null;   // { id, before } while a slider is dragged: one undo step when it is let go
 /**
  * props = { opacity?, front?, visible?, size?, u?, v?, view?, name? }; live = a slider being dragged (no undo
@@ -441,6 +445,7 @@ export function setPolyRefProps(id, props, { live = false, quiet = false } = {})
   if (!_live || _live.id !== id || _live.keys.join() !== keys.join()) _live = { id, keys, before: snap() };
   const next = { ...props };
   if (next.size !== undefined) next.size = Math.max(1e-6, Number(next.size) || ref.size);
+  if (next.stretch !== undefined) next.stretch = Math.min(50, Math.max(0.02, Number(next.stretch) || 1));
   if (next.opacity !== undefined) next.opacity = Math.max(0.02, Math.min(1, Number(next.opacity) || 0));
   if (next.view !== undefined && !REF_VIEWS.includes(next.view)) delete next.view;
   put(next);
@@ -501,7 +506,7 @@ export function polyRefsPointerDown(e) {
   const p = _planeUV(e, view); if (!p) return false;
   const r = grab.ref;
   _sel = r.id;
-  _drag = { ref: r, corner: grab.corner, view, p0: p, u0: r.u, v0: r.v, size0: r.size, moved: false, x0: e.clientX, y0: e.clientY };
+  _drag = { ref: r, corner: grab.corner, view, p0: p, u0: r.u, v0: r.v, size0: r.size, stretch0: _stretchOf(r), moved: false, x0: e.clientX, y0: e.clientY };
   _drag.move = (ev) => _dragMove(ev);
   _drag.up = () => _endDrag(true);
   window.addEventListener('pointermove', _drag.move, true);
@@ -514,15 +519,21 @@ function _dragMove(e) {
   const d = _drag; if (!d || !_h) return;
   if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;   // a click with a little jitter only selects
   const p = _planeUV(e, d.view); if (!p) return;
-  const r = d.ref, ratio = r.h / r.w;
+  const r = d.ref, own = r.h / r.w;
   if (d.corner == null) { r.u = d.u0 + (p.u - d.p0.u); r.v = d.v0 + (p.v - d.p0.v); }
   else {
-    // a corner: the picture grows from the OPPOSITE corner, keeping its proportions
-    const [sx, sy] = _CORNERS[d.corner], hw = d.size0 / 2, hh = d.size0 * ratio / 2;
+    // a corner: the picture grows from the OPPOSITE corner, keeping its proportions — with Ctrl, freely:
+    // the width and the height follow the cursor each on its own (the picture is stretched)
+    const [sx, sy] = _CORNERS[d.corner], hw = d.size0 / 2, hh = d.size0 * own * d.stretch0 / 2;
     const ou = d.u0 - sx * hw, ov = d.v0 - sy * hh;
-    const s = Math.max(0.02, Math.max(((p.u - ou) * sx) / (2 * hw), ((p.v - ov) * sy) / (2 * hh)));
-    r.size = d.size0 * s;
-    r.u = ou + sx * r.size / 2; r.v = ov + sy * r.size * ratio / 2;
+    if (e.ctrlKey || e.metaKey) {
+      const W = Math.max(0.02 * 2 * hw, (p.u - ou) * sx), Hh = Math.max(0.02 * 2 * hh, (p.v - ov) * sy);
+      r.size = W; r.stretch = Math.min(50, Math.max(0.02, Hh / (W * own)));
+    } else {
+      const s = Math.max(0.02, Math.max(((p.u - ou) * sx) / (2 * hw), ((p.v - ov) * sy) / (2 * hh)));
+      r.size = d.size0 * s; r.stretch = d.stretch0;
+    }
+    r.u = ou + sx * r.size / 2; r.v = ov + sy * _heightOf(r) / 2;
   }
   d.moved = true;
   syncPolyRefs();
@@ -534,8 +545,8 @@ function _endDrag(commit) {
   window.removeEventListener('pointerup', d.up, true);
   window.removeEventListener('pointercancel', d.up, true);
   if (!commit || !d.moved || !_h) return;
-  const r = d.ref, before = { u: d.u0, v: d.v0, size: d.size0 }, after = { u: r.u, v: r.v, size: r.size };
-  const put = (o) => { r.u = o.u; r.v = o.v; r.size = o.size; };
+  const r = d.ref, before = { u: d.u0, v: d.v0, size: d.size0, stretch: d.stretch0 }, after = { u: r.u, v: r.v, size: r.size, stretch: _stretchOf(r) };
+  const put = (o) => { r.u = o.u; r.v = o.v; r.size = o.size; r.stretch = o.stretch; };
   _h.push(d.corner == null ? 'Move reference picture' : 'Scale reference picture', () => { put(before); syncPolyRefs(); }, () => { put(after); syncPolyRefs(); });
   _h.changed();
 }
