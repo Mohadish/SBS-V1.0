@@ -891,6 +891,10 @@ class GizmoController {
     }
     const el = this._raycastElements(clientX, clientY);
     if (!el) return false;
+    // ⬚ V0.3.5.41 — a value still being typed in the panel is committed FIRST: its open batch would otherwise
+    // swallow this drag's (the drag then never reached the step, and the user had to deselect / reselect).
+    if (this._panel && this._isPanelFieldFocused()) { try { document.activeElement.blur(); } catch { /* fine */ } }
+    this._edgeRot = null;
 
     this._setHovered(null);
     this._dragging = true;
@@ -976,6 +980,31 @@ class GizmoController {
     // distance changes during the drag.
     this._startClientX = clientX;
     this._startClientY = clientY;
+
+    // ⬚ V0.3.5.41 — a ring seen EDGE-ON (its axis across the view: a flat shape drawn facing you, an X / Y ring
+    // in a flat view) has a drag plane that passes through the eye — the cursor's ray meets it nowhere useful
+    // and the turn never happens (the user's "you have to type values on two axes first"). Then the turn
+    // follows the cursor along the ring's line on screen instead (three.js TransformControls' way): the ring's
+    // front point is moved by how far the cursor travels along the way a turn would move it.
+    if (el.type === 'rotate') {
+      const center = (inPivotEdit || (no?.pivotEnabled === true))
+        ? getPivotWorldPosition(no, this._obj3d)
+        : new T.Vector3().copy(this._obj3d.getWorldPosition(new T.Vector3()));
+      const cam = sceneCore.camera, ax = this._axisVec(el.axis).clone().normalize(), toCam = cam.position.clone().sub(center).normalize();
+      if (Math.abs(ax.dot(toCam)) < 0.2) {
+        const s0 = toCam.clone().sub(ax.clone().multiplyScalar(ax.dot(toCam))).normalize();
+        const d = new T.Vector3().crossVectors(ax, s0);
+        const rect = sceneCore.renderer.domElement.getBoundingClientRect();
+        const p0 = center.clone().project(cam), p1 = center.clone().add(d.clone().multiplyScalar(cam.position.distanceTo(center) * 0.05)).project(cam);
+        let tx = (p1.x - p0.x) * rect.width / 2, ty = -(p1.y - p0.y) * rect.height / 2;
+        const l = Math.hypot(tx, ty);
+        if (l > 1e-6) {
+          tx /= l; ty /= l;
+          this._edgeRot = { ax, s0, center: center.clone(), x0: clientX, y0: clientY, tx, ty };
+          this._startWorld = center.clone().add(s0);         // a point on the ring, so the angle bookkeeping below works as for any drag
+        }
+      }
+    }
 
     if (el.type === 'rotate' && this._startWorld) {
       // Rotation centre depends on mode:
@@ -1223,7 +1252,7 @@ class GizmoController {
     }
 
     const plane = this._getDragPlane(el);
-    const curr  = this._worldPoint(clientX, clientY, plane);
+    const curr  = (this._edgeRot && el.type === 'rotate') ? this._edgeRotPoint(clientX, clientY) : this._worldPoint(clientX, clientY, plane);
     if (!curr || !this._startWorld) return;
 
     // C5-B / E2: cable mode — translate / plane → applyCumulativeDelta;
@@ -1673,6 +1702,13 @@ class GizmoController {
     side.normalize();
     const normal = new T.Vector3().crossVectors(ax, side).normalize();
     return new T.Plane().setFromNormalAndCoplanarPoint(normal, center);
+  }
+
+  /** ⬚ V0.3.5.41 — the edge-on ring's point for this cursor: the start point turned by the travel along the ring's line (90 px = 1 rad). */
+  _edgeRotPoint(clientX, clientY) {
+    const r = this._edgeRot;
+    const th = ((clientX - r.x0) * r.tx + (clientY - r.y0) * r.ty) / 90;
+    return r.center.clone().add(r.s0.clone().applyAxisAngle(r.ax, th));
   }
 
   _worldPoint(clientX, clientY, plane) {
