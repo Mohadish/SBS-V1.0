@@ -143,7 +143,9 @@ const _KEY_ACTIONS = [
   { id: 'gizmoSpace',        name: '⤧ Gizmo Local / World', desc: 'Toggle the transform gizmo\'s coordinate space.' },
   { id: 'fitView',           name: '⛶ Fit view',            desc: 'Frame the selection — or the whole scene when nothing is selected.' },
   { id: 'polyVertices',      name: '⬚ Poly: vertices',      desc: 'A selected editable poly goes straight into Edit poly, vertices mode (and switches to it inside the mode).' },
+  { id: 'polyEdges',         name: '⬚ Poly: edges',         desc: 'A selected editable poly goes straight into Edit poly, edges mode (and switches to it inside the mode).' },
   { id: 'polyFaces',         name: '⬚ Poly: faces',         desc: 'A selected editable poly goes straight into Edit poly, faces mode (and switches to it inside the mode).' },
+  { id: 'polyElements',      name: '⬚ Poly: elements',      desc: 'A selected editable poly goes straight into Edit poly, elements mode — each separate piece (and switches to it inside the mode).' },
 ];
 
 function _renderKeysTab(body) {

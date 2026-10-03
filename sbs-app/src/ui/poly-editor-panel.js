@@ -11,7 +11,7 @@ import { undoManager } from '../systems/undo.js';
 import state from '../core/state.js';                      // ⬚ V0.3.5.40 — the face-angle setting is the project's
 import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
-  polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
+  polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, polyFixStart, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent, polyNewShape, polyShapeFromFace, polyBooleanStart,
   setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection, polyBakeProjection,
@@ -177,9 +177,10 @@ function _render(what) {
   lv.append(
     btn('Object', 'Select and move whole parts', () => polyExitSub(), info.level === 'object' ? on : ''),
     btn('Vertices (1)', 'Edit the vertices of the selected part', () => polyEnterSub('vertex'), info.level === 'vertex' ? on : ''),
-    btn('Faces (4)', 'Edit the faces of the selected part — extrude, loop cut, join / cut', () => polyEnterSub('face'), info.level === 'face' ? on : ''),
+    btn('Edges (2)', 'Edit the edges of the selected part — double-click = the loop, right-click = Chamfer', () => polyEnterSub('edge'), info.level === 'edge' ? on : ''),
+    btn('Faces (3)', 'Edit the faces of the selected part — extrude, loop cut, join / cut', () => polyEnterSub('face'), info.level === 'face' ? on : ''),
+    btn('Elements (4)', 'Each separate connected piece of the selected part — click takes the whole piece, Del deletes it', () => polyEnterSub('element'), info.level === 'element' ? on : ''),
   );
-  const edges = btn('Edges (2)', 'Not built yet', () => {}); edges.disabled = true; lv.append(edges);
   lv.append(btn('✛ Pivot', 'Move / turn only the PIVOT of the selected part or folder — the geometry stays (Esc ends it). More under right-click ▸ Pivot.', () => polySetPivotMode(!isPolyPivotMode()), isPolyPivotMode() ? 'background:#9a3412;border-color:#fb923c;color:#fff;' : ''));
   _root.append(lv);
   // ⬚ V0.3.5.28 — scale: a 3D box around the selection, a pyramid and a flat triangle on each face
@@ -225,7 +226,7 @@ function _render(what) {
   // ⬚ V0.3.5.18 — primitives made inside the editor: editable polys from the first moment
   _root.append(section('Add'));
   const add = row();
-  for (const p of polyPrimitiveKinds()) add.append(btn(`${p.icon} ${p.label}`, `Add a ${p.label.toLowerCase()} where you are looking — an editable poly: 1 / 4 go into its vertices / faces`, () => polyAddPrimitive(p.kind)));
+  for (const p of polyPrimitiveKinds()) add.append(btn(`${p.icon} ${p.label}`, `Add a ${p.label.toLowerCase()} where you are looking — an editable poly: 1 / 2 / 3 / 4 go into its vertices / edges / faces / elements`, () => polyAddPrimitive(p.kind)));
   _root.append(add);
 
   _root.append(section('Tools'));
@@ -235,6 +236,7 @@ function _render(what) {
     btn('⧉ Duplicate', 'Duplicate the selection (Ctrl+D)', () => polyDuplicateSelected()),
     btn('🗑 Delete', 'Delete the selection (Del)', () => polyDeleteSelected()),
     btn('⬚ Clean edges', 'Merge coplanar faces of the selected part(s)', () => polyCleanSelected()),
+    btn('🩹 Fix object', 'Repair a broken mesh: weld the points closer than a distance you choose, remove faces with fewer than 3 corners, cap the holes — shown in red before you apply', () => polyFixStart()),
   );
   _root.append(tools);
   // ⬚ V0.3.5.43 — booleans: the selected part is kept; click the other one (or select both first)

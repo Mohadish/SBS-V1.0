@@ -5492,11 +5492,12 @@ window.addEventListener('keydown', async e => {
   // ⬚ V0.3.5.13 — 1 / 4 on a selected editable poly = straight into Edit poly
   // (vertices / faces), as in 3ds Max. Inside the mode the editor's own
   // handler switches sub-object levels; this only opens it.
-  if ((keyMatches('polyVertices', e) || keyMatches('polyFaces', e)) && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !state.get('polyEditing')) {
+  const _polyLv = keyMatches('polyVertices', e) ? 'vertex' : keyMatches('polyEdges', e) ? 'edge' : keyMatches('polyFaces', e) ? 'face' : keyMatches('polyElements', e) ? 'element' : null;   // ⬚ V0.3.5.45 — 1 / 2 / 3 / 4
+  if (_polyLv && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !state.get('polyEditing')) {
     const node = state.get('nodeById')?.get(state.get('selectedId'));
     if (node?.type === 'primitive' && node.primKind === 'poly') {
       e.preventDefault();
-      const mode = keyMatches('polyVertices', e) ? 'vertex' : 'face';
+      const mode = _polyLv;
       import('./systems/poly-edit.js').then(m => m.enterPolyEdit(node.id, mode));
       return;
     }

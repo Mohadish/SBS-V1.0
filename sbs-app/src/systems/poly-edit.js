@@ -14,7 +14,13 @@
  *                       on release the block is JOINED (out) or CUT (in) — poly-csg.js
  *                     · Alt = loop-cut PREVIEW on the hovered edge · Alt + click = cut
  *   vertex mode (1):  dots on every vertex · drag one (Shift / Ctrl adds) · box-select · gizmo
+ *   edge mode (2):    V0.3.5.45 — click an edge (Shift / Ctrl adds) · double-click = its LOOP ·
+ *                     box-select · drag / gizmo moves · right-click ▸ Chamfer… (an amount, a live
+ *                     preview; corners that meet are shown RED and welded on Apply)
+ *   faces mode (3):   as above (was 4 before V0.3.5.45)
+ *   element mode (4): V0.3.5.45 — a click takes the whole connected piece · Del deletes it
  *   Esc = cancel the gesture in flight, else done.
+ *   Any face left with fewer than three corners after a gesture is removed (_tidy).
  *
  * The maths lives in poly-core.js; every finished gesture goes through
  * actions.setPrimitiveParams (one undo entry, persistence, the definition
@@ -32,14 +38,16 @@
  */
 import { state } from '../core/state.js';
 import { sceneCore } from '../core/scene.js';
-import { matches as keyMatches, keyLabel } from '../core/keymap.js';   // ⬚ V0.3.5.13 — 1 / 4 (rebindable) switch the sub-object level
+import { matches as keyMatches, keyLabel } from '../core/keymap.js';   // ⬚ V0.3.5.13 — 1 / 2 / 3 / 4 (rebindable) switch the sub-object level
 import * as actions from './actions.js';
 import { gizmo } from '../ui/gizmo.js';
 import { parseExpression } from '../ui/gizmo-numeric.js';
 import { showMarqueeBox, hideMarqueeBox } from '../ui/marquee-box.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
-import { isPoly, makeBoxPoly, clonePoly, polyToArrays, polyEdges, extrudeFaces, loopCut, moveVertices, averageNormal, verticesOfFaces, extrusionPrism, facesOnCap, polyExtent, cleanEdges } from './poly-core.js';
+import { isPoly, makeBoxPoly, clonePoly, polyToArrays, polyEdges, extrudeFaces, loopCut, moveVertices, averageNormal, verticesOfFaces, extrusionPrism, facesOnCap, polyExtent, cleanEdges, weldPoly } from './poly-core.js';
 import { booleanPoly, warmBooleanLib } from './poly-csg.js';   // ⬚ V0.3.5.11 — the Boolean on release
+import { edgeKey, polyEdgeList, edgeLoop, chamferEdges } from './poly-edges.js';   // ⬚ V0.3.5.45 — the edge level
+import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';
 import { staticMeshGlb } from '../io/glb-write.js';
 
 const T = () => window.THREE;
@@ -49,6 +57,11 @@ export function isPolyEditing() { return !!_ed; }
 export function polyEditNodeId() { return _ed?.host?.nodeId || null; }
 export function polyEditHostKey() { return _ed?.host?.key || null; }
 export function polyEditMode() { return _ed?.mode || null; }
+
+// ⬚ V0.3.5.45 — the four levels (3ds Max's 1 / 2 / 3 / 4)
+const MODES = ['vertex', 'edge', 'face', 'element'];
+const NOUN = { vertex: 'vertices', edge: 'edges', face: 'faces', element: 'elements' };
+const _levels = () => `${keyLabel('polyVertices')} vertices · ${keyLabel('polyEdges')} edges · ${keyLabel('polyFaces')} faces · ${keyLabel('polyElements')} elements`;
 
 const _nodeOf = (id) => state.get('nodeById')?.get(id) || null;
 const _isPolyNode = (node) => !!node && node.type === 'primitive' && node.primKind === 'poly';
@@ -97,7 +110,7 @@ export function enterPolyEditHost(host, mode = 'face') {
   host.onEnter?.();
   state.setState({ polyEditing: host.key });
   gizmo.hide();
-  _ed = { host, mesh, poly: host.getPoly(), faceOfTri: null, mode: mode === 'vertex' ? 'vertex' : 'face', selFaces: new Set(), selVerts: new Set(), hoverFace: -1, hoverVert: -1, helpers: null, drag: null, before: null, gz: null, marq: null, space: 'local', gizmoShift: false, swallowClick: false, previewKey: null, lastXY: null };
+  _ed = { host, mesh, poly: host.getPoly(), faceOfTri: null, mode: MODES.includes(mode) ? mode : 'face', selFaces: new Set(), selVerts: new Set(), selEdges: new Set(), hoverFace: -1, hoverVert: -1, hoverEdge: null, chamfer: null, helpers: null, drag: null, before: null, gz: null, marq: null, space: 'local', gizmoShift: false, swallowClick: false, previewKey: null, lastXY: null };
   _ed.faceOfTri = polyToArrays(_ed.poly).faceOfTri;
   _buildHelpers();
   const dom = sceneCore.renderer.domElement;
@@ -108,7 +121,8 @@ export function enterPolyEditHost(host, mode = 'face') {
     key:   (e) => _onKey(e),
     keyup: (e) => { if (e.key === 'Alt') _clearPreview(); },
     click: (e) => { if (_ed?.swallowClick) { _ed.swallowClick = false; e.preventDefault(); e.stopImmediatePropagation(); } },
-    dbl:   (e) => { if (_ed && e.button === 0 && _onPoly(e)) { e.preventDefault(); e.stopImmediatePropagation(); } },
+    dbl:   (e) => { if (polyEditDoubleClick(e)) { e.preventDefault(); e.stopImmediatePropagation(); } },
+    menu:  (e) => { if (polyEditContextMenu(e)) { e.preventDefault(); e.stopImmediatePropagation(); } },
     step:  () => exitPolyEdit(),
     exp:   () => { if (state.get('_exporting')) exitPolyEdit(); },
   };
@@ -117,6 +131,7 @@ export function enterPolyEditHost(host, mode = 'face') {
   dom.addEventListener('pointermove', L.move, true);
   dom.addEventListener('click', L.click, true);
   dom.addEventListener('dblclick', L.dbl, true);
+  dom.addEventListener('contextmenu', L.menu, true);
   window.addEventListener('pointerup', L.up, true);
   window.addEventListener('keydown', L.key, true);
   window.addEventListener('keyup', L.keyup, true);
@@ -134,6 +149,7 @@ export function exitPolyEdit() {
   if (gizmo.isDragging && gizmo.activeTarget === _target) {   // a gizmo gesture in flight: ended cleanly (readout off, lock off, no commit)
     try { gizmo.revertToDragStart(); gizmo.setNumericLock(false); gizmo._dragMoved = true; gizmo.onPointerUp(); } catch { /* best effort */ }
   }
+  if (_ed.chamfer) _chamferEnd(false);                                    // a chamfer on show: the mesh goes back as it was
   if (drag) { _ed.poly = drag.preGesture || drag.start; _applyLive(); }   // a mouse gesture in flight is abandoned
   if (_ed.gz) { _ed.poly = _ed.gz.pre || _ed.gz.start; _ed.gz = null; _applyLive(); }
   if (_ed.marq) { _ed.marq = null; hideMarqueeBox(); }
@@ -144,6 +160,7 @@ export function exitPolyEdit() {
     dom?.removeEventListener('pointermove', L.move, true);
     dom?.removeEventListener('click', L.click, true);
     dom?.removeEventListener('dblclick', L.dbl, true);
+    dom?.removeEventListener('contextmenu', L.menu, true);
     window.removeEventListener('pointerup', L.up, true);
     window.removeEventListener('keydown', L.key, true);
     window.removeEventListener('keyup', L.keyup, true);
@@ -182,6 +199,7 @@ function _resyncFromNode() {
   if (!_ed) return;
   const host = _ed.host;
   if (!host.alive()) { exitPolyEdit(); return; }       // undone past "Convert to editable poly": a box again
+  if (_ed.chamfer) _chamferEnd(false, true);             // the shape under it changed: the preview is void
   _ed.drag = null; _ed.gz = null; _ed.before = null;
   if (_ed.marq) { _ed.marq = null; hideMarqueeBox(); }
   clearStickyStatus('polyGesture');
@@ -190,7 +208,9 @@ function _resyncFromNode() {
   _ed.poly = host.getPoly();
   _ed.selFaces = new Set([..._ed.selFaces].filter(i => i < _ed.poly.f.length));
   _ed.selVerts = new Set([..._ed.selVerts].filter(i => i < _ed.poly.v.length / 3));
-  _ed.hoverFace = -1; _ed.hoverVert = -1;
+  const live = new Set(_edgeList().map(x => x.key));
+  _ed.selEdges = new Set([..._ed.selEdges].filter(k => live.has(k)));
+  _ed.hoverFace = -1; _ed.hoverVert = -1; _ed.hoverEdge = null;
   _clearPreview();
   _applyLive();                                         // the mesh may still show an abandoned gesture
   _syncGizmo();
@@ -213,9 +233,16 @@ function _buildHelpers() {
   pts.renderOrder = 9611;
   const loop = noPick(new Th.Line(new Th.BufferGeometry(), new Th.LineBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.95, depthTest: false })));
   loop.renderOrder = 9612; loop.visible = false;
-  grp.add(wire, selM, hovM, pts, loop);
+  // ⬚ V0.3.5.45 — the edge level: the picked edges (orange, seen through the body too: a loop goes round the back),
+  // the one under the cursor (yellow), and RED dots where a chamfer's corners meet (they will be welded)
+  const edgeSel = noPick(new Th.LineSegments(new Th.BufferGeometry(), new Th.LineBasicMaterial({ color: 0xf97316, transparent: true, opacity: 1, depthTest: false })));
+  const edgeHov = noPick(new Th.LineSegments(new Th.BufferGeometry(), new Th.LineBasicMaterial({ color: 0xfde047, transparent: true, opacity: 1, depthTest: false })));
+  edgeSel.renderOrder = 9613; edgeHov.renderOrder = 9614;
+  const warn = noPick(new Th.Points(new Th.BufferGeometry(), new Th.PointsMaterial({ color: 0xef4444, size: 11, sizeAttenuation: false, depthTest: false, transparent: true })));
+  warn.renderOrder = 9615; warn.visible = false;
+  grp.add(wire, selM, hovM, pts, loop, edgeSel, edgeHov, warn);
   mesh.add(grp);
-  _ed.helpers = { grp, wire, selM, hovM, pts, loop };
+  _ed.helpers = { grp, wire, selM, hovM, pts, loop, edgeSel, edgeHov, warn };
   _refreshHelpers();
 }
 
@@ -224,7 +251,7 @@ function _disposeHelpers() {
   if (!h) return;
   try {
     h.grp.parent?.remove(h.grp);
-    for (const o of [h.wire, h.selM, h.hovM, h.pts, h.loop]) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
+    for (const o of [h.wire, h.selM, h.hovM, h.pts, h.loop, h.edgeSel, h.edgeHov, h.warn]) { o.geometry?.dispose?.(); o.material?.dispose?.(); }
   } catch { /* already gone */ }
   _ed.helpers = null;
 }
@@ -240,13 +267,33 @@ function _facesGeometry(ids) {
   return g;
 }
 
+function _edgesGeometry(keys) {
+  const Th = T(); const { poly } = _ed; const n = poly.v.length / 3;
+  const pos = [];
+  for (const k of keys) {
+    const [a, b] = k.split('-').map(Number);
+    if (!(a < n && b < n)) continue;
+    pos.push(poly.v[a * 3], poly.v[a * 3 + 1], poly.v[a * 3 + 2], poly.v[b * 3], poly.v[b * 3 + 1], poly.v[b * 3 + 2]);
+  }
+  const g = new Th.BufferGeometry();
+  g.setAttribute('position', new Th.BufferAttribute(new Float32Array(pos), 3));
+  return g;
+}
+
 function _refreshHelpers() {
   if (!_ed?.helpers) return;
   const Th = T(); const { poly, helpers: h, selFaces, hoverFace, selVerts, hoverVert, mode } = _ed;
+  const faceLike = mode === 'face' || mode === 'element';
   h.wire.geometry.dispose(); h.wire.geometry = new Th.BufferGeometry();
   h.wire.geometry.setAttribute('position', new Th.BufferAttribute(polyEdges(poly), 3));
-  h.selM.geometry.dispose(); h.selM.geometry = _facesGeometry(selFaces); h.selM.visible = mode === 'face';
-  h.hovM.geometry.dispose(); h.hovM.geometry = _facesGeometry(hoverFace >= 0 && !selFaces.has(hoverFace) ? [hoverFace] : []); h.hovM.visible = mode === 'face';
+  // a chamfer on show: its new bevel faces are highlighted (the picked edges' vertex numbers no longer apply to the preview)
+  const bevel = _ed.chamfer?.res?.poly ? (_ed.chamfer.res.newFaceIds || []) : null;
+  h.selM.geometry.dispose(); h.selM.geometry = _facesGeometry(bevel || selFaces); h.selM.visible = faceLike || !!bevel;
+  const hov = hoverFace >= 0 && !selFaces.has(hoverFace) ? (mode === 'element' ? _elementFaces(hoverFace) : [hoverFace]) : [];
+  h.hovM.geometry.dispose(); h.hovM.geometry = _facesGeometry(hov); h.hovM.visible = faceLike;
+  const edges = mode === 'edge' && !_ed.chamfer;
+  h.edgeSel.geometry.dispose(); h.edgeSel.geometry = _edgesGeometry(edges ? _ed.selEdges : []); h.edgeSel.visible = edges;
+  h.edgeHov.geometry.dispose(); h.edgeHov.geometry = _edgesGeometry(edges && _ed.hoverEdge && !_ed.selEdges.has(_ed.hoverEdge) ? [_ed.hoverEdge] : []); h.edgeHov.visible = edges;
   const n = poly.v.length / 3, col = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     const s = selVerts.has(i), hv = i === hoverVert;
@@ -281,8 +328,38 @@ function _applyLive() {
   _refreshHelpers();
 }
 
+/**
+ * ⬚ V0.3.5.45 — his rule: a face needs at least three corners. Repeated corners
+ * (a corner welded onto its neighbour) are merged; a face left with fewer than
+ * three distinct corners is removed. Index-based only: nothing is welded here.
+ */
+function _tidy(p) {
+  let dropped = 0;
+  const f = [];
+  for (const face of p.f) {
+    const g = face.filter((x, i) => x !== face[(i + 1) % face.length]);
+    if (new Set(g).size < 3) { dropped++; continue; }
+    f.push(g);
+  }
+  return dropped || f.some((g, i) => g.length !== p.f[i]?.length) ? { poly: { v: p.v, f }, dropped } : { poly: p, dropped: 0 };
+}
+
+/** Vertices no face uses any more are taken out (indices renumbered). */
+function _compact(p) {
+  const n = p.v.length / 3, map = new Int32Array(n).fill(-1), v = [];
+  for (const face of p.f) for (const i of face) if (map[i] < 0) { map[i] = v.length / 3; v.push(p.v[i * 3], p.v[i * 3 + 1], p.v[i * 3 + 2]); }
+  return { v, f: p.f.map(face => face.map(i => map[i])) };
+}
+
 /** The gesture is over: one undo entry through the primitive machinery. */
 function _commit(label) {
+  const td = _tidy(_ed.poly);
+  if (td.poly !== _ed.poly) {
+    _ed.poly = td.poly;
+    if (td.dropped) { _ed.selFaces = new Set(); _ed.hoverFace = -1; }   // the face numbers moved
+    _applyLive();
+    if (td.dropped) setStatus(`${td.dropped} face${td.dropped === 1 ? '' : 's'} left with fewer than 3 corners — removed.`, 'info', 4500);
+  }
   const { host, poly, before } = _ed;
   _ed.committing = true;
   try { host.commit(poly, label, before || null); } finally { if (_ed) _ed.committing = false; }
@@ -307,7 +384,62 @@ function _hitFace(e) {
   const fi = _ed.faceOfTri?.[h.faceIndex];
   return { hit: h, face: fi == null ? -1 : fi };
 }
-const _onPoly = (e) => (_ed.mode === 'vertex' ? _nearestVertex(e) >= 0 : _hitFace(e).face >= 0);
+const _onPoly = (e) => (_ed.mode === 'vertex' ? _nearestVertex(e) >= 0 : _ed.mode === 'edge' ? !!_edgeAt(e) : _hitFace(e).face >= 0);
+
+/** Every edge once (cached for the poly in hand — a drag replaces the poly, so the cache follows). */
+function _edgeList() {
+  if (_ed.edgeFor !== _ed.poly) { _ed.edgeFor = _ed.poly; _ed.edges = polyEdgeList(_ed.poly); }
+  return _ed.edges;
+}
+
+/** Which piece each face belongs to: faces that share a vertex are one ELEMENT (cached like the edges). */
+function _faceElements() {
+  const p = _ed.poly;
+  if (_ed.elemFor === p) return _ed.elem;
+  const n = p.v.length / 3, par = new Int32Array(n);
+  for (let i = 0; i < n; i++) par[i] = i;
+  const find = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+  for (const f of p.f) for (let k = 1; k < f.length; k++) { const a = find(f[0]), b = find(f[k]); if (a !== b) par[a] = b; }
+  _ed.elemFor = p; _ed.elem = p.f.map(f => find(f[0]));
+  return _ed.elem;
+}
+function _elementFaces(fi) {
+  const el = _faceElements(), r = el[fi], out = [];
+  if (r == null) return out;
+  for (let i = 0; i < el.length; i++) if (el[i] === r) out.push(i);
+  return out;
+}
+/** The selected faces grown to their whole elements. */
+function _growToElements(ids) {
+  const el = _faceElements(), roots = new Set([...ids].filter(i => i < el.length).map(i => el[i]));
+  const out = new Set();
+  for (let i = 0; i < el.length; i++) if (roots.has(el[i])) out.add(i);
+  return out;
+}
+
+/** The edge under the cursor: the nearest edge of the face hit (within 14 px), else a silhouette edge within 7 px. */
+function _edgeAt(e) {
+  const p = _ed.poly, { face } = _hitFace(e);
+  if (face >= 0) {
+    const { k, d } = _nearestEdge(e, face);
+    if (d > 14 * 14) return null;
+    const f = p.f[face];
+    return edgeKey(f[k], f[(k + 1) % f.length]);
+  }
+  const list = _edgeList();
+  if (list.length > 60000) return null;                  // a huge mesh: only the faces' own edges (no scan per mouse move)
+  let best = null, bd = 49;
+  for (const ed of list) {
+    const A = _toScreen([p.v[ed.a * 3], p.v[ed.a * 3 + 1], p.v[ed.a * 3 + 2]]), B = _toScreen([p.v[ed.b * 3], p.v[ed.b * 3 + 1], p.v[ed.b * 3 + 2]]);
+    if (A.z > 1 || B.z > 1) continue;
+    const dx = B.x - A.x, dy = B.y - A.y, len2 = dx * dx + dy * dy || 1;
+    const s = Math.max(0, Math.min(1, ((e.clientX - A.x) * dx + (e.clientY - A.y) * dy) / len2));
+    const dd = (A.x + dx * s - e.clientX) ** 2 + (A.y + dy * s - e.clientY) ** 2;
+    if (dd < bd) { bd = dd; best = ed.key; }
+  }
+  return best;
+}
+const _edgeVerts = (keys) => [...new Set([...keys].flatMap(k => k.split('-').map(Number)))].filter(i => i < _ed.poly.v.length / 3);
 
 function _toScreen(local) {
   const Th = T(); const cam = sceneCore.camera; const rect = sceneCore.renderer.domElement.getBoundingClientRect();
@@ -353,7 +485,7 @@ function _localDeltaForPixels(dxPx, dyPx, anchorWorld) {
 }
 
 // ── the gizmo (the app's own, through a target) ──────────────────────────────
-const _selVertexIds = () => (!_ed ? [] : _ed.mode === 'vertex' ? [..._ed.selVerts] : verticesOfFaces(_ed.poly, [..._ed.selFaces].filter(i => i < _ed.poly.f.length)));
+const _selVertexIds = () => (!_ed ? [] : _ed.mode === 'vertex' ? [..._ed.selVerts] : _ed.mode === 'edge' ? _edgeVerts(_ed.selEdges) : verticesOfFaces(_ed.poly, [..._ed.selFaces].filter(i => i < _ed.poly.f.length)));
 
 function _centroidWorld(ids, poly = _ed.poly) {
   const Th = T(); const c = new Th.Vector3();
@@ -380,7 +512,7 @@ const _target = {
   defaultSpace: 'local',
   spaceLabel: (m) => (m === 'local' ? 'LOCAL' : m === 'parent' ? 'PARENT' : 'WORLD'),   // local = the selected faces' normal · parent = the object
   panelNudge: true,                                        // ⬚ V0.3.5.19 — right-click the gizmo: move / rotate by a typed amount
-  panelTitle: () => (_ed?.mode === 'vertex' ? 'Vertices' : 'Faces'),
+  panelTitle: () => ({ vertex: 'Vertices', edge: 'Edges', face: 'Faces', element: 'Elements' }[_ed?.mode] || 'Faces'),
   panelHint: () => "LOCAL = the selected faces' normal · PARENT = the object's own axes.",
   // where the selection's middle is: from the world's origin, or from the object's own pivot (parent)
   panelFrame(mode) {
@@ -396,7 +528,7 @@ const _target = {
   getWorldQuat(mode = 'local') {
     const Th = T(); if (!_ed) return new Th.Quaternion();
     const parentQ = _ed.mesh.getWorldQuaternion(new Th.Quaternion());
-    if (mode === 'parent' || _ed.mode === 'vertex' || !_ed.selFaces.size) return parentQ;
+    if (mode === 'parent' || _ed.mode !== 'face' || !_ed.selFaces.size) return parentQ;
     const n = averageNormal(_ed.poly, [..._ed.selFaces].filter(i => i < _ed.poly.f.length));
     return _frameFromNormal(new Th.Vector3(n[0], n[1], n[2]).transformDirection(_ed.mesh.matrixWorld));
   },
@@ -409,7 +541,7 @@ const _target = {
     _ed.poly = moveVertices(gz.start, gz.ids, gz.delta);
     _applyLive();
   },
-  commitMove()  { _gzCommit(_ed?.mode === 'vertex' ? 'Move vertices' : 'Move faces'); },
+  commitMove()  { _gzCommit(`Move ${NOUN[_ed?.mode] || 'faces'}`); },
   hasRotate: true,
   beginRotate() { _gzBegin('rotate'); },
   applyRotateAroundAxis(worldAxis, rad) {
@@ -424,7 +556,7 @@ const _target = {
     _ed.poly = p;
     _applyLive();
   },
-  commitRotate() { _gzCommit(_ed?.mode === 'vertex' ? 'Rotate vertices' : 'Rotate faces'); },
+  commitRotate() { _gzCommit(`Rotate ${NOUN[_ed?.mode] || 'faces'}`); },
 };
 
 /** A gizmo gesture starts. Shift on an arrow in faces mode = EXTRUDE along that axis (the ring is built now, the Boolean runs on release). */
@@ -466,7 +598,7 @@ function _gzCommit(label) {
 function _syncGizmo() {
   if (!_ed) return;
   const ids = _selVertexIds();
-  const want = ids.length > 0 && !_ed.drag && !_ed.marq;
+  const want = ids.length > 0 && !_ed.drag && !_ed.marq && !_ed.chamfer;
   if (!want) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (gizmo.activeTarget !== _target) { gizmo.showForCableTarget(_target, 'all'); if (_ed.space && _ed.space !== gizmo.spaceMode) gizmo.setSpace(_ed.space); }
   sceneCore.requestRender?.(60);
@@ -505,19 +637,24 @@ function _marqueeApply(m) {
   const { poly } = _ed;
   const x0 = Math.min(m.x, m.x2), x1 = Math.max(m.x, m.x2), y0 = Math.min(m.y, m.y2), y1 = Math.max(m.y, m.y2);
   const inRect = (i) => { const s = _toScreen([poly.v[i * 3], poly.v[i * 3 + 1], poly.v[i * 3 + 2]]); return s.z <= 1 && s.x >= x0 && s.x <= x1 && s.y >= y0 && s.y <= y1; };
-  const picked = new Set();
-  if (_ed.mode === 'vertex') {
+  let picked = new Set();
+  const mode = _ed.mode;
+  if (mode === 'vertex') {
     for (let i = 0; i < poly.v.length / 3; i++) if (inRect(i)) picked.add(i);
+  } else if (mode === 'edge') {
+    for (const ed of _edgeList()) { const hits = (inRect(ed.a) ? 1 : 0) + (inRect(ed.b) ? 1 : 0); if (m.ctrl ? hits === 2 : hits > 0) picked.add(ed.key); }
   } else {
     poly.f.forEach((f, fi) => { const hits = f.filter(inRect).length; if (m.ctrl ? hits === f.length : hits > 0) picked.add(fi); });
+    if (mode === 'element') picked = _growToElements(picked);
   }
-  const cur = _ed.mode === 'vertex' ? _ed.selVerts : _ed.selFaces;
+  const cur = mode === 'vertex' ? _ed.selVerts : mode === 'edge' ? _ed.selEdges : _ed.selFaces;
   let next;
   if (m.alt) { next = new Set([...cur].filter(i => !picked.has(i))); }
   else if (m.shift) { next = new Set([...cur, ...picked]); }
   else next = picked;
-  if (_ed.mode === 'vertex') _ed.selVerts = next; else _ed.selFaces = next;
-  setStatus(`${picked.size} ${_ed.mode === 'vertex' ? 'vertices' : 'faces'} in the box${m.alt ? ' removed' : m.shift ? ' added' : ''} · ${next.size} selected.`, 'info', 3000);
+  if (mode === 'vertex') _ed.selVerts = next; else if (mode === 'edge') _ed.selEdges = next; else _ed.selFaces = next;
+  const n = mode === 'element' ? new Set([...picked].map(i => _faceElements()[i])).size : picked.size;
+  setStatus(`${n} ${NOUN[mode]} in the box${m.alt ? ' removed' : m.shift ? ' added' : ''} · ${mode === 'element' ? new Set([...next].map(i => _faceElements()[i])).size : next.size} selected.`, 'info', 3000);
 }
 
 // ── gestures ─────────────────────────────────────────────────────────────────
@@ -530,7 +667,10 @@ const _swallow = (e) => {
 };
 
 function _onDown(e) {
-  if (!_ed || e.button !== 0) return;
+  if (!_ed) return;
+  if (e.button === 2) { _ed.rmb = { x: e.clientX, y: e.clientY }; return; }   // a right-DRAG (the camera) is not a menu click
+  if (e.button !== 0) return;
+  if (_ed.chamfer) { _swallow(e); return; }                              // the chamfer is on show: its bar has the say
   if (_ed.drag?.finishing) { _swallow(e); return; }                      // the Boolean of the last release is still running
   if (_ed.drag?.typing) { _swallow(e); _releaseExtrude(_ed.drag); return; }   // a typed extrude: the click keeps it
   if (_ed.drag) _endDrag(_ed.drag);                                     // a release that never arrived (pointer let go off-window)
@@ -554,6 +694,31 @@ function _onDown(e) {
     const anchor = new (T().Vector3)(_ed.poly.v[vi * 3], _ed.poly.v[vi * 3 + 1], _ed.poly.v[vi * 3 + 2]).applyMatrix4(_ed.mesh.matrixWorld);
     _ed.before = _ed.host.snapshot();
     _ed.drag = { kind: 'vertex', ids: [..._ed.selVerts], x: e.clientX, y: e.clientY, moved: false, anchor, start: clonePoly(_ed.poly), preGesture: clonePoly(_ed.poly) };
+    _refreshHelpers(); _syncGizmo();
+    return;
+  }
+  if (_ed.mode === 'edge') {                                       // ⬚ V0.3.5.45 — edges
+    const ek = _edgeAt(e);
+    if (!ek) { _beginMarquee(e); return; }
+    _swallow(e);
+    if (e.ctrlKey || e.shiftKey) { if (_ed.selEdges.has(ek)) _ed.selEdges.delete(ek); else _ed.selEdges.add(ek); _refreshHelpers(); _syncGizmo(); return; }
+    if (!_ed.selEdges.has(ek)) _ed.selEdges = new Set([ek]);
+    const [a, b] = ek.split('-').map(Number), p = _ed.poly;
+    const anchor = new (T().Vector3)((p.v[a * 3] + p.v[b * 3]) / 2, (p.v[a * 3 + 1] + p.v[b * 3 + 1]) / 2, (p.v[a * 3 + 2] + p.v[b * 3 + 2]) / 2).applyMatrix4(_ed.mesh.matrixWorld);
+    _ed.before = _ed.host.snapshot();
+    _ed.drag = { kind: 'edges', ids: _edgeVerts(_ed.selEdges), x: e.clientX, y: e.clientY, moved: false, anchor, start: clonePoly(p), preGesture: clonePoly(p) };
+    _refreshHelpers(); _syncGizmo();
+    return;
+  }
+  if (_ed.mode === 'element') {                                    // ⬚ V0.3.5.45 — whole connected pieces
+    const { hit, face } = _hitFace(e);
+    if (!hit || face < 0) { _beginMarquee(e); return; }
+    _swallow(e);
+    const el = _elementFaces(face), wasSel = _ed.selFaces.has(face);
+    if (e.ctrlKey || e.shiftKey) { for (const i of el) { if (wasSel) _ed.selFaces.delete(i); else _ed.selFaces.add(i); } _refreshHelpers(); _syncGizmo(); return; }
+    if (!wasSel) _ed.selFaces = new Set(el);
+    _ed.before = _ed.host.snapshot();
+    _ed.drag = { kind: 'faces', ids: verticesOfFaces(_ed.poly, [..._ed.selFaces]), x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(_ed.poly), preGesture: clonePoly(_ed.poly) };
     _refreshHelpers(); _syncGizmo();
     return;
   }
@@ -636,11 +801,16 @@ function _onMove(e) {
     return;
   }
   // hover
-  if (_ed.mode === 'face') {
+  if (_ed.chamfer) return;
+  if (_ed.mode === 'face' || _ed.mode === 'element') {
     const { face } = _hitFace(e);
     if (face !== _ed.hoverFace) { _ed.hoverFace = face; _refreshHelpers(); }
-    if (e.altKey && face >= 0) _previewLoop(face, e); else if (_ed.previewKey != null) _clearPreview();
-    sceneCore.renderer.domElement.style.cursor = face >= 0 ? (e.altKey ? 'crosshair' : 'pointer') : '';
+    if (_ed.mode === 'face' && e.altKey && face >= 0) _previewLoop(face, e); else if (_ed.previewKey != null) _clearPreview();
+    sceneCore.renderer.domElement.style.cursor = face >= 0 ? (e.altKey && _ed.mode === 'face' ? 'crosshair' : 'pointer') : '';
+  } else if (_ed.mode === 'edge') {
+    const ek = _edgeAt(e);
+    if (ek !== _ed.hoverEdge) { _ed.hoverEdge = ek; _refreshHelpers(); }
+    sceneCore.renderer.domElement.style.cursor = ek ? 'pointer' : '';
   } else {
     const vi = _nearestVertex(e);
     if (vi !== _ed.hoverVert) { _ed.hoverVert = vi; _refreshHelpers(); }
@@ -689,7 +859,7 @@ function _endDrag(d) {
   if (d.kind === 'extrude') { _releaseExtrude(d); return; }
   _ed.drag = null;
   clearStickyStatus('polyGesture');
-  _commit(d.kind === 'vertex' ? 'Move vertex' : 'Move faces');
+  _commit(d.kind === 'vertex' ? 'Move vertex' : d.kind === 'edges' ? 'Move edges' : _ed.mode === 'element' ? 'Move elements' : 'Move faces');
 }
 
 /** The extrude gesture ends (mouse release or Enter on a typed distance). A zero distance leaves nothing behind. */
@@ -751,6 +921,7 @@ async function _finishExtrude(d) {
     if (res) {
       _ed.poly = res;
       _ed.selFaces = new Set(facesOnCap(res, pre, d.capIds, d.normalLocal, d.dist, polyExtent(pre) * 1e-4));
+      _ed.selEdges = new Set(); _ed.selVerts = new Set();   // the kernel renumbered every vertex
       _ed.hoverFace = -1;
       _applyLive();
       label = d.dist > 0 ? 'Extrude (join)' : 'Extrude (cut)';
@@ -771,6 +942,10 @@ async function _finishExtrude(d) {
 function _onKey(e) {
   if (!_ed || _typing() || document.querySelector('dialog[open]')) return;
   if (gizmo.isDragging && gizmo.activeTarget === _target) return;   // gizmo-numeric owns the keys of a gizmo gesture (digits, Enter, Esc)
+  // the right-click menu closes on Esc through a later listener this handler would cut off: close it here, and nothing else
+  if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return; }
+  // a chamfer on show: the undo key only closes it (nothing was committed; it must not undo the edit before)
+  if (_ed.chamfer && (e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || e.code === 'KeyY')) { e.preventDefault(); e.stopImmediatePropagation(); polyEditCancelTool(); return; }
   const d = _ed.drag, k = e.key;
   if (d?.finishing) {                                              // the kernel is working: Esc = finish, then leave
     if (k === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); d.exitAfter = true; }
@@ -794,6 +969,16 @@ function _onKey(e) {
     }
     return;
   }
+  if (_ed.chamfer) {                                               // ⬚ V0.3.5.45 — the chamfer's bar has the keys
+    if (k === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _chamferEnd(false); setStatus('Chamfer cancelled.', 'info', 2500); return; }
+    if (k === 'Enter') { e.preventDefault(); e.stopImmediatePropagation(); _chamferApply(); return; }
+  }
+  if ((k === 'Delete' || k === 'Backspace') && !e.ctrlKey && !e.altKey && !e.metaKey) {
+    e.preventDefault(); e.stopImmediatePropagation();
+    if (_ed.mode === 'element') _deleteElements();
+    else setStatus(`Only whole elements can be deleted for now — ${keyLabel('polyElements')} = Elements, click the piece, Del.`, 'info', 5000);
+    return;
+  }
   if (k === 'Alt') {                                               // the preview appears without waiting for the mouse to move
     if (_ed.mode === 'face' && !_ed.marq && _ed.hoverFace >= 0 && _ed.lastXY) _previewLoop(_ed.hoverFace, _ed.lastXY);
     return;
@@ -805,23 +990,235 @@ function _onKey(e) {
     if (_ed.marq) { e.preventDefault(); e.stopImmediatePropagation(); _ed.marq = null; hideMarqueeBox(); _syncGizmo(); return; }
     e.preventDefault(); e.stopImmediatePropagation(); exitPolyEdit(); setStatus('Edit poly done.', 'info', 2500); return;
   }
-  const toVerts = keyMatches('polyVertices', e), toFaces = keyMatches('polyFaces', e);
-  if ((toVerts || toFaces) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+  const lv = keyMatches('polyVertices', e) ? 'vertex' : keyMatches('polyEdges', e) ? 'edge' : keyMatches('polyFaces', e) ? 'face' : keyMatches('polyElements', e) ? 'element' : null;
+  if (lv && !e.ctrlKey && !e.altKey && !e.metaKey) {
     e.preventDefault(); e.stopImmediatePropagation();
-    _ed.mode = toVerts ? 'vertex' : 'face';
-    _ed.hoverFace = -1; _ed.hoverVert = -1;
-    _clearPreview();
-    if (gizmo.activeTarget === _target) gizmo.hide();            // the frame changes with the mode
-    _refreshHelpers(); _syncGizmo(); _hint();
-    state.emit('polyEdit:mode', _ed.mode);
+    setPolyEditMode(lv);
   }
+}
+
+/** ⬚ V0.3.5.45 — switch the level inside the mode (the keys, the right-click menu, the Poly Editor's panel). */
+export function setPolyEditMode(mode) {
+  if (!_ed || !MODES.includes(mode) || _ed.drag) return false;
+  if (_ed.chamfer) _chamferEnd(false);
+  if (_ed.mode === mode) return true;
+  _ed.mode = mode;
+  if (mode === 'element' && _ed.selFaces.size) _ed.selFaces = _growToElements(_ed.selFaces);
+  if (mode === 'edge' && _ed.selEdges.size) { const live = new Set(_edgeList().map(x => x.key)); _ed.selEdges = new Set([..._ed.selEdges].filter(k => live.has(k))); }
+  _ed.hoverFace = -1; _ed.hoverVert = -1; _ed.hoverEdge = null;
+  _clearPreview();
+  if (gizmo.activeTarget === _target) gizmo.hide();            // the frame changes with the mode
+  _refreshHelpers(); _syncGizmo(); _hint();
+  state.emit('polyEdit:mode', _ed.mode);
+  return true;
+}
+
+/** ⬚ V0.3.5.45 — a double-click: in Edges, the LOOP of the edge under the cursor (Shift / Ctrl adds it). True = it was ours. */
+export function polyEditDoubleClick(e) {
+  if (!_ed || e.button !== 0 || _ed.chamfer) return false;
+  if (_ed.mode !== 'edge') return _onPoly(e);
+  const ek = _edgeAt(e);
+  if (!ek) return false;
+  _selectLoop(ek, e.shiftKey || e.ctrlKey);
+  return true;
+}
+function _selectLoop(ek, add) {
+  if (!_ed || !ek) return;                                // the menu outlived the mode
+  const [a, b] = ek.split('-').map(Number);
+  const loop = edgeLoop(_ed.poly, a, b);
+  if (!loop?.length) return;
+  _ed.selEdges = add ? new Set([..._ed.selEdges, ...loop]) : new Set(loop);
+  _refreshHelpers(); _syncGizmo();
+  setStatus(loop.length > 1 ? `Loop — ${loop.length} edges selected.` : 'No loop runs on from this edge (its corners do not have four edges each) — just the edge.', 'info', 3500);
+}
+
+/** ⬚ V0.3.5.45 — the right-click menu inside the mode. True = shown (the caller swallows the event). */
+export function polyEditContextMenu(e) {
+  if (!_ed || _ed.drag || _ed.marq) return false;
+  const r = _ed.rmb; _ed.rmb = null;
+  if (r && Math.hypot(e.clientX - r.x, e.clientY - r.y) > 5) return true;   // the button was dragged (the camera): no menu, and nothing else's either
+  if (_ed.chamfer) return true;
+  if (gizmo.activeTarget === _target && gizmo.onRightClick(e.clientX, e.clientY)) return true;   // on the gizmo: move / rotate by an amount
+  const items = [];
+  if (_ed.mode === 'edge') {
+    const ek = _edgeAt(e);
+    if (ek && !_ed.selEdges.has(ek)) { _ed.selEdges = new Set([ek]); _refreshHelpers(); _syncGizmo(); }
+    const n = _ed.selEdges.size;
+    items.push({ label: `◪ Chamfer${n ? ` ${n} edge${n === 1 ? '' : 's'}` : ''}…`, disabled: !n, action: () => startChamfer() });
+    items.push({ label: '⟳ Select the loop (or double-click the edge)', disabled: !ek, action: () => _selectLoop(ek, false) });
+    items.push({ separator: true });
+  } else if (_ed.mode === 'element') {
+    const { face } = _hitFace(e);
+    if (face >= 0 && !_ed.selFaces.has(face)) { _ed.selFaces = new Set(_elementFaces(face)); _refreshHelpers(); _syncGizmo(); }
+    items.push({ label: '🗑 Delete the element (Del)', disabled: !_ed.selFaces.size, action: () => _deleteElements() });
+    items.push({ separator: true });
+  }
+  for (const m of MODES) items.push({ label: `${_ed.mode === m ? '✔ ' : ''}${NOUN[m][0].toUpperCase()}${NOUN[m].slice(1)} (${keyLabel({ vertex: 'polyVertices', edge: 'polyEdges', face: 'polyFaces', element: 'polyElements' }[m])})`, action: () => setPolyEditMode(m) });
+  showContextMenu(items, e.clientX, e.clientY);
+  return true;
+}
+
+/** ⬚ V0.3.5.45 — Ctrl+Z while a tool of the mode is on show only closes it (nothing was committed). True = it did. */
+export function polyEditCancelTool() {
+  if (!_ed?.chamfer) return false;
+  _chamferEnd(false);
+  setStatus('Chamfer cancelled.', 'info', 2500);
+  return true;
+}
+
+// ── elements ─────────────────────────────────────────────────────────────────
+function _deleteElements() {
+  if (!_ed || _ed.mode !== 'element') return;
+  const ids = new Set([..._ed.selFaces].filter(i => i < _ed.poly.f.length));
+  if (!ids.size) { setStatus('Click the piece to delete first.', 'info', 3000); return; }
+  if (ids.size >= _ed.poly.f.length) { setStatus('That is the whole object — delete it at the object level instead (Esc, then Del).', 'warn', 5000); return; }
+  const n = new Set([...ids].map(i => _faceElements()[i])).size;
+  _ed.before = _ed.host.snapshot();
+  _ed.poly = _compact({ v: _ed.poly.v, f: _ed.poly.f.filter((_, i) => !ids.has(i)) });
+  _ed.selFaces = new Set(); _ed.selVerts = new Set(); _ed.selEdges = new Set(); _ed.hoverFace = -1;
+  _applyLive();
+  _commit(n === 1 ? 'Delete element' : `Delete ${n} elements`);
+  setStatus(`${n} element${n === 1 ? '' : 's'} deleted (${ids.size} faces). Ctrl+Z brings ${n === 1 ? 'it' : 'them'} back.`, 'success', 4500);
+}
+
+// ── chamfer (edges) ──────────────────────────────────────────────────────────
+const _nice = (x) => { if (!(x > 0)) return 0; const p = Math.pow(10, Math.floor(Math.log10(x))); const m = x / p; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p; };
+const _fmt = (x) => (Math.abs(x) >= 100 ? x.toFixed(0) : Math.abs(x) >= 1 ? String(+x.toFixed(3)) : String(+x.toPrecision(3)));
+const _len = (p, a, b) => Math.hypot(p.v[a * 3] - p.v[b * 3], p.v[a * 3 + 1] - p.v[b * 3 + 1], p.v[a * 3 + 2] - p.v[b * 3 + 2]);
+
+/** How far a chamfer of these edges can go: the shortest edge running on from one of them. */
+function _chamferReach(p, keys) {
+  const sel = new Set(keys); let reach = Infinity;
+  for (const f of p.f) for (let i = 0; i < f.length; i++) {
+    const a = f[i], b = f[(i + 1) % f.length];
+    if (!sel.has(edgeKey(a, b))) continue;
+    const prev = f[(i - 1 + f.length) % f.length], next = f[(i + 2) % f.length];
+    if (!sel.has(edgeKey(prev, a))) reach = Math.min(reach, _len(p, prev, a));
+    if (!sel.has(edgeKey(b, next))) reach = Math.min(reach, _len(p, b, next));
+  }
+  return Number.isFinite(reach) ? reach : Math.min(...keys.map(k => { const [a, b] = k.split('-').map(Number); return _len(p, a, b); }));
+}
+
+export function startChamfer() {
+  if (!_ed || _ed.mode !== 'edge' || _ed.drag || _ed.chamfer) return false;
+  const keys = [..._ed.selEdges];
+  if (!keys.length) { setStatus('Pick the edge(s) to chamfer first.', 'info', 3000); return false; }
+  _clearPreview();
+  const pre = clonePoly(_ed.poly), reach = _chamferReach(pre, keys);
+  _ed.chamfer = { keys, pre, before: _ed.host.snapshot(), reach, dist: _nice(reach * 0.2) || reach * 0.2, res: null, bar: null };
+  if (gizmo.activeTarget === _target) gizmo.hide();
+  _chamferCompute();
+  setStickyStatus('◪ CHAMFER — type the amount or drag the slider · RED dots = corners that meet: they are welded into one on Apply · Enter applies, Esc cancels', 'info', 'polyGesture');
+  return true;
+}
+
+function _chamferCompute() {
+  const c = _ed?.chamfer; if (!c) return;
+  let r;
+  try { r = chamferEdges(c.pre, c.keys, c.dist); } catch (err) { console.warn('[poly] chamfer failed', err); r = { poly: null, reason: err?.message || String(err) }; }
+  c.res = r;
+  if (r?.poly && r.maxDist > 0 && !c.reachSet) { c.reach = r.maxDist; c.reachSet = true; }   // the slider's end: where the first edge collapses
+  _ed.poly = r?.poly || c.pre;
+  _applyLive();
+  const h = _ed.helpers;
+  if (h?.warn) {
+    const pts = (r?.poly && r.nearPairs) ? r.nearPairs.flat().flat() : [];
+    h.warn.geometry.dispose(); h.warn.geometry = new (T().BufferGeometry)();
+    h.warn.geometry.setAttribute('position', new (T().BufferAttribute)(new Float32Array(pts), 3));
+    h.warn.visible = pts.length > 0;
+  }
+  _chamferBar();
+  sceneCore.requestRender?.(80);
+}
+
+function _chamferBar() {
+  const c = _ed?.chamfer; if (!c) return;
+  if (!c.bar) {
+    const surf = document.getElementById('viewport-surface') || sceneCore.renderer?.domElement?.parentElement;
+    const bar = c.bar = document.createElement('div');
+    bar.style.cssText = 'position:absolute;top:40px;left:50%;transform:translateX(-50%);z-index:40;display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:7px 10px;border-radius:10px;background:var(--panel,#0f172a);border:1px solid #f97316;box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e5e7eb);font-size:12px;max-width:94%;';
+    for (const ev of ['pointerdown', 'dblclick', 'contextmenu', 'wheel']) bar.addEventListener(ev, (e) => e.stopPropagation());
+    const b = (label, title, fn, extra = '') => { const x = document.createElement('button'); x.className = 'btn'; x.textContent = label; x.title = title; x.style.cssText = `height:26px;padding:0 9px;font-size:12px;${extra}`; x.addEventListener('click', (e) => { e.preventDefault(); x.blur(); fn(); }); return x; };
+    const lab = document.createElement('span'); lab.style.cssText = 'font-weight:600;';
+    lab.textContent = `◪ Chamfer ${c.keys.length} edge${c.keys.length === 1 ? '' : 's'} by`;
+    const num = document.createElement('input'); num.type = 'text'; num.value = _fmt(c.dist); num.title = 'How far back from the edge (mm, along the faces next to it) — maths allowed. Enter takes it.';
+    num.style.cssText = 'width:64px;height:24px;padding:0 6px;font-size:12px;';
+    const rng = document.createElement('input'); rng.type = 'range'; rng.min = '0'; rng.max = '1000'; rng.step = '1'; rng.style.cssText = 'width:150px;';
+    const toR = (d) => String(Math.round(Math.max(0, Math.min(1, d / c.reach)) * 1000));
+    rng.value = toR(c.dist);
+    const take = (v, from) => {
+      if (!_ed?.chamfer || !(v > 0) || !Number.isFinite(v)) return;
+      c.dist = v;
+      if (from !== 'num') num.value = _fmt(v);
+      if (from !== 'rng') rng.value = toR(v);
+      _chamferCompute();
+    };
+    rng.addEventListener('input', () => take(Math.max(c.reach * 1e-3, c.reach * (+rng.value / 1000)), 'rng'));
+    rng.addEventListener('pointerup', () => rng.blur());
+    num.addEventListener('change', () => take(parseExpression(num.value), 'num'));
+    num.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); take(parseExpression(num.value), 'num'); num.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); num.value = _fmt(c.dist); num.blur(); }
+    });
+    const unit = document.createElement('span'); unit.textContent = 'mm'; unit.style.opacity = '.7';
+    const msg = document.createElement('span'); msg.style.cssText = 'margin:0 4px;';
+    const ok = b('✔ Apply  [Enter]', 'Chamfer as shown (corners that meet are welded into one). One undo step.', () => _chamferApply(), 'background:#14532d;border-color:#22c55e;color:#dcfce7;font-weight:600;');
+    const no = b('✕ Cancel  [Esc]', 'Leave the edges as they were', () => { _chamferEnd(false); setStatus('Chamfer cancelled.', 'info', 2500); });
+    bar.append(lab, num, unit, rng, msg, ok, no);
+    c.ui = { msg, ok };
+    surf?.appendChild(bar);
+    setTimeout(() => { try { num.focus(); num.select(); } catch { /* fine */ } }, 0);   // type the amount straight away (Enter takes it, Enter again applies)
+  }
+  const r = c.res, { msg, ok } = c.ui;
+  const near = r?.poly ? (r.nearPairs?.length || 0) : 0, col = r?.poly ? (r.collapsed || 0) : 0;
+  msg.style.color = !r?.poly ? '#fca5a5' : near ? '#fca5a5' : '';
+  const capped = r?.poly && r.dist < c.dist - 1e-9 ? ` · capped at ${_fmt(r.dist)} (the most it can go)` : '';
+  msg.textContent = !r?.poly ? `can't: ${r?.reason || 'the result would not be a closed body'} — try a smaller amount`
+    : near ? `⚠ ${near} corner pair${near === 1 ? '' : 's'} meet${near === 1 ? 's' : ''} (red) — welded into one on Apply${col ? ` · ${col} face${col === 1 ? '' : 's'} collapse${col === 1 ? 's' : ''} and ${col === 1 ? 'is' : 'are'} removed` : ''}`
+      : `→ ${r.poly.f.length} faces${col ? ` · ${col} collapse and are removed` : ''}`;
+  msg.textContent += capped;
+  ok.disabled = !r?.poly;
+}
+
+function _chamferApply() {
+  const c = _ed?.chamfer; if (!c?.res?.poly) return;
+  let p = c.res.poly, welded = 0;
+  if (c.res.nearPairs?.length) {
+    p = weldPoly(p, c.res.weldEps);                  // the corners that meet (red) become one; a face left with < 3 corners goes
+    welded = c.res.nearPairs.length;
+  }
+  const before = c.before, n = c.keys.length;
+  _chamferEnd(true);
+  _ed.poly = p; _ed.before = before;
+  _ed.selEdges = new Set(); _ed.hoverEdge = null; _ed.selFaces = new Set(); _ed.selVerts = new Set();
+  _applyLive();
+  _commit(n === 1 ? 'Chamfer edge' : `Chamfer ${n} edges`);
+  setStatus(`Chamfered ${n} edge${n === 1 ? '' : 's'}${welded ? ` · ${welded} meeting corner${welded === 1 ? '' : 's'} welded` : ''}. Ctrl+Z takes it back.`, 'success', 5000);
+}
+
+/** Close the chamfer. `kept` = Apply took the poly; otherwise the mesh goes back (`quiet` = the shape changed under it). */
+function _chamferEnd(kept, quiet = false) {
+  const c = _ed?.chamfer; if (!c) return;
+  _ed.chamfer = null;
+  try { c.bar?.remove(); } catch { /* gone */ }
+  const h = _ed.helpers;
+  if (h?.warn) h.warn.visible = false;
+  clearStickyStatus('polyGesture');
+  if (!kept && !quiet) { _ed.poly = c.pre; _applyLive(); }
+  if (!kept) _syncGizmo();
+  sceneCore.requestRender?.(80);
 }
 
 function _hint() {
   if (!_ed) return;
-  setStickyStatus(_ed.mode === 'face'
-    ? `⬚ Edit poly · FACES: click selects (Shift / Ctrl adds · drag off the poly = box) · drag or the gizmo moves (Shift + an arrow = extrude · type a number = exact · L = axes face / world / parent) · Shift+drag = extrude (type the distance; out joins, in cuts) · Alt = loop-cut preview, Alt+click cuts · ${keyLabel('polyVertices')} = vertices · Esc = done`
-    : `⬚ Edit poly · VERTICES: drag a dot (Shift / Ctrl adds · drag off the poly = box) · the gizmo moves / rotates the picked ones · ${keyLabel('polyFaces')} = faces · Esc = done`,
+  const m = _ed.mode;
+  setStickyStatus(m === 'face'
+    ? `⬚ Edit poly · FACES: click selects (Shift / Ctrl adds · drag off the poly = box) · drag or the gizmo moves (Shift + an arrow = extrude · type a number = exact · L = axes face / world / parent) · Shift+drag = extrude (type the distance; out joins, in cuts) · Alt = loop-cut preview, Alt+click cuts · ${_levels()} · Esc = done`
+    : m === 'edge'
+      ? `⬚ Edit poly · EDGES: click selects (Shift / Ctrl adds · drag off the poly = box) · double-click = the whole loop · drag or the gizmo moves them · right-click = Chamfer… · ${_levels()} · Esc = done`
+      : m === 'element'
+        ? `⬚ Edit poly · ELEMENTS (each separate piece): click takes a whole piece (Shift / Ctrl adds · drag off the poly = box) · drag or the gizmo moves it · Del deletes it · ${_levels()} · Esc = done`
+        : `⬚ Edit poly · VERTICES: drag a dot (Shift / Ctrl adds · drag off the poly = box) · the gizmo moves / rotates the picked ones · ${_levels()} · Esc = done`,
   'info', 'polyEdit');
 }
 

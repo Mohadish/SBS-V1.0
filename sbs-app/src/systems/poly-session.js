@@ -38,7 +38,8 @@ import { subDir, joinPath } from '../core/project-paths.js';
 import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal, triangulateFace, polyEdges } from './poly-core.js';
 import { PRIMITIVE_DEFS, defaultPrimitiveParams, buildPrimitiveGeometry } from './primitives.js';   // ⬚ V0.3.5.18 — primitives added inside the editor
 import { geometryToPoly, geometryTriangles } from './poly-convert.js';
-import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost } from './poly-edit.js';
+import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost, setPolyEditMode, polyEditDoubleClick, polyEditContextMenu, polyEditCancelTool } from './poly-edit.js';
+import { startPolyFix, endPolyFix, applyPolyFix, isPolyFixing } from './poly-fix.js';   // ⬚ V0.3.5.45 — Fix object
 import { sceneGlb } from '../io/glb-write.js';
 import { isEditing as overlayIsEditing, setEditingMode as overlaySetEditing } from './overlay.js';
 import { sourceMatrixOfModel } from '../core/transforms.js';
@@ -736,7 +737,11 @@ export function polyApplyPreset(presetId) {
   return true;
 }
 // ── undo (scope: polySession; a no-op once the session is over) ──────────────
-function _noteEdit() { if (!_s) return; _s.edits++; if (!state.get('polySessionDirty')) state.setState({ polySessionDirty: true }); }
+function _noteEdit() {
+  if (!_s) return;
+  if (isPolyFixing()) { endPolyFix(true); setStatus('Fix object closed — the part changed under it. Open it again to fix the new shape.', 'info', 4500); }
+  _s.edits++; if (!state.get('polySessionDirty')) state.setState({ polySessionDirty: true });
+}
 
 function _push(label, undo, redo) {
   const sid = _s.sid;
@@ -975,16 +980,38 @@ export function polyEnterSub(mode = 'face', id = null) {
   const target = id || _s.primary || _selectedPartIds()[0];
   const it = _s.items.get(target);
   if (!it || it.kind !== 'part') { setStatus('Select ONE part first, then choose vertices or faces.', 'warn', 3500); return false; }
-  if (isPolyEditing() && polyEditHostKey() === `part:${_s.sid}:${it.id}`) { exitPolyEdit(); }
+  if (isPolyEditing() && polyEditHostKey() === `part:${_s.sid}:${it.id}`) {   // ⬚ V0.3.5.45 — the same part: only the level changes
+    if (setPolyEditMode(mode)) { _s.subMode = mode; _emit('mode'); return true; }
+    exitPolyEdit();
+  }
+  endPolyFix(true);
   _s.sel = new Set([it.id]); _s.primary = it.id;
   _syncScene();
   if (gizmo.activeTarget === _target) gizmo.hide();
   it.mesh.material.emissive?.setHex(0x000000);            // the sub-object highlights speak for themselves
   const ok = enterPolyEditHost(_partHost(it.id), mode);
-  if (ok) { _s.subMode = mode === 'vertex' ? 'vertex' : 'face'; _emit('mode'); }
+  if (ok) { _s.subMode = polyEditMode() || 'face'; _emit('mode'); }
   return ok;
 }
 export function polyExitSub() { if (isPolyEditing()) exitPolyEdit(); }
+
+/**
+ * ⬚ V0.3.5.45 — FIX OBJECT on the selected part(s): weld the points closer than a threshold, drop the
+ * faces left with fewer than three corners, cap the holes — previewed in red, one undo (poly-fix.js).
+ */
+export function polyFixStart() {
+  if (!_s) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  _scaleEnd(); _endShapeEdit(); _boolEnd();
+  const ids = _selectedPartIds();
+  if (!ids.length) { setStatus('Select the part(s) to fix first.', 'warn', 3500); return false; }
+  const ok = startPolyFix(ids.map(id => _partHost(id)), {
+    label: ids.length === 1 ? (_s.items.get(ids[0])?.name || 'the part') : `${ids.length} parts`,
+    onEnd: () => { if (_s) { _syncScene(); _hint(); _emit('mode'); } },
+  });
+  if (ok) { _syncScene(); _emit('mode'); }
+  return ok;
+}
 
 export function polyCleanSelected() {
   if (!_s) return false;
@@ -2628,6 +2655,7 @@ export function polyShowMenu(x, y) {
     { separator: true },
     { label: `${_s.scale ? '✔ ' : ''}⤢ Scale (the box with handles)`, disabled: !nParts, action: () => polySetScaleMode(!_s.scale) },
     { label: _s.reedit ? '↩ Restore from the saved file (as it came in)' : '↩ Restore (as it came in)', disabled: !nParts, action: () => polyRestoreSelected() },
+    { label: '🩹 Fix object… (weld close points, cap the holes)', disabled: !nParts, action: () => polyFixStart() },
     { separator: true },
     { label: '⊕ Boolean', disabled: !nParts, submenu: [
       { label: '∪ Union — then click the other object', action: () => polyBooleanStart('union') },
@@ -2650,7 +2678,9 @@ export function polyShowMenu(x, y) {
     ] },
     { separator: true },
     { label: `Vertices (${keyLabel('polyVertices')})`, disabled: !onePart, action: () => polyEnterSub('vertex') },
+    { label: `Edges (${keyLabel('polyEdges')})`, disabled: !onePart, action: () => polyEnterSub('edge') },
     { label: `Faces (${keyLabel('polyFaces')})`, disabled: !onePart, action: () => polyEnterSub('face') },
+    { label: `Elements (${keyLabel('polyElements')})`, disabled: !onePart, action: () => polyEnterSub('element') },
     { separator: true },
     { label: '⧉ Duplicate', action: () => polyDuplicateSelected() },
     { label: '📁 New folder around the selection', action: () => polyNewFolder() },
@@ -2660,7 +2690,7 @@ export function polyShowMenu(x, y) {
 
 function _syncGizmo() {
   if (!_s || isPolyEditing() || _s.pick) return;
-  if (_s.bool || _s.boolPick) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
+  if (_s.bool || _s.boolPick || isPolyFixing()) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (shapeEditor.isDrawing() || _s.shapeFacePick) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }
   if (_s.scale) { if (gizmo.activeTarget === _target && !gizmo.isDragging) gizmo.hide(); return; }   // the scale box has the stage: no gizmo under its handles
   if (_s.pivotMode && !_singleTop()) {                       // a pivot belongs to ONE object
@@ -2695,6 +2725,7 @@ function _attachInput() {
       if (_s.shapeFacePick) { if (e.button === 0) { swallow(e); _shapeFaceClick(e); } return; }   // ⬚ shape from a face
       if (_s.boolPick) { if (e.button === 0) { swallow(e); _boolPickClick(e); } return; }          // ⬚ the second object of a boolean
       if (_s.bool) { if (e.button === 0) swallow(e); return; }                                    // the result is on show: Apply or Cancel first
+      if (isPolyFixing()) { if (e.button === 0) swallow(e); return; }                             // ⬚ Fix object on show: Apply or Cancel first
       if (shapeEditor.isDrawing()) { if (e.button === 0) { swallow(e); shapeEditor.onPointerDown(e.clientX, e.clientY, 0); } return; }   // the shape editor draws (its moves / ups arrive through main.js)
       if (isPolyEditing()) return;                         // the sub-object editor's own listener (added later) takes it
       if (_s.scale && _scaleDown(e)) { swallow(e); return; }   // a handle of the scale box was grabbed
@@ -2708,7 +2739,8 @@ function _attachInput() {
     dbl: (e) => {
       if (!_s) return; e.preventDefault(); e.stopImmediatePropagation();
       if (shapeEditor.isDrawing()) { shapeEditor.onDoubleClick(e.clientX, e.clientY); return; }   // corner = delete, edge = new corner, inside = the whole outline
-      if (isPolyEditing() || _s.pick || _s.shapeFacePick || _s.boolPick || _s.bool) return;
+      if (isPolyEditing()) { polyEditDoubleClick(e); return; }   // ⬚ V0.3.5.45 — edges: the loop (this handler runs first and stops the event)
+      if (_s.pick || _s.shapeFacePick || _s.boolPick || _s.bool || isPolyFixing()) return;
       if (_s.scale && _scaleHit(e)) return;                 // two quick pulls of a handle are not a double-click on the part behind it
       const id = _pickPart(e); if (!id) return;
       if (_isSheet(_s.items.get(id))) polyEditShape(id); else polyEnterSub('face', id);   // a flat shape: its outline; anything else: its faces
@@ -2721,9 +2753,10 @@ function _attachInput() {
       if (_s.pick) { _endPick(); setStatus('Cancelled.', 'info', 2000); return; }
       if (_s.shapeFacePick) { _s.shapeFacePick = null; _hint(); setStatus('Cancelled.', 'info', 2000); return; }
       if (_s.boolPick || _s.bool) { _boolEnd(); setStatus('Boolean cancelled.', 'info', 2000); return; }
+      if (isPolyFixing()) return;                                               // the bar has Apply / Cancel
       if (shapeEditor.isDrawing()) { if (state.get('shapeDrawing')?.phase === 'edit' && _s.shapeEdit) _shapeMenu(e); return; }
       if (gizmo.onRightClick(e.clientX, e.clientY)) return;                    // on the gizmo: move / rotate by an amount · world / local / parent
-      if (isPolyEditing()) return;
+      if (isPolyEditing()) { polyEditContextMenu(e); return; }                 // ⬚ V0.3.5.45 — the level's own menu (Chamfer, Delete element, the levels)
       const id = _pickPart(e);
       if (id && !_selectedPartIds().includes(id)) polySelect([id]);
       if (!_s.sel.size) return;
@@ -2790,6 +2823,15 @@ function _onKey(e) {
     if (e.key === 'Enter' && state.get('shapeDrawing')?.phase === 'addVertices') { e.preventDefault(); e.stopImmediatePropagation(); shapeEditor.commit(); return; }
   }
   const mod = e.ctrlKey || e.metaKey;
+  // ⬚ V0.3.5.45 — Fix object on show: Enter applies, Esc / Ctrl+Z cancel (nothing is committed yet), F still fits
+  if (isPolyFixing()) {
+    if (e.key === 'Escape' || (mod && (e.code === 'KeyZ' || e.code === 'KeyY'))) { e.preventDefault(); e.stopImmediatePropagation(); endPolyFix(); return; }
+    if (e.key === 'Enter' && !mod) { e.preventDefault(); e.stopImmediatePropagation(); applyPolyFix(); return; }
+    if (keyMatches('fitView', e) && !mod && !e.altKey) { e.preventDefault(); polyFit(); return; }
+    return;
+  }
+  // a chamfer on show: the undo key only closes it (it must not also undo the edit before)
+  if (mod && (e.code === 'KeyZ' || e.code === 'KeyY') && polyEditCancelTool()) { e.preventDefault(); e.stopImmediatePropagation(); return; }
   // Undo / redo stay inside the editor: the shared stack also holds the project's entries underneath.
   // nothing is committed while a boolean is set up: the undo key only cancels it (it must not also undo the edit before)
   if ((_s.bool || _s.boolPick) && mod && (e.code === 'KeyZ' || e.code === 'KeyY')) { e.preventDefault(); e.stopImmediatePropagation(); _boolEnd(); setStatus('Boolean cancelled.', 'info', 2000); return; }
@@ -2808,7 +2850,8 @@ function _onKey(e) {
   if (isPolyEditing()) return;                               // 1 / 4 / Esc / typed distances: the sub-object editor's
   if (mod && e.code === 'KeyD') { e.preventDefault(); e.stopImmediatePropagation(); polyDuplicateSelected(); return; }
   if (mod || e.altKey) return;
-  if (keyMatches('polyVertices', e) || keyMatches('polyFaces', e)) { e.preventDefault(); e.stopImmediatePropagation(); polyEnterSub(keyMatches('polyVertices', e) ? 'vertex' : 'face'); return; }
+  const lv = keyMatches('polyVertices', e) ? 'vertex' : keyMatches('polyEdges', e) ? 'edge' : keyMatches('polyFaces', e) ? 'face' : keyMatches('polyElements', e) ? 'element' : null;   // ⬚ V0.3.5.45 — 1 / 2 / 3 / 4
+  if (lv) { e.preventDefault(); e.stopImmediatePropagation(); polyEnterSub(lv); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault(); e.stopImmediatePropagation();
     const pic = polyRefsEditing() ? polyRefsInfo().sel : null;   // in "move / scale pictures" Del takes the picture that is selected there, not the parts
@@ -2828,6 +2871,7 @@ function _onKey(e) {
 
 function _hint() {
   if (!_s) return;
+  if (isPolyFixing()) return;                                // poly-fix.js has its own line on top
   if (_s.boolPick) { setStickyStatus(`⬚ ${_BOOL_NAME[_s.boolPick.op].toUpperCase()} — click the second object (Esc cancels)`, 'info', 'polySession'); return; }
   if (_s.bool) { setStickyStatus('⬚ BOOLEAN — this is the result: Apply (Enter) bakes it, Cancel (Esc) leaves everything as it was · the bar above changes the kind or swaps a subtraction', 'info', 'polySession'); return; }
   if (_s.shapeFacePick) { setStickyStatus(_s.shapeFacePick.mode === 'add' ? '⬚ Click a face — its outline is laid onto the shape (Esc cancels)' : `⬚ SHAPE FROM A FACE — click a face of a part: it and its neighbours within ${Number(state.get('shapeFaceAngleThreshold') ?? 5)}° become a shape (Esc cancels)`, 'info', 'polySession'); return; }
@@ -2840,13 +2884,14 @@ function _hint() {
   }
   if (_s.scale) { setStickyStatus('⬚ SCALE — pyramid ▲ = stretch that side (the opposite side stays · Alt = from the centre · Shift = every direction) · coloured corner ◣ = that face\'s two directions (the opposite corner stays · Shift = keep the proportions · Alt = from the centre) · WHITE corner tip = everything equally (the corner across the box stays · Alt = from the centre) · Esc ends it', 'info', 'polySession'); return; }
   if (_s.pivotMode) { setStickyStatus(`⬚ PIVOT mode — the gizmo moves / turns only the pivot of ${_singleTop()?.name || 'the object'}; the geometry stays · Esc ends it (or right-click ▸ Pivot)`, 'info', 'polySession'); return; }
-  setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} = vertices, ${keyLabel('polyFaces')} = faces (or double-click) · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
+  setStickyStatus(`⬚ Poly Editor · right-click a part = align / pivot · right-click the gizmo = move / rotate by an amount · add primitives on the left · click selects a part (Shift adds) · the gizmo moves / rotates it · ${keyLabel('polyVertices')} vertices · ${keyLabel('polyEdges')} edges · ${keyLabel('polyFaces')} faces (or double-click) · ${keyLabel('polyElements')} elements · ${keyLabel('fitView')} = fit · Del deletes · Ctrl+D duplicates · arrange the tree on the left, then Apply`, 'info', 'polySession');
 }
 
 // ── the end ──────────────────────────────────────────────────────────────────
 function _teardown(how = 'discard') {
   if (!_s) return;
   if (isPolyEditing()) exitPolyEdit();
+  endPolyFix(true);
   _endPick(true);
   _scaleEnd();
   _endShapeEdit();
@@ -2985,6 +3030,7 @@ function _assetLayout(space = 'scene', { dry = false } = {}) {   // dry: read on
 export async function applyPolySession() {
   if (!_s || _s.applying || _s.asking) return false;
   if (_s.bool || _s.boolPick) { setStatus('A boolean is open: Apply it (Enter) or cancel it (Esc) first.', 'warn', 5000); return false; }   // the tree still holds the operands, not what is shown
+  if (isPolyFixing()) { setStatus('Fix object is open: Apply it (Enter) or cancel it (Esc) first.', 'warn', 5000); return false; }
   if (isPolyEditing()) exitPolyEdit();
   _s.asking = true;
   try {
