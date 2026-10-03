@@ -525,7 +525,7 @@ function _syncScene() {
     if (it.kind !== 'part' || !it.mesh) continue;
     it.mesh.visible = alive.has(it.id) && !(_s.bool && (_s.bool.a === it.id || _s.bool.b.includes(it.id)));   // a boolean's operands: its result is shown instead
     it.mesh.material.emissive?.setHex(selParts.has(it.id) ? 0x0b3a52 : 0x000000);
-    _syncEdges(it, selParts.has(it.id) && alive.has(it.id) && !editing);   // (the sub-object editor draws its own)
+    _syncEdges(it, selParts.has(it.id) && alive.has(it.id) && !editing && !isPolyFixing());   // (the sub-object editor and Fix object draw their own)
   }
   for (const id of [..._s.sel]) if (!alive.has(id)) _s.sel.delete(id);
   if (_s.primary && !alive.has(_s.primary)) _s.primary = [..._s.sel][0] || null;
@@ -2033,6 +2033,7 @@ function _flushSkins() {
   for (const it of _s.items.values()) {
     if (it.kind !== 'part' || !it.mesh) continue;
     if ((!it.proj && !it.bake) || !alive.has(it.id)) { _disposeSkin(it); continue; }
+    if (isPolyFixing() && sel.has(it.id)) { if (it.skin) it.skin.visible = false; continue; }   // Fix object shows the repaired shape bare; the layer comes back when it closes
     try { if (it.bake) _buildBakedSkin(it); else _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
     if (it.skin) { it.skin.visible = true; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) && !editing ? 0x0b3a52 : 0x000000); }
   }
@@ -2360,6 +2361,7 @@ function _viewPlane() {
 function _endShapeEdit() {
   if (!_s) return;
   const was = !!(_s.shapeEdit || _s.shapeNew || _s.shapeFacePick || shapeEditor.isDrawing());
+  if (shapeEditor.isSymmetryOn()) setStatus('The symmetry was not applied — the shape stays as it was.', 'info', 4000);
   if (shapeEditor.isDrawing()) { try { shapeEditor.cancel(); } catch { /* fine */ } }
   _s.shapeEdit = null; _s.shapeNew = null; _s.shapeFacePick = null;
   if (was) { _hint(); _syncGizmo(); _emit('mode'); }
@@ -2410,6 +2412,7 @@ export function polyEditShape(id) {
 /** Into Faces (4) on the shape being edited — click its face, Shift + drag the gizmo = extrude. */
 function _shapeToFaces() {
   const id = _s?.shapeEdit?.id; if (!id) return;
+  if (shapeEditor.isSymmetryOn() && !shapeEditor.applySymmetry()) return;   // (the menu's Extrude: the mirrored shape, as seen)
   _endShapeEdit();
   polyEnterSub('face', id);
   setStatus('Click the face, then Shift + drag the gizmo\'s arrow: the face is extruded into a solid.', 'info', 7000);
@@ -2456,7 +2459,7 @@ state.on('shapeEditor:vertexEdit', ({ templateId, polygons, reason }) => {
   const before = { poly: it.poly, shape: it.shape || null }, after = { poly, shape: { polygons: local, poly } };
   const put = (s) => { it.poly = s.poly; it.shape = s.shape; _refreshPartMesh(it); _partChanged(it.id); };
   put(after);
-  const label = reason === 'delete' ? 'Delete corner' : reason === 'addOnEdge' ? 'Add corner' : reason === 'addPolygon' ? 'Add to shape' : reason === 'deletePolygon' ? 'Remove from shape' : reason === 'transformPolygon' ? 'Transform shape' : 'Move corner';
+  const label = reason === 'delete' ? 'Delete corner' : reason === 'addOnEdge' ? 'Add corner' : reason === 'addPolygon' ? 'Add to shape' : reason === 'deletePolygon' ? 'Remove from shape' : reason === 'transformPolygon' ? 'Transform shape' : reason === 'symmetry' ? 'Symmetry' : 'Move corner';
   _push(label, () => put(before), () => put(after));
   _syncScene(); _emit('tree');
 });
@@ -2491,6 +2494,13 @@ function _shapeFaceClick(e) {
 }
 /** The right-click menu while a shape's outline is edited (the project's own, plus the way to extrude). */
 function _shapeMenu(e) {
+  if (shapeEditor.isSymmetryOn()) {                        // ⟷ V0.3.5.46 — the mirror is on show: only its own two ways out
+    showContextMenu([
+      { label: '✔ Apply the symmetry  [Enter]', action: () => shapeEditor.applySymmetry() },
+      { label: '✕ Cancel the symmetry  [Esc]', action: () => shapeEditor.cancelSymmetry() },
+    ], e.clientX, e.clientY);
+    return;
+  }
   const edge = shapeEditor.pickEdgeForMenu(e.clientX, e.clientY), items = [];
   if (edge) {
     items.push({ label: '＋ Add a corner here  (or double-click the edge)', action: () => shapeEditor.addPointOnEdge(e.clientX, e.clientY) });
@@ -2499,6 +2509,7 @@ function _shapeMenu(e) {
     items.push({ label: '⊕ Add an outline (XOR with the shape)', action: () => shapeEditor.newShape() });
     items.push({ label: '⊕ Add an outline from a face', action: () => { if (_s) { _s.shapeFacePick = { mode: 'add' }; _hint(); } } });
   }
+  items.push({ label: '⟷ Symmetry… (mirror the shape across a line you place)', action: () => shapeEditor.startSymmetry('v') });
   items.push({ separator: true });
   items.push({ label: `⬆ Extrude — Faces (${keyLabel('polyFaces')}): click the face, Shift + drag`, action: () => _shapeToFaces() });
   items.push({ label: '✖ Done  [Esc]', action: () => _endShapeEdit() });
@@ -2819,6 +2830,10 @@ function _onKey(e) {
   if (shapeEditor.isDrawing() && !(e.ctrlKey || e.metaKey)) {
     if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); _endShapeEdit(); return; }
     if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopImmediatePropagation(); shapeEditor.deleteSelected(); return; }
+    if (shapeEditor.isSymmetryOn()) {                       // ⟷ the mirror on show: Faces extrudes what is SEEN (applied first); other levels wait
+      if (keyMatches('polyFaces', e) && _s.shapeEdit) { e.preventDefault(); e.stopImmediatePropagation(); if (shapeEditor.applySymmetry()) _shapeToFaces(); return; }
+      if (keyMatches('polyVertices', e) || keyMatches('polyEdges', e) || keyMatches('polyElements', e)) { e.preventDefault(); e.stopImmediatePropagation(); setStatus('Apply the symmetry (Enter) or cancel it (Esc) first.', 'info', 3500); return; }
+    }
     if (keyMatches('polyFaces', e) && _s.shapeEdit) { e.preventDefault(); e.stopImmediatePropagation(); _shapeToFaces(); return; }
     if (e.key === 'Enter' && state.get('shapeDrawing')?.phase === 'addVertices') { e.preventDefault(); e.stopImmediatePropagation(); shapeEditor.commit(); return; }
   }

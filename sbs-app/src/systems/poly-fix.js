@@ -3,8 +3,9 @@
  *
  * Every pair of vertices closer than a threshold becomes one, the faces left with
  * fewer than three corners go, every hole is capped (poly-repair.js). The user
- * turns the threshold and sees the result as it would be: the welded points as
- * RED dots, the caps as RED faces. A mesh that takes longer than 3 s to repair
+ * turns the threshold and sees the result AS IT WILL BE (V0.3.5.46, his ask: the
+ * object itself shows the repaired shape, with its edges) — the welded points as
+ * RED dots, the caps as RED faces on top. A mesh that takes longer than 3 s to repair
  * stops following the threshold live: a Preview button runs it instead.
  * Apply = one undo entry for every object fixed; Cancel leaves them as they were.
  *
@@ -16,7 +17,7 @@ import { sceneCore } from '../core/scene.js';
 import { undoManager } from './undo.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
 import { parseExpression } from '../ui/gizmo-numeric.js';
-import { isPoly, polyExtent, polyToArrays, isWatertight } from './poly-core.js';
+import { isPoly, polyExtent, polyToArrays, polyEdges, isWatertight } from './poly-core.js';
 import { repairPoly, weldNear } from './poly-repair.js';
 
 const T = () => window.THREE;
@@ -53,7 +54,7 @@ export function endPolyFix(quiet = false, applied = false) {
   const fx = _fx; if (!fx) return;
   _fx = null;
   clearTimeout(fx.timer);
-  for (const it of fx.items) { _dropOverlay(it); try { it.unsub?.(); } catch { /* gone */ } }
+  for (const it of fx.items) { _dropOverlay(it); _swapOut(it); try { it.unsub?.(); } catch { /* gone */ } }
   try { fx.bar?.remove(); } catch { /* gone */ }
   clearStickyStatus('polyFix');
   sceneCore.requestRender?.(120);
@@ -126,6 +127,32 @@ function _sumText(s) {
   return parts.join(' · ') || 'nothing to fix';
 }
 
+// ── the preview: the object shows the repaired shape ─────────────────────────
+// Its geometry is swapped for the result's while the bar is up, and put back
+// when it closes (Apply then commits the real thing through the host). If
+// something else replaced the geometry meanwhile (an undo, a rebuild), that
+// one stays — only our own preview is ever taken back.
+function _swapIn(it, poly) {
+  const mesh = it.host.mesh; if (!mesh) return;
+  if (it.pv && (it.pvMesh !== mesh || mesh.geometry !== it.pv)) { it.pv = null; it.orig = null; it.pvMesh = null; }   // not ours any more
+  const Th = T(); const { positions, normals, faceOfTri } = polyToArrays(poly);
+  const g = new Th.BufferGeometry();
+  g.setAttribute('position', new Th.BufferAttribute(positions, 3));
+  g.setAttribute('normal', new Th.BufferAttribute(normals, 3));
+  g.userData.faceOfTri = faceOfTri; g.userData.isPoly = true;
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  if (it.pv) it.pv.dispose(); else { it.orig = mesh.geometry; it.pvMesh = mesh; }
+  mesh.geometry = g; it.pv = g;
+}
+function _swapOut(it) {
+  if (!it.pv) return;
+  const mesh = it.pvMesh;
+  if (mesh && mesh.geometry === it.pv) mesh.geometry = it.orig;   // still ours: the original back
+  else it.orig?.dispose?.();                                       // replaced meanwhile: the original is nobody's now
+  it.pv.dispose();
+  it.pv = null; it.orig = null; it.pvMesh = null;
+}
+
 // ── the red markers ──────────────────────────────────────────────────────────
 function _dropOverlay(it) {
   const g = it.ov; it.ov = null;
@@ -137,10 +164,16 @@ function _dropOverlay(it) {
 function _showOverlay(it) {
   _dropOverlay(it);
   const r = it.res, mesh = it.host.mesh;
-  if (!r?.ok || !mesh) return;
+  if (!r?.ok || !r.changed || !mesh) { _swapOut(it); return; }   // nothing to fix / it would collapse: the object as it is
+  _swapIn(it, r.poly);
   const Th = T();
   const g = new Th.Group(); g.name = 'polyFixPreview'; g.userData.isHelper = true; g.raycast = () => {};
   const noPick = (o) => { o.raycast = () => {}; o.userData.isHelper = true; return o; };
+  // the result's edges (the welds show as fewer, cleaner lines)
+  const wg = new Th.BufferGeometry(); wg.setAttribute('position', new Th.BufferAttribute(polyEdges(r.poly), 3));
+  const wire = noPick(new Th.LineSegments(wg, new Th.LineBasicMaterial({ color: 0x9fd3ff, transparent: true, opacity: 0.85 })));
+  wire.renderOrder = 9610;
+  g.add(wire);
   if (r.capFaces?.length) {
     const { positions, normals } = polyToArrays({ v: r.poly.v, f: r.capFaces.map(i => r.poly.f[i]).filter(Boolean) });
     const geo = new Th.BufferGeometry();

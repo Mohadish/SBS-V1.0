@@ -4102,6 +4102,13 @@ canvas.addEventListener('contextmenu', e => {
   if (shapeEditor.isDrawing()) {
     const phase = state.get('shapeDrawing')?.phase;
     if (phase !== 'edit') return;
+    if (shapeEditor.isSymmetryOn()) {                      // ⟷ V0.3.5.46 — the mirror is on show: only its own two ways out
+      showContextMenu([
+        { label: '✔ Apply the symmetry  [Enter]', action: () => shapeEditor.applySymmetry() },
+        { label: '✕ Cancel the symmetry  [Esc]', action: () => shapeEditor.cancelSymmetry() },
+      ], e.clientX, e.clientY);
+      return;
+    }
     // R-click ON the polygon gizmo → floating transform panel
     // (Move X/Y, Rotate, Scale). Wins over the edge / empty menu.
     if (shapeEditor.pickPolyGizmoForMenu(e.clientX, e.clientY)) {
@@ -4136,6 +4143,7 @@ canvas.addEventListener('contextmenu', e => {
         action: () => actions.startAddPolygonFromFacePick(),
       });
     }
+    items.push({ label: '⟷ Symmetry… (mirror the shape across a line you place)', action: () => shapeEditor.startSymmetry('v') });
     items.push({ label: '─', disabled: true });
     items.push({ label: '✖ Exit edit  [Esc]', action: () => actions.cancelShapeDraw() });
     showContextMenu(items, e.clientX, e.clientY);

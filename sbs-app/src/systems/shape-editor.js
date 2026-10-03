@@ -44,7 +44,9 @@
 import { sceneCore }     from '../core/scene.js';
 import state             from '../core/state.js';
 import { xorPolygonList } from './flat-shapes.js';
-import { setStatus }      from '../ui/status.js';
+import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
+import { mirrorShape, keptRegion, symmetryAxes, polygonsBox } from './shape-symmetry.js';   // ⟷ V0.3.5.46
+import { hideContextMenu } from '../ui/context-menu.js';
 
 // ⬚ V0.3.5.40 — whoever hosts the editor can say where a click lands (the Poly Editor: its own parts, not the
 // project's meshes). fn(clientX, clientY) → a plane (buildShapePlane) or null = the usual pick.
@@ -263,6 +265,7 @@ export function onPointerDown(clientX, clientY, button = 0) {
 
   // ── EDIT phase: gizmo handle → polygon transform; else vertex pick + drag.
   if (dr.phase === 'edit') {
+    if (_sym) { if (button === 0) _symDown(clientX, clientY); return true; }   // ⟷ the mirror line has the clicks
     if (button !== 0) return true;
 
     // Polygon gizmo present (selection.allVertices) → handles get first
@@ -340,6 +343,7 @@ export function onPointerDown(clientX, clientY, button = 0) {
 export function onDoubleClick(clientX, clientY) {
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit') return false;
+  if (_sym) return true;
   _editDragging = false;
   const hit = _pickVertex(clientX, clientY, dr);
   if (hit) {
@@ -375,6 +379,7 @@ function _pointInRing([x, y], ring) {
 export function onPointerUp() {
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit') return false;
+  if (_sym) { if (_sym.drag) _sym.drag = null; return true; }
   if (_gizmoDrag) {
     _gizmoDragEnd();
     return true;
@@ -392,6 +397,7 @@ export function onPointerMove(clientX, clientY) {
   if (!dr) return;
 
   if (dr.phase === 'edit') {
+    if (_sym) { _symMove(clientX, clientY); return; }
     // Active gizmo drag takes priority over single-vertex drag.
     if (_gizmoDrag) {
       _gizmoDragUpdate(clientX, clientY, dr);
@@ -478,6 +484,7 @@ export function commit() {
  * user can add a new one via "Add polygon".
  */
 export function deleteSelected() {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.selection) return false;
   if (dr.selection.allVertices) return deleteSelectedPolygon();
@@ -486,6 +493,7 @@ export function deleteSelected() {
 
 /** Delete the single selected vertex. ≥ 3 minimum to keep a renderable polygon. */
 export function deleteSelectedVertex() {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.selection || dr.selection.allVertices) return false;
   const { polyIdx, vIdx } = dr.selection;
@@ -507,6 +515,7 @@ export function deleteSelectedVertex() {
  * and the XOR re-composes immediately.
  */
 export function deleteSelectedPolygon(polyIdx = null) {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit') return false;
   const idx = polyIdx ?? dr.selection?.polyIdx ?? null;
@@ -535,6 +544,7 @@ export function deleteSelectedPolygon(polyIdx = null) {
  * is hit, returns false. Inserts into the polygon containing the edge.
  */
 export function addPointOnEdge(clientX, clientY) {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit') return false;
   const hit = _pickEdge(clientX, clientY, dr);
@@ -566,6 +576,7 @@ export function addPointOnEdge(clientX, clientY) {
  * entry is pushed via the usual addPolygon path.
  */
 export function addPolygonFromFace(loops2D) {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.plane) return false;
   if (!Array.isArray(loops2D) || loops2D.length === 0) return false;
@@ -596,6 +607,7 @@ export function addPolygonFromFace(loops2D) {
  * BOTH polygons live (XOR composes them in the rendered geometry).
  */
 export function newShape() {
+  if (_sym) return;
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.plane) return;
   const polys = _polygons(dr);
@@ -614,6 +626,7 @@ export function newShape() {
 
 /** Edge hit-test wrapper for main.js's contextmenu logic. */
 export function pickEdgeForMenu(clientX, clientY) {
+  if (_sym) return null;
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit') return null;
   return _pickEdge(clientX, clientY, dr);
@@ -626,6 +639,7 @@ export function pickEdgeForMenu(clientX, clientY) {
  * instead of the generic edit menu.
  */
 export function pickPolyGizmoForMenu(clientX, clientY) {
+  if (_sym) return false;
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !_polyGizmoMeta) return false;
   if (!dr.selection?.allVertices) return false;
@@ -659,6 +673,7 @@ export function getSelectedPolygonCentroid() {
  * around the polygon's centroid; scale is uniform around the centroid.
  */
 export function applyPolyTranslate(dx, dy) {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.selection?.allVertices) return false;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return false;
@@ -676,6 +691,7 @@ export function applyPolyTranslate(dx, dy) {
 }
 
 export function applyPolyRotate(angleDeg) {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.selection?.allVertices) return false;
   if (!Number.isFinite(angleDeg) || Math.abs(angleDeg) < 1e-9) return false;
@@ -698,6 +714,7 @@ export function applyPolyRotate(angleDeg) {
 }
 
 export function applyPolyScale(factor) {
+  if (_sym) return false;                                // ⟷ the symmetry is on show: Apply or Cancel it first
   const dr = state.get('shapeDrawing');
   if (!dr || dr.phase !== 'edit' || !dr.selection?.allVertices) return false;
   if (!Number.isFinite(factor) || factor <= 0) return false;
@@ -716,6 +733,272 @@ export function applyPolyScale(factor) {
   _renderAll();
   _emitVertexEdit(state.get('shapeDrawing'), 'transformPolygon');
   return true;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────
+//  ⟷ SYMMETRY (V0.3.5.46) — his spec: make the shape, then add a mirror
+// ─────────────────────────────────────────────────────────────────────────
+// A vertical line, a horizontal one, or both (a cross), on the shape's own
+// plane — upright to the screen when the plane faces you, else along the
+// plane's own axes. Drag the line (or its white centre dot) to move it — it
+// clicks onto the shape's corners — and its blue end dot to turn it (it
+// clicks every 15°). What lies on the TINTED side is mirrored across; turning
+// the line (or ⇄) chooses the side / quarter. The result is shown AS IT WILL
+// BE, the original as a grey ghost. Apply makes it the shape (one undo step,
+// the usual vertex-edit path); Cancel / Esc / Ctrl+Z put it back.
+// The maths: shape-symmetry.js.
+
+const SYM_COL     = 0xff4fd8;
+const SYM_PICK_PX = 12;
+let _sym = null;
+
+// Keys first, before any host's handler (this module loads before main.js registers its own): Enter applies,
+// Esc / Ctrl+Z cancel (nothing was committed), Delete does nothing. A no-op whenever the tool is not up.
+window.addEventListener('keydown', (e) => { symmetryKey(e); }, true);
+
+export function isSymmetryOn() { return !!_sym; }
+
+/** Put the mirror on the shape being edited: 'v' (a vertical line) | 'h' (horizontal) | 'vh' (both). */
+export function startSymmetry(mode = 'v') {
+  const dr = state.get('shapeDrawing');
+  if (!dr || dr.phase !== 'edit' || !dr.plane || !_previewGroup) return false;
+  if (_sym) { setSymmetryMode(mode); return true; }
+  if (!window.polygonClipping?.union) { setStatus('Symmetry needs the polygon library, which did not load.', 'warn', 5000); return false; }
+  const src = _polygonsForEmit(dr);
+  const box = polygonsBox(src);
+  if (!src.length || !box) { setStatus('Draw a shape first, then add the symmetry.', 'info', 3500); return false; }
+  _gizmoDrag = null; _editDragging = false;
+  const ang0 = _symViewAngle(dr.plane);
+  _sym = {
+    mode: ['v', 'h', 'vh'].includes(mode) ? mode : 'v',
+    cx: (box.x0 + box.x1) / 2, cy: (box.y0 + box.y1) / 2, ang: ang0, ang0,
+    size: Math.max(Math.hypot(box.x1 - box.x0, box.y1 - box.y0), 1e-6),
+    src, raw: dr.polygons, rawActive: dr.activePolygonIdx,
+    res: null, drag: null, grp: null, bar: null, ui: null,
+  };
+  _symCompute();
+  setStickyStatus('⟷ SYMMETRY — drag the pink line (or its white dot) to move it, it clicks onto corners · drag the blue end dot to turn it (clicks every 15°) · the TINTED side is kept and mirrored · Enter applies, Esc cancels', 'info', 'shapeSym');
+  return true;
+}
+
+export function setSymmetryMode(mode) {
+  if (!_sym || !['v', 'h', 'vh'].includes(mode) || _sym.mode === mode) return;
+  _sym.mode = mode;
+  _symCompute();
+}
+
+/** Make the mirrored shape THE shape (one undo step through the vertex-edit path). */
+export function applySymmetry() {
+  const s = _sym; if (!s) return false;
+  if (!s.res?.polygons?.length) { setStatus(s.res?.error ? 'That outline could not be built — move the line a little.' : 'Nothing of the shape is on the kept side — move the line, or ⇄ Other side.', 'warn', 4500); return false; }
+  _symEnd();
+  _renderAll();
+  _emitVertexEdit(state.get('shapeDrawing'), 'symmetry');
+  setStatus('Symmetry applied — Ctrl+Z takes it back.', 'success', 4000);
+  return true;
+}
+
+/** Back to the shape as it was. */
+export function cancelSymmetry(quiet = false) {
+  const s = _sym; if (!s) return;
+  _symEnd();
+  const dr = state.get('shapeDrawing');
+  if (dr) { state.setState({ shapeDrawing: { ...dr, polygons: s.raw, activePolygonIdx: s.rawActive, selection: null } }); _renderAll(); }
+  if (!quiet) setStatus('Symmetry cancelled — the shape is as it was.', 'info', 2500);
+}
+
+/** Enter / Esc / Ctrl+Z / Delete while the tool is up. True = consumed. */
+export function symmetryKey(e) {
+  if (!_sym) return false;
+  const a = document.activeElement;
+  if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)) return false;   // the bar's angle field types
+  const mod = e.ctrlKey || e.metaKey;
+  if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return true; }   // the menu first
+  if (e.key === 'Escape' || (mod && (e.code === 'KeyZ' || e.code === 'KeyY'))) { e.preventDefault(); e.stopImmediatePropagation(); cancelSymmetry(); return true; }
+  if (e.key === 'Enter' && !mod) { e.preventDefault(); e.stopImmediatePropagation(); applySymmetry(); return true; }
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopImmediatePropagation(); return true; }
+  return false;
+}
+
+/** The line's start: the plane faced straight on → the screen's upright; otherwise the plane's own Y. */
+function _symViewAngle(plane) {
+  const T = window.THREE;
+  try {
+    const cam = sceneCore.camera;
+    const N = new T.Vector3(...plane.normal);
+    const fwd = cam.getWorldDirection(new T.Vector3());
+    if (Math.abs(fwd.dot(N)) > 0.95) {
+      const up = new T.Vector3(0, 1, 0).applyQuaternion(cam.quaternion);
+      const ux = up.dot(new T.Vector3(...plane.qx)), uy = up.dot(new T.Vector3(...plane.qy));
+      if (Math.hypot(ux, uy) > 1e-6) return Math.atan2(uy, ux);
+    }
+  } catch { /* the plane's own axes */ }
+  return Math.PI / 2;
+}
+
+function _symCompute() {
+  const s = _sym; const dr = state.get('shapeDrawing'); if (!s || !dr) return;
+  let r;
+  try { r = mirrorShape(s.src, s, window.polygonClipping); } catch (err) { r = { polygons: [], empty: false, error: err?.message || String(err) }; }
+  s.res = r;
+  state.setState({ shapeDrawing: { ...dr, polygons: r.polygons, activePolygonIdx: Math.max(0, r.polygons.length - 1), selection: null } });
+  _renderAll();
+  _symRender();
+  _symBar();
+}
+
+function _symHandles() {
+  const s = _sym; const { U, R } = symmetryAxes(s.ang); const L = s.size * 0.8;
+  const D = s.mode === 'h' ? R : U;                      // the turn dot sits at the end of the line that exists
+  return { c: [s.cx, s.cy], t: [s.cx + D[0] * L, s.cy + D[1] * L], L, U, R };
+}
+
+function _symDispose(s) {
+  if (!s?.grp) return;
+  s.grp.parent?.remove(s.grp);
+  s.grp.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+  s.grp = null;
+}
+
+function _symRender() {
+  const s = _sym; if (!s || !_previewGroup) return;
+  const T = window.THREE;
+  _symDispose(s);
+  const g = new T.Group(); g.name = 'shape-symmetry';
+  const line = (pts, color, opacity, order) => {
+    const ln = new T.Line(new T.BufferGeometry().setAttribute('position', new T.Float32BufferAttribute(pts, 3)), new T.LineBasicMaterial({ color, transparent: true, opacity, depthTest: false }));
+    ln.renderOrder = order; return ln;
+  };
+  // the shape as it was: a grey ghost
+  for (const p of s.src) { const pts = []; for (const q of p.outer) pts.push(q[0], q[1], 0); pts.push(p.outer[0][0], p.outer[0][1], 0); g.add(line(pts, 0x9ca3af, 0.6, 1)); }
+  // the kept side / quarter, tinted
+  const H = _symHandles();
+  const kr = keptRegion(s, H.L);
+  const shp = new T.Shape(); shp.moveTo(kr[0][0], kr[0][1]); for (let i = 1; i < kr.length; i++) shp.lineTo(kr[i][0], kr[i][1]); shp.closePath();
+  const tint = new T.Mesh(new T.ShapeGeometry(shp), new T.MeshBasicMaterial({ color: SYM_COL, transparent: true, opacity: 0.08, side: T.DoubleSide, depthTest: false, depthWrite: false }));
+  tint.renderOrder = 0; g.add(tint);
+  // the line(s)
+  const seg = (D) => [s.cx - D[0] * H.L, s.cy - D[1] * H.L, 0, s.cx + D[0] * H.L, s.cy + D[1] * H.L, 0];
+  if (s.mode !== 'h') g.add(line(seg(H.U), SYM_COL, 1, 6));
+  if (s.mode !== 'v') g.add(line(seg(H.R), SYM_COL, 1, 6));
+  // the dots: white = move, blue = turn
+  const geo = new T.BufferGeometry();
+  geo.setAttribute('position', new T.Float32BufferAttribute([H.c[0], H.c[1], 0, H.t[0], H.t[1], 0], 3));
+  geo.setAttribute('color', new T.Float32BufferAttribute([1, 1, 1, 0.3, 0.75, 1], 3));
+  const dots = new T.Points(geo, new T.PointsMaterial({ size: 13, sizeAttenuation: false, vertexColors: true, depthTest: false, transparent: true }));
+  dots.renderOrder = 7; g.add(dots);
+  _previewGroup.add(g);
+  s.grp = g;
+}
+
+function _symHit(x, y) {
+  const s = _sym, dr = state.get('shapeDrawing'); if (!s || !dr?.plane) return null;
+  const H = _symHandles();
+  const st = _planePointToScreen(dr.plane, H.t), sc = _planePointToScreen(dr.plane, H.c);
+  if (st && Math.hypot(st.x - x, st.y - y) <= SYM_PICK_PX) return 'turn';
+  if (sc && Math.hypot(sc.x - x, sc.y - y) <= SYM_PICK_PX) return 'move';
+  for (const D of (s.mode === 'v' ? [H.U] : s.mode === 'h' ? [H.R] : [H.U, H.R])) {
+    const a = _planePointToScreen(dr.plane, [s.cx - D[0] * H.L, s.cy - D[1] * H.L]), b = _planePointToScreen(dr.plane, [s.cx + D[0] * H.L, s.cy + D[1] * H.L]);
+    if (a && b && _distancePointToSegment(x, y, a.x, a.y, b.x, b.y).dist <= 7) return 'move';
+  }
+  return null;
+}
+
+function _symDown(x, y) {
+  const s = _sym, dr = state.get('shapeDrawing');
+  const kind = _symHit(x, y); if (!kind) return;
+  const p = _projectOntoPlane(x, y, dr.plane), p1 = _projectOntoPlane(x + 10, y, dr.plane);
+  if (!p) return;
+  const upp = p1 ? Math.hypot(p1[0] - p[0], p1[1] - p[1]) / 10 : s.size / 500;   // plane units per screen pixel, here
+  s.drag = { kind, p0: p, c0: [s.cx, s.cy], upp };
+}
+
+function _symMove(x, y) {
+  const s = _sym, dr = state.get('shapeDrawing'); if (!s || !dr?.plane) return;
+  if (!s.drag) {
+    const h = _symHit(x, y), dom = sceneCore.renderer?.domElement;
+    if (dom) dom.style.cursor = h === 'turn' ? 'grab' : h === 'move' ? 'move' : 'default';
+    return;
+  }
+  const p = _projectOntoPlane(x, y, dr.plane); if (!p) return;
+  const { U, R } = symmetryAxes(s.ang);
+  if (s.drag.kind === 'move') {
+    let cx = s.drag.c0[0] + p[0] - s.drag.p0[0], cy = s.drag.c0[1] + p[1] - s.drag.p0[1];
+    // a line passing within 10 px of a corner of the shape goes exactly through it (a clean seam there)
+    const tol = s.drag.upp * 10;
+    const snap = (Nrm) => {
+      let best = null, bd = tol;
+      for (const poly of s.src) for (const q of poly.outer) { const d = (q[0] - cx) * Nrm[0] + (q[1] - cy) * Nrm[1]; if (Math.abs(d) < bd) { bd = Math.abs(d); best = d; } }
+      if (best != null) { cx += Nrm[0] * best; cy += Nrm[1] * best; }
+    };
+    if (s.mode !== 'h') snap(R);                          // the vertical line moves along R
+    if (s.mode !== 'v') snap(U);                          // the horizontal one along U
+    s.cx = cx; s.cy = cy;
+  } else {
+    const dx = p[0] - s.cx, dy = p[1] - s.cy; if (Math.hypot(dx, dy) < 1e-12) return;
+    let a = Math.atan2(dy, dx) + (s.mode === 'h' ? Math.PI / 2 : 0);
+    const rel = a - s.ang0, step = Math.PI / 12, k = Math.round(rel / step);
+    if (Math.abs(rel - k * step) < (3 * Math.PI / 180)) a = s.ang0 + k * step;   // clicks at every 15° from upright
+    s.ang = a;
+  }
+  _symCompute();
+}
+
+function _symBar() {
+  const s = _sym; if (!s) return;
+  const base = 'height:26px;padding:0 9px;font-size:12px;';
+  if (!s.bar) {
+    const surf = document.getElementById('viewport-surface') || sceneCore.renderer?.domElement?.parentElement;
+    const bar = s.bar = document.createElement('div');
+    bar.style.cssText = 'position:absolute;top:40px;left:50%;transform:translateX(-50%);z-index:40;display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:7px 10px;border-radius:10px;background:var(--panel,#0f172a);border:1px solid #ff4fd8;box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e5e7eb);font-size:12px;max-width:94%;';
+    for (const ev of ['pointerdown', 'dblclick', 'contextmenu', 'wheel']) bar.addEventListener(ev, (e) => e.stopPropagation());
+    const b = (label, title, fn, extra = '') => { const x = document.createElement('button'); x.className = 'btn'; x.textContent = label; x.title = title; x.style.cssText = base + extra; x.addEventListener('click', (e) => { e.preventDefault(); x.blur(); fn(); }); return x; };
+    const lab = document.createElement('span'); lab.style.cssText = 'font-weight:600;'; lab.textContent = '⟷ Symmetry';
+    const mv = b('│ Vertical', 'One upright line: the tinted side is mirrored onto the other', () => setSymmetryMode('v'));
+    const mh = b('— Horizontal', 'One level line: the tinted side is mirrored onto the other', () => setSymmetryMode('h'));
+    const mb = b('✚ Both', 'Both lines: the tinted quarter is used four times', () => setSymmetryMode('vh'));
+    const angL = document.createElement('span'); angL.textContent = 'turn'; angL.style.opacity = '.7';
+    const ang = document.createElement('input'); ang.type = 'text'; ang.title = 'The line\'s turn from upright, in degrees. Enter takes it.';
+    ang.style.cssText = 'width:52px;height:24px;padding:0 6px;font-size:12px;';
+    const takeAng = () => { const v = Number(String(ang.value).replace(',', '.')); if (_sym && Number.isFinite(v)) { _sym.ang = _sym.ang0 + v * Math.PI / 180; _symCompute(); } };
+    ang.addEventListener('change', takeAng);
+    ang.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); takeAng(); ang.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); ang.blur(); _symBar(); }
+    });
+    const deg = document.createElement('span'); deg.textContent = '°'; deg.style.opacity = '.7';
+    const flip = b('⇄ Other side', 'Keep the other side (both lines: the next quarter)', () => { if (!_sym) return; _sym.ang += _sym.mode === 'vh' ? Math.PI / 2 : Math.PI; _symCompute(); });
+    const msg = document.createElement('span'); msg.style.cssText = 'margin:0 4px;opacity:.85;';
+    const ok = b('✔ Apply  [Enter]', 'Make the mirrored shape the shape. One undo step.', () => applySymmetry(), 'background:#14532d;border-color:#22c55e;color:#dcfce7;font-weight:600;');
+    const no = b('✕ Cancel  [Esc]', 'Back to the shape as it was', () => cancelSymmetry());
+    bar.append(lab, mv, mh, mb, angL, ang, deg, flip, msg, ok, no);
+    s.ui = { mv, mh, mb, ang, msg, ok };
+    surf?.appendChild(bar);
+  }
+  const { mv, mh, mb, ang, msg, ok } = s.ui;
+  const on = 'background:#be185d;border-color:#ff4fd8;color:#fff;';
+  for (const [el, m] of [[mv, 'v'], [mh, 'h'], [mb, 'vh']]) el.style.cssText = base + (s.mode === m ? on : '');
+  if (document.activeElement !== ang) {
+    let d = ((s.ang - s.ang0) * 180 / Math.PI) % 360; if (d > 180) d -= 360; if (d <= -180) d += 360;
+    ang.value = String(+d.toFixed(1));
+  }
+  const r = s.res || {};
+  msg.style.color = r.error || r.empty ? '#fca5a5' : '';
+  msg.textContent = r.error ? 'can\'t build that outline — move the line a little'
+    : r.empty ? 'nothing of the shape on the tinted side — move the line, or ⇄'
+      : `→ ${r.polygons.length} outline${r.polygons.length === 1 ? '' : 's'}`;
+  ok.disabled = !r.polygons?.length;
+}
+
+/** The tool goes; the shape stays as it is in the editor's state (Apply) or is put back by the caller (Cancel). */
+function _symEnd() {
+  const s = _sym; if (!s) return;
+  _sym = null;
+  _symDispose(s);
+  try { s.bar?.remove(); } catch { /* gone */ }
+  clearStickyStatus('shapeSym');
+  const dom = sceneCore.renderer?.domElement; if (dom) dom.style.cursor = '';
 }
 
 
@@ -830,6 +1113,7 @@ function _setupPreview() {
 }
 
 function _teardownPreview() {
+  if (_sym) { const s = _sym; _sym = null; try { s.bar?.remove(); } catch { /* gone */ } clearStickyStatus('shapeSym'); }   // its 3D bits go with the group below
   if (!_previewGroup) return;
   if (_tickUnsub) { _tickUnsub(); _tickUnsub = null; }
   _previewGroup.parent?.remove(_previewGroup);

@@ -10207,10 +10207,14 @@ state.on('shapeEditor:vertexEdit', ({ templateId, polygons, reason }) => {
               : reason === 'addPolygon'       ? 'Add shape'
               : reason === 'deletePolygon'    ? 'Delete shape'
               : reason === 'transformPolygon' ? 'Transform shape'
+              : reason === 'symmetry'         ? 'Symmetry'
               :                                 'Move vertex';
+  // ⟷ V0.3.5.46 — the editor still open on this shape would keep drawing (and re-commit on the next drag)
+  // the outline the undo just took back: it closes first, as the Poly Editor's does.
+  const closeEditor = () => { if (state.get('shapeDrawing')?.editingTemplateId === templateId) shapeEditor.cancel(); };
   undoManager.push(label,
-    () => apply(prevPolygons),
-    () => apply(nextPolygons),
+    () => { closeEditor(); apply(prevPolygons); },
+    () => { closeEditor(); apply(nextPolygons); },
   );
 });
 
