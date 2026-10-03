@@ -544,7 +544,11 @@ function _endDrag(commit) {
   window.removeEventListener('pointermove', d.move, true);
   window.removeEventListener('pointerup', d.up, true);
   window.removeEventListener('pointercancel', d.up, true);
-  if (!commit || !d.moved || !_h) return;
+  if (!commit) {                                            // cancelled (Esc, the mode ended): the picture goes back to where the drag began
+    if (d.moved) { d.ref.u = d.u0; d.ref.v = d.v0; d.ref.size = d.size0; d.ref.stretch = d.stretch0; syncPolyRefs(); }
+    return;
+  }
+  if (!d.moved || !_h) return;
   const r = d.ref, before = { u: d.u0, v: d.v0, size: d.size0, stretch: d.stretch0 }, after = { u: r.u, v: r.v, size: r.size, stretch: _stretchOf(r) };
   const put = (o) => { r.u = o.u; r.v = o.v; r.size = o.size; r.stretch = o.stretch; };
   _h.push(d.corner == null ? 'Move reference picture' : 'Scale reference picture', () => { put(before); syncPolyRefs(); }, () => { put(after); syncPolyRefs(); });

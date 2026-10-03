@@ -15,7 +15,7 @@ import {
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent,
   setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection,
 } from '../systems/poly-session.js';
-import { quadForExtent, slideExtent, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
+import { quadForExtent, quadCoords, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
 import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
 import { REF_VIEWS, addPolyRef, removePolyRef, squarePolyRef, selectPolyRef, setPolyRefsEdit, setPolyRefProps, movePolyRefOrder } from '../systems/poly-refs.js';   // ⬚ V0.3.5.25
 
@@ -348,20 +348,27 @@ export function askPolySquareUp(src, { title = 'Reference picture', quad = null,
         g.style.transform = `rotate(${Math.atan2(Y(b2.y) - Y(a.y), X(b2.x) - X(a.x))}rad)`;
       });
     };
-    const drag = (node, onMove) => node.addEventListener('pointerdown', (e) => {
+    // A handle moves BY what the pointer moved, from where it was grabbed (never jumps onto the cursor: zoomed
+    // in, a grip can sit pinned at the border far from its edge). start → what the move needs; move(x, y, s).
+    const at = (ev) => { const r = wrap.getBoundingClientRect(); return { x: (ev.clientX - r.left - vx) / (W * vs), y: (ev.clientY - r.top - vy) / (H * vs) }; };
+    const drag = (node, { start, move: onMove }) => node.addEventListener('pointerdown', (e) => {
       e.preventDefault(); e.stopPropagation();
       try { node.setPointerCapture(e.pointerId); } catch { /* fine */ }
-      const move = (ev) => { const r = wrap.getBoundingClientRect(); onMove((ev.clientX - r.left - vx) / (W * vs), (ev.clientY - r.top - vy) / (H * vs)); draw(); };
+      const p0 = at(e), s = start(p0.x, p0.y);
+      const move = (ev) => { const p = at(ev); onMove(p.x, p.y, s); draw(); };
       const up = () => { node.removeEventListener('pointermove', move); node.removeEventListener('pointerup', up); node.removeEventListener('pointercancel', up); };
       node.addEventListener('pointermove', move); node.addEventListener('pointerup', up); node.addEventListener('pointercancel', up);
     });
     pts.forEach((p, i) => {
       const d = el('div', 'position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #38bdf8;box-shadow:0 1px 4px rgba(0,0,0,.6);cursor:grab;touch-action:none;z-index:2;');
       d.title = `${['Top-left', 'Top-right', 'Bottom-right', 'Bottom-left'][i]} corner of what should be a rectangle`;
-      drag(d, (x, y) => {
-        const was = { x: p.x, y: p.y };
-        p.x = Math.min(1, Math.max(0, x)); p.y = Math.min(1, Math.max(0, y));
-        if (!frame()) { p.x = was.x; p.y = was.y; }          // that corner would throw the frame past the horizon
+      drag(d, {
+        start: (x, y) => ({ dx: p.x - x, dy: p.y - y }),
+        move: (x, y, s) => {
+          const was = { x: p.x, y: p.y };
+          p.x = Math.min(1, Math.max(0, x + s.dx)); p.y = Math.min(1, Math.max(0, y + s.dy));
+          if (!frame()) { p.x = was.x; p.y = was.y; }        // that corner would throw the frame past the horizon
+        },
       });
       dots.push(d); wrap.append(d);
     });
@@ -369,18 +376,31 @@ export function askPolySquareUp(src, { title = 'Reference picture', quad = null,
       const g = el('div', 'position:absolute;width:16px;height:16px;border-radius:3px;background:#f59e0b;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.6);touch-action:none;z-index:1;');
       g.style.cursor = i % 2 ? 'ew-resize' : 'ns-resize';
       g.title = `Pull the ${['top', 'right', 'bottom', 'left'][i]} edge of the frame out (or in) — the perspective stays`;
-      drag(g, (x, y) => {
-        // the pointer is kept inside what is shown (the frame can still go past the picture, into the border)
-        const lo = (0 - vx) / (W * vs), hiX = (W + 2 * PAD - vx) / (W * vs), loY = (0 - vy) / (H * vs), hiY = (H + 2 * PAD - vy) / (H * vs);
-        const e2 = slideExtent(pts, ext, i, { x: Math.min(hiX, Math.max(lo, x)), y: Math.min(hiY, Math.max(loY, y)) });
-        if (e2) ext = e2;
+      // the edge moves by what the pointer moved, measured in the rectangle's own coordinates (the perspective's)
+      const k = [1, 2, 3, 0][i];
+      const keepIn = (x, y) => ({ x: Math.min((W + 2 * PAD - vx) / (W * vs), Math.max(-vx / (W * vs), x)), y: Math.min((H + 2 * PAD - vy) / (H * vs), Math.max(-vy / (H * vs), y)) });
+      drag(g, {
+        start: (x, y) => { const c = quadCoords(pts, keepIn(x, y)); return c ? { c, e: ext.slice() } : null; },
+        move: (x, y, s) => {
+          if (!s) return;
+          const c = quadCoords(pts, keepIn(x, y)); if (!c) return;
+          const e2 = s.e.slice(), d = i % 2 === 0 ? c.v - s.c.v : c.u - s.c.u;
+          e2[k] = s.e[k] + d;
+          if (i === 0) e2[1] = Math.max(-8, Math.min(e2[1], e2[3] - 0.05));
+          else if (i === 1) e2[2] = Math.min(9, Math.max(e2[2], e2[0] + 0.05));
+          else if (i === 2) e2[3] = Math.min(9, Math.max(e2[3], e2[1] + 0.05));
+          else e2[0] = Math.max(-8, Math.min(e2[0], e2[2] - 0.05));
+          if (quadForExtent(pts, e2)) ext = e2;              // not past the limit of the perspective
+        },
       });
       grips.push(g); wrap.append(g);
     }
     wrap.addEventListener('wheel', (e) => {
       e.preventDefault();
+      if (!e.deltaY) return;                                 // a sideways scroll is not a zoom
       const r = wrap.getBoundingClientRect(), cx = e.clientX - r.left, cy = e.clientY - r.top;
-      const s2 = Math.min(40, Math.max(0.5, vs * (e.deltaY < 0 ? 1.25 : 1 / 1.25)));
+      // a wheel notch (≈100) = one 1.25× step; a touchpad's many small events add up to the same, not one step each
+      const s2 = Math.min(40, Math.max(0.5, vs * Math.pow(1.25, -Math.sign(e.deltaY) * Math.min(1, Math.abs(e.deltaY) / 100))));
       vx = cx - (cx - vx) * (s2 / vs); vy = cy - (cy - vy) * (s2 / vs); vs = s2;   // the point under the cursor stays under it
       draw();
     }, { passive: false });
