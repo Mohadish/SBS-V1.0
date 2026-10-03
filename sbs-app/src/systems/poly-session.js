@@ -35,7 +35,7 @@ import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';   // �
 import { matches as keyMatches, keyLabel } from '../core/keymap.js';
 import { setIsolateKeepSet, clearIsolate, getIsolateKeepSet } from '../core/isolate-state.js';
 import { subDir, joinPath } from '../core/project-paths.js';
-import { isPoly, clonePoly, polyToArrays, makeBoxPoly } from './poly-core.js';
+import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal } from './poly-core.js';
 import { PRIMITIVE_DEFS, defaultPrimitiveParams, buildPrimitiveGeometry } from './primitives.js';   // ⬚ V0.3.5.18 — primitives added inside the editor
 import { geometryToPoly, geometryTriangles } from './poly-convert.js';
 import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost } from './poly-edit.js';
@@ -45,7 +45,7 @@ import { sourceMatrixOfModel } from '../core/transforms.js';
 import { polyAssetOfModel, planPolyAssetUpdate, updatePolyAssetInPlace, applyPolyPartColours } from './poly-asset-update.js';   // ⬚ V0.3.5.16 — save over the asset
 import { polyPartNodeId } from '../io/importers.js';
 import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's colours, used (and added to) from the editor
-import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
+import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef, polyRefProjectors } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
@@ -96,6 +96,7 @@ export function polySessionInfo() {
     // ⬚ V0.3.5.22 — the panel's tabs: the scene's colours, the editor's own background
     tab: _s.tab || 'model', bg: _s.bg || null,
     selParts: selParts.length,
+    projected: [...alive].filter(id => _s.items.get(id)?.proj).length,   // ⬚ V0.3.5.30 — parts the pictures are projected onto
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
     scale: !!_s.scale,                                       // ⬚ V0.3.5.28 — the scale box is up
     scl: _scalePct(),                                        //   the scale record of the one selected object, % of how it came in
@@ -465,6 +466,7 @@ function _refreshPartMesh(part) {
   part.mesh.geometry?.dispose?.();
   part.mesh.geometry = g;
   if (_s?.scale) _s.scale.dirty = true;                    // the scale box is measured from the vertices: any new shape (an undo of a face edit too)
+  if (part.proj) _markSkins();                             // a projected part: the pictures go onto the new shape
   sceneCore.requestRender?.(120);
 }
 
@@ -565,6 +567,7 @@ const _refsHost = {
   goView(v) { setPolyView(v, { fit: false }); },
   push(label, undo, redo) { if (_s) _push(label, undo, redo); },
   changed() { _emit('view'); },
+  moved() { _markSkins(); },                               // ⬚ V0.3.5.30 — a picture moved / scaled / squared: its projection follows
   contentSize() {
     if (!_s) return 0;
     const b = _sessionBox(false); if (!b) return 0;
@@ -1870,6 +1873,137 @@ export function polyRestoreSelected() {
   return true;
 }
 
+// ── ⬚ V0.3.5.30 — the reference pictures PROJECTED onto the parts (box projection) ──────────────
+// His design: every face takes the picture of the view it faces most — its normal's strongest axis in the
+// asset's axes: ±X = right / left, ±Y = top / bottom, ±Z = front / back — projected straight along that axis,
+// like a slide projector standing in that view. A side with no picture of its own can borrow the opposite
+// side's, projected THROUGH the part (a mirror image: his "project through to the backside") — the user is
+// asked. For now it is a live preview in the editor: a textured skin over each projected part that follows
+// the pictures (move / scale / square one and its projection follows) and the shape (edits, scale).
+const _VIEW_OF_AXIS = [['right', 'left'], ['top', 'bottom'], ['front', 'back']];
+const _OPP_VIEW = { left: 'right', right: 'left', top: 'bottom', bottom: 'top', front: 'back', back: 'front' };
+/** Per poly face of a part: the view it faces most. */
+function _faceViews(part) {
+  const q = part.mesh.quaternion, n = new (T().Vector3)();
+  return part.poly.f.map((_, fi) => {
+    const a = faceNormal(part.poly, fi);
+    n.set(a[0], a[1], a[2]).applyQuaternion(q);
+    const x = Math.abs(n.x), y = Math.abs(n.y), z = Math.abs(n.z), k = x >= y && x >= z ? 0 : y >= z ? 1 : 2;
+    return _VIEW_OF_AXIS[k][n.getComponent(k) >= 0 ? 0 : 1];
+  });
+}
+function _disposeSkin(part) {
+  const s = part?.skin; if (!s) return;
+  try { s.parent?.remove(s); s.geometry?.dispose?.(); for (const m of s.material || []) m.dispose?.(); } catch { /* gone */ }
+  part.skin = null;
+}
+/** The skin: the part's triangles that have a picture, with that picture's texture and its projected coordinates. */
+function _buildSkin(part, P) {
+  _disposeSkin(part);
+  const m = part.mesh, g0 = m?.geometry, pos = g0?.getAttribute?.('position'), nor = g0?.getAttribute?.('normal'), fot = g0?.userData?.faceOfTri;
+  if (!pos || !nor || !fot || !part.proj) return;
+  const Th = T(), through = part.proj.through || {}, views = _faceViews(part), groups = new Map();
+  for (let tri = 0; tri < fot.length; tri++) {
+    const v = views[fot[tri]], key = P[v] ? v : (through[v] && P[_OPP_VIEW[v]] ? _OPP_VIEW[v] : null);
+    if (!key) continue;                                    // no picture for that side: the face keeps the part's colour
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(tri);
+  }
+  if (!groups.size) return;
+  m.updateMatrix();
+  let n = 0; for (const l of groups.values()) n += l.length;
+  const P3 = new Float32Array(n * 9), N3 = new Float32Array(n * 9), UV = new Float32Array(n * 6), g = new Th.BufferGeometry(), mats = [], v = new Th.Vector3(), w = new Th.Vector3();
+  let o = 0;
+  for (const [key, list] of groups) {
+    const pr = P[key];
+    g.addGroup(o * 3, list.length * 3, mats.length);
+    mats.push(new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    for (const tri of list) {
+      for (let c = 0; c < 3; c++) {
+        const i = tri * 3 + c, j = o * 3 + c;
+        v.fromBufferAttribute(pos, i);
+        P3[j * 3] = v.x; P3[j * 3 + 1] = v.y; P3[j * 3 + 2] = v.z;
+        N3[j * 3] = nor.getX(i); N3[j * 3 + 1] = nor.getY(i); N3[j * 3 + 2] = nor.getZ(i);
+        const uv = pr.uv(w.copy(v).applyMatrix4(m.matrix));   // the part's space → the session group's (where the pictures stand)
+        UV[j * 2] = uv[0]; UV[j * 2 + 1] = uv[1];
+      }
+      o++;
+    }
+  }
+  g.setAttribute('position', new Th.BufferAttribute(P3, 3));
+  g.setAttribute('normal', new Th.BufferAttribute(N3, 3));
+  g.setAttribute('uv', new Th.BufferAttribute(UV, 2));
+  g.computeBoundingSphere();
+  const skin = new Th.Mesh(g, mats);
+  skin.name = 'poly:projection'; skin.raycast = () => {};   // only a look: clicks, picks and snaps go to the part
+  m.add(skin);
+  part.skin = skin;
+}
+let _skinRaf = 0;
+/** Something a projection depends on changed: the skins are rebuilt on the next frame (once, however many changes). */
+function _markSkins() {
+  if (!_s || _skinRaf) return;
+  if (![..._s.items.values()].some(it => it.proj || it.skin)) return;
+  _skinRaf = requestAnimationFrame(() => { _skinRaf = 0; _flushSkins(); });
+}
+function _flushSkins() {
+  if (!_s) return;
+  const P = polyRefProjectors(), editing = isPolyEditing(), sel = new Set(_selectedPartIds()), alive = _aliveIds();
+  for (const it of _s.items.values()) {
+    if (it.kind !== 'part' || !it.mesh) continue;
+    if (!it.proj || !alive.has(it.id)) { _disposeSkin(it); continue; }
+    try { _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
+    if (it.skin) { it.skin.visible = !editing; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) ? 0x0b3a52 : 0x000000); }
+  }
+  sceneCore.requestRender?.(60);
+}
+/** 🎯 Project the pictures onto the selected parts (none selected = every part). Asks about sides that have no picture. */
+export async function polyProjectPictures() {
+  if (!_s || _s.asking) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  const alive = _aliveIds();
+  let parts = _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.mesh);
+  if (!parts.length) parts = [..._s.items.values()].filter(it => it.kind === 'part' && it.mesh && alive.has(it.id));
+  if (!parts.length) { setStatus('There is nothing to project onto yet.', 'warn', 3500); return false; }
+  const P = polyRefProjectors(), have = new Set(Object.keys(P));
+  if (!have.size) { setStatus('Add a reference picture first (Refs tab): the pictures are what gets projected.', 'warn', 5000); return false; }
+  const need = new Set();
+  for (const it of parts) for (const v of _faceViews(it)) need.add(v);
+  const ask = [...need].filter(v => !have.has(v) && have.has(_OPP_VIEW[v])).map(v => ({ view: v, from: _OPP_VIEW[v] }));
+  const bare = [...need].filter(v => !have.has(v) && !have.has(_OPP_VIEW[v]));
+  let through = {};
+  if (ask.length) {
+    const panel = await import('../ui/poly-editor-panel.js');
+    _s.asking = true;
+    try { through = await panel.askPolyProjectThrough(ask); } finally { if (_s) _s.asking = false; }
+    if (!through || !_s) return false;
+  }
+  const rows = parts.map(it => ({ it, before: it.proj ? { through: { ...it.proj.through } } : null, after: { through: { ...through } } }));
+  const put = (k) => { for (const r of rows) r.it.proj = r[k] ? { through: { ...r[k].through } } : null; _markSkins(); };
+  put('after');
+  _push(parts.length > 1 ? 'Project pictures onto parts' : 'Project pictures onto a part', () => put('before'), () => put('after'));
+  _syncScene(); _emit('tree');
+  const used = [...need].filter(v => have.has(v) || through[v]);
+  setStatus(`Projected onto ${parts.length} part${parts.length === 1 ? '' : 's'}${used.length ? ` (${used.join(', ')})` : ''}.${bare.length ? ` No picture for ${bare.join(' / ')}: those faces keep their colour.` : ''} Move or scale a picture and its projection follows. (A preview — not written into the asset yet.)`, 'success', 9000);
+  return true;
+}
+/** The selected parts (none selected = every part) lose their projection. */
+export function polyRemoveProjection() {
+  if (!_s) return false;
+  const alive = _aliveIds();
+  let parts = _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.proj);
+  if (!parts.length && !_s.sel.size) parts = [..._s.items.values()].filter(it => it.kind === 'part' && it.proj && alive.has(it.id));
+  if (!parts.length) { setStatus('Nothing selected has a projection.', 'info', 3000); return false; }
+  const rows = parts.map(it => ({ it, before: { through: { ...it.proj.through } } }));
+  const put = (on) => { for (const r of rows) r.it.proj = on ? { through: { ...r.before.through } } : null; _markSkins(); };
+  put(false);
+  _push('Remove projection', () => put(true), () => put(false));
+  _syncScene(); _emit('tree');
+  setStatus(`The projection is off on ${parts.length} part${parts.length === 1 ? '' : 's'}.`, 'info', 3500);
+  return true;
+}
+
 // ── the right-click menu of a part / folder ──────────────────────────────────
 export function polyShowMenu(x, y) {
   if (!_s || !_s.sel.size) return;
@@ -1880,6 +2014,9 @@ export function polyShowMenu(x, y) {
     { separator: true },
     { label: `${_s.scale ? '✔ ' : ''}⤢ Scale (the box with handles)`, disabled: !nParts, action: () => polySetScaleMode(!_s.scale) },
     { label: _s.reedit ? '↩ Restore from the saved file (as it came in)' : '↩ Restore (as it came in)', disabled: !nParts, action: () => polyRestoreSelected() },
+    { separator: true },
+    { label: '🎯 Project the reference pictures (box)', disabled: !nParts, action: () => polyProjectPictures() },
+    { label: '✕ Remove the projection', disabled: !_selectedPartIds().some(id => _s.items.get(id)?.proj), action: () => polyRemoveProjection() },
     { label: '✛ Pivot', disabled: !one, submenu: [
       { label: _s.pivotMode ? '✔ Moving the pivot only — click to finish' : '✛ Move the pivot only (with the gizmo)', action: () => polySetPivotMode(!_s.pivotMode) },
       { separator: true },
@@ -2055,7 +2192,7 @@ function _teardown(how = 'discard') {
   _detachInput();
   try {
     _s.group.parent?.remove(_s.group);
-    for (const it of _s.items.values()) if (it.mesh) { it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
+    for (const it of _s.items.values()) if (it.mesh) { _disposeSkin(it); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
   } catch { /* already gone */ }
   _showProject(how);
   _partSubs.clear();
@@ -2162,6 +2299,7 @@ function _assetLayout(space = 'scene') {
 export async function applyPolySession() {
   if (!_s || _s.applying || _s.asking) return false;
   if (isPolyEditing()) exitPolyEdit();
+  if ([..._s.items.values()].some(it => it.proj)) setStatus('Note: the projected pictures are a preview in the editor for now — they are not written into the asset yet.', 'warn', 9000);
   _s.asking = true;
   try {
     const panel = await import('../ui/poly-editor-panel.js');

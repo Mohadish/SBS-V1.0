@@ -157,6 +157,24 @@ export function syncPolyRefs() {
   for (const c of [..._root.children]) if (c !== _helpers && !_refs.some(r => r.mesh === c)) _root.remove(c);   // removed pictures leave the scene (their objects stay for undo)
   _syncHelpers();
   sceneCore.requestRender?.(120);
+  _h.moved?.();                                            // ⬚ V0.3.5.30 — a projection follows its picture
+}
+
+/**
+ * ⬚ V0.3.5.30 — what a box projection needs: per view, the picture on top of that view's stack (loaded; hidden
+ * or not — hiding a picture is for seeing the model, not for taking its projection away) → { tex, uv(p) },
+ * p in the session group's space: where p falls on the picture, straight along the view's axis (0…1 inside it).
+ */
+export function polyRefProjectors() {
+  const out = {};
+  if (!_h) return out;
+  const a = _h.anchor(), top = {};
+  for (const r of _refs) if (r.mesh && r.w > 0 && r.h > 0 && r.size > 0) top[r.view] = r;   // bottom → top: the last one wins
+  for (const [view, r] of Object.entries(top)) {
+    const b = _basis(view), c = a.clone().addScaledVector(b.right, r.u).addScaledVector(b.up, r.v), W = r.size, H = r.size * r.h / r.w;
+    out[view] = { tex: r.mesh.material.map, ref: r.id, uv: (p) => { const dx = p.x - c.x, dy = p.y - c.y, dz = p.z - c.z; return [(dx * b.right.x + dy * b.right.y + dz * b.right.z) / W + 0.5, (dx * b.up.x + dy * b.up.y + dz * b.up.z) / H + 0.5]; } };
+  }
+  return out;
 }
 
 function _viewHeightLocal(pLocal) {

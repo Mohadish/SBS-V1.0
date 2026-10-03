@@ -13,7 +13,7 @@ import {
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent,
-  setPolyTab, setPolyBackground, polyColorsHost,
+  setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection,
 } from '../systems/poly-session.js';
 import { quadForExtent, slideExtent, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
 import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
@@ -276,6 +276,15 @@ function _renderRefs(info) {
   if (!any) list.append(el('div', 'padding:10px;font-size:12px;opacity:.6;line-height:1.45;', 'No pictures yet. Go to a flat view (Front, Top, Left…) and add the picture of the object seen from there.'));
   _root.append(list);
   _root.append(_note("A picture stands in the scene on the object's centre: it grows and shrinks with the zoom, and shows only in its own flat view. It is kept with the asset by its file's path."));
+  // ⬚ V0.3.5.30 — box projection: every face takes the picture of the side it faces most
+  _root.append(section('Project onto the model'));
+  const pr = row();
+  pr.append(
+    btn(`🎯 Project${info.selParts ? ` onto ${info.selParts === 1 ? 'the selected part' : `${info.selParts} parts`}` : ' onto every part'}`, 'Box projection: every face takes the picture of the side it faces most (right / left, top / bottom, front / back), straight along that axis. A side with no picture can borrow the opposite one, through the part — you are asked.', () => polyProjectPictures(), 'flex:1;font-weight:600;'),
+    btn('✕ Remove', 'Take the projection off the selected parts (none selected = every part)', () => polyRemoveProjection()),
+  );
+  _root.append(pr);
+  _root.append(_note(info.projected ? `${info.projected} part${info.projected === 1 ? ' has' : 's have'} the pictures projected on. Move, scale or square a picture and its projection follows. A preview for now: Apply does not write it into the asset yet.` : 'Line the pictures up with the model (✥ Move / scale), then project. Hiding a picture does not take its projection away.'));
 }
 
 /**
@@ -482,6 +491,36 @@ function _dialog(title, bodyNodes, buttons) {
   });
 }
 const _p = (text) => el('div', 'font-size:13px;line-height:1.45;margin-bottom:8px;', text);
+
+/**
+ * ⬚ V0.3.5.30 — a projection reaches sides that have no picture, but the opposite side has one. His rule: say so,
+ * and ask — project that picture THROUGH the part onto the other side (a mirror image)? Per side, the user's call.
+ * items = [{ view, from }] → { view: true | false } | null (cancelled).
+ */
+export function askPolyProjectThrough(items) {
+  return new Promise((resolve) => {
+    const dlg = el('dialog', 'max-width:520px;border-radius:14px;border:1px solid var(--line,#334155);background:var(--panel,#0f172a);color:var(--text,#e5e7eb);padding:18px 20px;');
+    dlg.append(el('div', 'font-size:16px;font-weight:700;margin-bottom:8px;', '🎯 Sides without a picture'));
+    dlg.append(_p('Some faces look toward a side that has no picture of its own — but the opposite side has one. Project that picture THROUGH the part onto them? (They get its mirror image; untick a side to leave its faces in the part\'s colour.)'));
+    const Name = (v) => v[0].toUpperCase() + v.slice(1);
+    const boxes = items.map(({ view, from }) => {
+      const lab = el('label', 'display:flex;align-items:center;gap:8px;font-size:13px;margin:4px 0;cursor:pointer;');
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = true;
+      lab.append(cb, el('span', '', `${Name(view)} has no picture — use the ${Name(from)} picture, through the part`));
+      dlg.append(lab);
+      return [view, cb];
+    });
+    const done = (v) => { try { dlg.close(); } catch { /* fine */ } dlg.remove(); resolve(v); };
+    const bar = el('div', 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px;');
+    bar.append(
+      btn('🎯 Project', 'Project the pictures', () => done(Object.fromEntries(boxes.map(([v, cb]) => [v, cb.checked]))), 'font-weight:600;background:#14532d;border-color:#22c55e;color:#dcfce7;'),
+      btn('Cancel', '', () => done(null)));
+    dlg.append(bar);
+    dlg.addEventListener('cancel', (e) => { e.preventDefault(); done(null); });
+    document.body.appendChild(dlg);
+    try { dlg.showModal(); } catch { done(null); }
+  });
+}
 
 function _nameInput(value) {
   const input = el('input', 'width:100%;box-sizing:border-box;padding:7px 9px;border-radius:8px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:14px;margin-bottom:6px;');
