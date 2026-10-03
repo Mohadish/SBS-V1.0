@@ -1125,6 +1125,7 @@ const _target = {
     for (const r of xf.rows) r.mesh.position.copy(r.pos).add(d);
     for (const r of xf.frows) if (r.p) r.it.frame.p.copy(r.p).add(d);
     if (xf.frows.length) syncPolyRefs();                     // the pictures ride the object's folder
+    else _markSkins();                                       // a projected part slides under its projection
     sceneCore.requestRender?.(60);
   },
   commitMove() { _xfCommit('Move part'); },
@@ -1137,6 +1138,7 @@ const _target = {
     const q = new Th.Quaternion().setFromAxisAngle(axis, rad);
     if (xf.pivotOnly) { xf.pivotOnly.quat.copy(q).multiply(xf.pivotOnly.quat0); sceneCore.requestRender?.(60); return; }
     _xfRigid(xf, q, null);
+    _markSkins();
     sceneCore.requestRender?.(60);
   },
   commitRotate() { _xfCommit('Rotate part'); },
@@ -1190,6 +1192,7 @@ function _xfCommit(label) {
     for (const r of frows) { r.it.frame.q.copy(r.q); r.it.frame.p = r.p ? r.p.clone() : null; }
   };
   _push(xf.rows.length > 1 ? `${label}s` : label, () => set(xf.rows, xf.frows), () => set(after, fafter));
+  syncPolyRefs();                                            // the pictures (on a folder that moved) and the projections (of a part that moved) follow now
 }
 
 /**
@@ -1899,9 +1902,11 @@ function _disposeSkin(part) {
 }
 /** The skin: the part's triangles that have a picture, with that picture's texture and its projected coordinates. */
 function _buildSkin(part, P) {
-  _disposeSkin(part);
+  const keep = new Map((part.skin?.material || []).map(mm => [mm.map, mm]));   // the materials are kept: only the shape and the coordinates change
+  if (part.skin) { part.skin.parent?.remove(part.skin); part.skin.geometry?.dispose?.(); part.skin = null; }
+  const drop = () => { for (const mm of keep.values()) mm.dispose?.(); };
   const m = part.mesh, g0 = m?.geometry, pos = g0?.getAttribute?.('position'), nor = g0?.getAttribute?.('normal'), fot = g0?.userData?.faceOfTri;
-  if (!pos || !nor || !fot || !part.proj) return;
+  if (!pos || !nor || !fot || !part.proj) { drop(); return; }
   const Th = T(), through = part.proj.through || {}, views = _faceViews(part), groups = new Map();
   for (let tri = 0; tri < fot.length; tri++) {
     const v = views[fot[tri]], key = P[v] ? v : (through[v] && P[_OPP_VIEW[v]] ? _OPP_VIEW[v] : null);
@@ -1909,7 +1914,7 @@ function _buildSkin(part, P) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(tri);
   }
-  if (!groups.size) return;
+  if (!groups.size) { drop(); return; }
   m.updateMatrix();
   let n = 0; for (const l of groups.values()) n += l.length;
   const P3 = new Float32Array(n * 9), N3 = new Float32Array(n * 9), UV = new Float32Array(n * 6), g = new Th.BufferGeometry(), mats = [], v = new Th.Vector3(), w = new Th.Vector3();
@@ -1917,7 +1922,9 @@ function _buildSkin(part, P) {
   for (const [key, list] of groups) {
     const pr = P[key];
     g.addGroup(o * 3, list.length * 3, mats.length);
-    mats.push(new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    const old = keep.get(pr.tex);
+    if (old) keep.delete(pr.tex);
+    mats.push(old || new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
     for (const tri of list) {
       for (let c = 0; c < 3; c++) {
         const i = tri * 3 + c, j = o * 3 + c;
@@ -1938,6 +1945,7 @@ function _buildSkin(part, P) {
   skin.name = 'poly:projection'; skin.raycast = () => {};   // only a look: clicks, picks and snaps go to the part
   m.add(skin);
   part.skin = skin;
+  drop();                                                  // materials of pictures this part no longer shows
 }
 let _skinRaf = 0;
 /** Something a projection depends on changed: the skins are rebuilt on the next frame (once, however many changes). */

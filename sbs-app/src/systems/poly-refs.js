@@ -127,7 +127,8 @@ function _swapCanvas(ref, canvas) {
   if (!ref.mesh) { _buildMesh(ref, canvas); return; }
   const old = ref.mesh.material.map;
   ref.mesh.material.map = _texture(canvas); ref.mesh.material.needsUpdate = true;
-  try { old?.dispose?.(); } catch { /* fine */ }
+  // a projection may still draw with the old texture for one frame (its skin is rebuilt on the next one): freed after that frame
+  requestAnimationFrame(() => requestAnimationFrame(() => { try { old?.dispose?.(); } catch { /* fine */ } }));
   ref.w = canvas.width; ref.h = canvas.height;
 }
 
