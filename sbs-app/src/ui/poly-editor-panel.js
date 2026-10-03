@@ -19,7 +19,7 @@ import { quadForExtent, quadCoords, isUnitExtent, framedWarp } from '../systems/
 import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
 import { REF_VIEWS, addPolyRef, removePolyRef, squarePolyRef, selectPolyRef, setPolyRefsEdit, setPolyRefProps, movePolyRefOrder } from '../systems/poly-refs.js';   // ⬚ V0.3.5.25
 
-let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null;
+let _root = null, _treeEl = null, _unsub = null, _hiddenContent = null, _viewBar = null;
 const _collapsed = new Set();
 let _dragIds = null;
 let _coloursMount = null, _coloursHost = null;   // ⬚ V0.3.5.27 — the project's Colours panel lives in this element while its tab shows
@@ -56,11 +56,21 @@ export function openPolyEditorPanel() {
   window.addEventListener('pointerup', _onPressUp, true);
   window.addEventListener('pointercancel', _onPressUp, true);
   _unsub = onPolySession((what) => { if (what === 'close') return; _render(what); });
+  // ⬚ V0.3.5.37 — top-left of the viewport (where the project has its work camera): the views, Fit and the
+  // reference pictures' move / scale — the left-hand mirror of the overlay's bar on the right
+  const surf = document.getElementById('viewport-surface') || document.getElementById('btn-work-camera')?.parentElement;
+  if (surf) {
+    _viewBar = el('div', 'position:absolute;top:8px;left:8px;z-index:31;display:flex;flex-wrap:wrap;gap:4px;align-items:center;');
+    _viewBar.id = 'poly-view-bar';
+    surf.appendChild(_viewBar);
+  }
   _render();
 }
 
 export function closePolyEditorPanel() {
   _unsub?.(); _unsub = null;
+  try { _viewBar?.remove(); } catch { /* gone */ }
+  _viewBar = null;
   window.removeEventListener('pointerdown', _onPressDown, true);
   window.removeEventListener('pointerup', _onPressUp, true);
   window.removeEventListener('pointercancel', _onPressUp, true);
@@ -76,10 +86,30 @@ function _dropColours() {
   _coloursHost = null; _coloursMount = null;
 }
 
+function _renderViewBar(info) {
+  if (!_viewBar) return;
+  _viewBar.innerHTML = '';
+  const chip = (label, title, on, onClick) => {
+    const b = el('button', `height:24px;padding:0 8px;font-size:12px;border-radius:8px;cursor:pointer;background:${on ? '#1d4ed8' : 'var(--float-bg,rgba(15,23,42,.85))'};border:1px solid ${on ? '#60a5fa' : 'var(--float-line,#334155)'};color:${on ? '#fff' : 'var(--text,#e5e7eb)'};`, label);
+    b.className = 'btn'; b.title = title;
+    b.addEventListener('click', (e) => { e.preventDefault(); onClick(); b.blur(); });
+    return b;
+  };
+  for (const [id, label] of VIEWS) _viewBar.append(chip(label, id === 'persp' ? 'Perspective' : `Look from the ${id} — flat (no perspective)`, info.view === id, () => setPolyView(id)));
+  _viewBar.append(chip('⛶ Fit', 'Frame the selection, or everything (F)', false, () => polyFit()));
+  const R = info.refs || {};
+  _viewBar.append(chip('🖼 ✥ Pictures', 'Move / scale the reference pictures: drag one, pull a corner (Ctrl + corner = stretch). Opens the Refs tab. (Esc ends it.)', !!R.edit, () => {
+    if (R.edit) { setPolyRefsEdit(false); return; }
+    if (info.tab !== 'refs') setPolyTab('refs');
+    setPolyRefsEdit(true);
+  }));
+}
+
 function _render(what) {
   if (!_root) return;
   const info = polySessionInfo();
   if (!info) return;
+  _renderViewBar(info);
   // The Colours tab holds the project's own panel: it redraws itself (and waits while one of its fields is in
   // use). A selection / tree / undo event must not tear it down — only a change of what is around it does.
   if (info.tab === 'colors' && _coloursHost && _coloursMount?.isConnected && (what === 'select' || what === 'tree' || what === 'undo')) {

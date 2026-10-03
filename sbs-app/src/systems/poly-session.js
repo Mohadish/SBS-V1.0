@@ -35,7 +35,7 @@ import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';   // �
 import { matches as keyMatches, keyLabel } from '../core/keymap.js';
 import { setIsolateKeepSet, clearIsolate, getIsolateKeepSet } from '../core/isolate-state.js';
 import { subDir, joinPath } from '../core/project-paths.js';
-import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal, triangulateFace } from './poly-core.js';
+import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal, triangulateFace, polyEdges } from './poly-core.js';
 import { PRIMITIVE_DEFS, defaultPrimitiveParams, buildPrimitiveGeometry } from './primitives.js';   // ⬚ V0.3.5.18 — primitives added inside the editor
 import { geometryToPoly, geometryTriangles } from './poly-convert.js';
 import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost } from './poly-edit.js';
@@ -53,7 +53,7 @@ const SCOPE = 'polySession';
 // undoable here with the editor's Ctrl+Z; they stay in the project's history when the editor is discarded.
 const SCOPE_PROJ = 'polySessionProject';
 const TRI_WARN = 80000;
-const HIDE_DOM = ['sidebar-right', 'step-nav-bar', 'overlay-stage', 'notes-overlay', 'screen-overlay', 'export-safe-frame', 'overlay-toolbar', 'overlay-helpers-bar', 'overlay-float-toolbar'];
+const HIDE_DOM = ['sidebar-right', 'step-nav-bar', 'overlay-stage', 'notes-overlay', 'screen-overlay', 'export-safe-frame', 'overlay-toolbar', 'overlay-helpers-bar', 'overlay-float-toolbar', 'btn-work-camera', 'standard-views', 'work-camera-overlay'];
 
 let _s = null;
 let _sidSeq = 0;
@@ -449,7 +449,8 @@ function _polyApply(poly, M) {
 // ── scene ────────────────────────────────────────────────────────────────────
 function _buildPartMesh(part) {
   const Th = T();
-  const mat = new Th.MeshStandardMaterial({ color: new Th.Color(part.color[0], part.color[1], part.color[2]), metalness: 0, roughness: 0.6, side: Th.DoubleSide });
+  // pushed a little back: its texture skin draws over it, and edge lines (no offset possible) over both
+  const mat = new Th.MeshStandardMaterial({ color: new Th.Color(part.color[0], part.color[1], part.color[2]), metalness: 0, roughness: 0.6, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2 });
   const mesh = new Th.Mesh(new Th.BufferGeometry(), mat);
   mesh.name = part.name; mesh.userData.polyPartId = part.id;
   part.mesh = mesh;
@@ -468,8 +469,33 @@ function _refreshPartMesh(part) {
   part.mesh.geometry?.dispose?.();
   part.mesh.geometry = g;
   if (_s?.scale) _s.scale.dirty = true;                    // the scale box is measured from the vertices: any new shape (an undo of a face edit too)
+  if (part.edges) _syncEdges(part, true, true);            // the shown edges follow the new shape
   if (part.proj || part.bake) _markSkins();                // a projected / baked part: the texture goes onto the new shape
   sceneCore.requestRender?.(120);
+}
+
+/**
+ * ⬚ V0.3.5.37 — the EDGES of a selected part, shown at once (his ask: "I don't want to wait until I click 4").
+ * Drawn after the reference pictures (even the ones over the model) and in front of the part's texture; the
+ * part's own faces hide its back edges.
+ */
+function _syncEdges(part, on, rebuild = false) {
+  if (!on) {
+    if (part.edges) { try { part.edges.parent?.remove(part.edges); part.edges.geometry.dispose(); part.edges.material.dispose(); } catch { /* gone */ } part.edges = null; }
+    return;
+  }
+  if (part.edges && !rebuild && part.edgesOf === part.poly) return;
+  const Th = T();
+  const g = new Th.BufferGeometry();
+  g.setAttribute('position', new Th.Float32BufferAttribute(polyEdges(part.poly), 3));
+  if (part.edges) { part.edges.geometry.dispose(); part.edges.geometry = g; }
+  else {
+    const line = new Th.LineSegments(g, new Th.LineBasicMaterial({ color: 0x9fd3ff, transparent: true, opacity: 0.85, depthWrite: false }));
+    line.renderOrder = 9600; line.raycast = () => {}; line.name = 'poly:edges';
+    part.mesh.add(line);
+    part.edges = line;
+  }
+  part.edgesOf = part.poly;
 }
 
 function _aliveIds() {
@@ -487,11 +513,12 @@ function _syncScene() {
     const key = polyEditHostKey() || '', pre = `part:${_s.sid}:`;
     if (key.startsWith(pre) && !alive.has(key.slice(pre.length))) { exitPolyEdit(); if (!_s) return; }
   }
-  const selParts = new Set(_selectedPartIds());
+  const selParts = new Set(_selectedPartIds()), editing = isPolyEditing();
   for (const it of _s.items.values()) {
     if (it.kind !== 'part' || !it.mesh) continue;
     it.mesh.visible = alive.has(it.id);
     it.mesh.material.emissive?.setHex(selParts.has(it.id) ? 0x0b3a52 : 0x000000);
+    _syncEdges(it, selParts.has(it.id) && alive.has(it.id) && !editing);   // (the sub-object editor draws its own)
   }
   for (const id of [..._s.sel]) if (!alive.has(id)) _s.sel.delete(id);
   if (_s.primary && !alive.has(_s.primary)) _s.primary = [..._s.sel][0] || null;
@@ -1928,7 +1955,7 @@ function _buildSkin(part, P) {
     const old = keep.get(pr.tex);
     if (old) keep.delete(pr.tex);
     // clear where no picture lies (the merge has a clear border): the part's own colour shows there
-    mats.push(old || new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, transparent: true, alphaTest: 0.02, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    mats.push(old || new Th.MeshStandardMaterial({ map: pr.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, transparent: true, alphaTest: 0.02, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
     for (const tri of list) {
       for (let c = 0; c < 3; c++) {
         const i = tri * 3 + c, j = o * 3 + c;
@@ -1960,12 +1987,12 @@ function _markSkins() {
 }
 function _flushSkins() {
   if (!_s) return;
-  const P = polyRefProjectors(), editing = isPolyEditing(), sel = new Set(_selectedPartIds()), alive = _aliveIds();
+  const P = polyRefProjectors(), editing = isPolyEditing(), sel = new Set(_selectedPartIds()), alive = _aliveIds();   // (editing: no blue glow — the sub-object highlights speak)
   for (const it of _s.items.values()) {
     if (it.kind !== 'part' || !it.mesh) continue;
     if ((!it.proj && !it.bake) || !alive.has(it.id)) { _disposeSkin(it); continue; }
     try { if (it.bake) _buildBakedSkin(it); else _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
-    if (it.skin) { it.skin.visible = !editing; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) ? 0x0b3a52 : 0x000000); }
+    if (it.skin) { it.skin.visible = true; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) && !editing ? 0x0b3a52 : 0x000000); }
   }
   if (P.stale) setTimeout(() => _markSkins(), 100);        // a merge was held back during a drag: catch up when the hand rests
   sceneCore.requestRender?.(60);
@@ -2116,7 +2143,7 @@ function _buildBakedSkin(part) {
   g.setAttribute('uv', new Th.Float32BufferAttribute(UV, 2));
   g.addGroup(0, P3.length / 3, 0);
   g.computeBoundingSphere();
-  const mat = keep || new Th.MeshStandardMaterial({ map: bake.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const mat = keep || new Th.MeshStandardMaterial({ map: bake.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
   const skin = new Th.Mesh(g, [mat]);
   skin.name = 'poly:baked'; skin.raycast = () => {};
   m.add(skin);
@@ -2390,7 +2417,7 @@ function _teardown(how = 'discard') {
   _detachInput();
   try {
     _s.group.parent?.remove(_s.group);
-    for (const it of _s.items.values()) if (it.mesh) { _disposeSkin(it); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
+    for (const it of _s.items.values()) if (it.mesh) { _disposeSkin(it); _syncEdges(it, false); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
     for (const it of _s.items.values()) { try { it.bake?.tex?.dispose?.(); if (it.bake) it.bake.tex = null; } catch { /* fine */ } }
   } catch { /* already gone */ }
   _showProject(how);

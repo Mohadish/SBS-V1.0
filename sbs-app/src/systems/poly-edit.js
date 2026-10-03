@@ -203,15 +203,16 @@ function _buildHelpers() {
   const grp = new Th.Group(); grp.name = 'polyEditHelpers'; grp.userData.isHelper = true; grp.raycast = () => {};
   const noPick = (o) => { o.raycast = () => {}; o.userData.isHelper = true; return o; };
   const wire = noPick(new Th.LineSegments(new Th.BufferGeometry(), new Th.LineBasicMaterial({ color: 0x9fd3ff, transparent: true, opacity: 0.9 })));
-  wire.renderOrder = 10;
+  wire.renderOrder = 9610;                               // ⬚ V0.3.5.37 — after the reference pictures (9000+, even the ones drawn over the model): the edges always show
   const faceMat = () => new Th.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.4, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: Th.DoubleSide, depthWrite: false });
   const selM = noPick(new Th.Mesh(new Th.BufferGeometry(), faceMat()));
   const hovM = noPick(new Th.Mesh(new Th.BufferGeometry(), faceMat()));
+  selM.renderOrder = 9605; hovM.renderOrder = 9606;
   hovM.material.color.set(0xfbbf24); hovM.material.opacity = 0.3;
   const pts = noPick(new Th.Points(new Th.BufferGeometry(), new Th.PointsMaterial({ size: 9, sizeAttenuation: false, vertexColors: true, depthTest: false, transparent: true })));
-  pts.renderOrder = 11;
+  pts.renderOrder = 9611;
   const loop = noPick(new Th.Line(new Th.BufferGeometry(), new Th.LineBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.95, depthTest: false })));
-  loop.renderOrder = 12; loop.visible = false;
+  loop.renderOrder = 9612; loop.visible = false;
   grp.add(wire, selM, hovM, pts, loop);
   mesh.add(grp);
   _ed.helpers = { grp, wire, selM, hovM, pts, loop };
