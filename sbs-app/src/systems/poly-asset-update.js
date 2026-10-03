@@ -395,11 +395,14 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
     if (newM.nodes[id].k !== 'm') continue;
     const node = nb.get(id), mesh = steps.object3dById.get(id) ?? node?.object3d, src = parsed.byUid.get(uidOfId.get(id));
     if (!node || !mesh?.isMesh || !src?.isMesh || !src.geometry) continue;
-    if (_samePoly(mesh.userData.sbsPoly, src.userData.sbsPoly)) continue;
-    const assign = materials.meshColorAssignments[id], orig = materials.originalMaterials.get(id);
+    // ⬚ V0.3.5.35 — a part's baked texture is part of what it looks like: a new bake (or none any more) swaps too
+    const sameSkin = (mesh.userData.sbsBake?.sig || null) === (src.userData.sbsBake?.sig || null);
+    if (sameSkin && _samePoly(mesh.userData.sbsPoly, src.userData.sbsPoly)) continue;
+    const assign = materials.meshColorAssignments[id], orig = sameSkin ? materials.originalMaterials.get(id) : null;
     materials.unregisterMesh(id);                           // drops the helper passes that hold the old geometry
     const oldG = mesh.geometry;
     mesh.geometry = src.geometry;
+    if (!sameSkin) { mesh.material = src.material; mesh.userData.sbsBake = src.userData.sbsBake; }   // the file's own material: its texture (or none)
     try { oldG?.dispose?.(); } catch { /* fine */ }
     delete mesh.userData.sbsOriginalPosition; delete mesh.userData.sbsOriginalNormal;   // the source-transform bake starts again from the new vertices
     mesh.userData.sbsPoly = src.userData.sbsPoly; mesh.userData.sbsId = uidOfId.get(id);

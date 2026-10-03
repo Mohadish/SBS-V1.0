@@ -13,7 +13,7 @@ import {
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent,
-  setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection,
+  setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection, polyBakeProjection,
 } from '../systems/poly-session.js';
 import { quadForExtent, quadCoords, isUnitExtent, framedWarp } from '../systems/perspective-warp.js';   // ⌗ V0.3.5.29 — the frame
 import { mountColorsPanel, unmountColorsPanel, refreshColorsPanel } from './sidebar-left.js';   // ⬚ V0.3.5.27 — the project's own Colours panel
@@ -288,10 +288,11 @@ function _renderRefs(info) {
   const pr = row();
   pr.append(
     btn(`🎯 Project${info.selParts ? ` onto ${info.selParts === 1 ? 'the selected part' : `${info.selParts} parts`}` : ' onto every part'}`, 'Box projection: every face takes the picture of the side it faces most (right / left, top / bottom, front / back), straight along that axis. A side with no picture can borrow the opposite one, through the part — you are asked.', () => polyProjectPictures(), 'flex:1;font-weight:600;'),
-    btn('✕ Remove', 'Take the projection off the selected parts (none selected = every part)', () => polyRemoveProjection()),
+    btn('🔥 Bake', "Freeze the projection into the part's OWN texture: from then on it moves, turns and is copied with the part, and Apply writes it into the asset (Project again = a fresh, live projection)", () => polyBakeProjection()),
+    btn('✕ Remove', 'Take the projection (or the baked texture) off the selected parts — none selected = every part', () => polyRemoveProjection()),
   );
   _root.append(pr);
-  _root.append(_note(info.projected ? `${info.projected} part${info.projected === 1 ? ' has' : 's have'} the pictures projected on. Move, scale or square a picture and its projection follows. A preview for now: Apply does not write it into the asset yet.` : 'Line the pictures up with the model (✥ Move / scale), then project. Hiding a picture does not take its projection away.'));
+  _root.append(_note(`${info.projected ? `${info.projected} part${info.projected === 1 ? ' has' : 's have'} the pictures projected on (live: move, scale or square a picture and it follows). ` : 'Line the pictures up with the model (✥ Move / scale), then project. '}${info.baked ? `${info.baked} part${info.baked === 1 ? ' has' : 's have'} a baked texture of ${info.baked === 1 ? 'its' : 'their'} own. ` : ''}Apply bakes what is still live and writes the textures into the asset.`));
   _root.append(_note('All the pictures of a view that have 🎯 are merged into one and projected together — the higher in the list covers the lower, like layers: a close-up squared up and enlarged over the whole shot, a sticker on top. Outside the pictures the part keeps its colour.'));
 }
 

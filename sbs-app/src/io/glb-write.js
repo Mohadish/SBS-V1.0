@@ -130,14 +130,16 @@ export function skinnedMeshGlb({ bones, positions, normals, indices, joints, wei
  *
  * @param {object} o
  * @param {Array} o.roots   tree items: { name, position?:[x,y,z], quaternion?:[x,y,z,w], scale?:[x,y,z], extras?, children?:[…],
- *                           mesh?: { positions:Float32Array, normals:Float32Array, indices:Uint32Array|number[], color?:[r,g,b] } }
+ *                           mesh?: { positions:Float32Array, normals:Float32Array, indices:Uint32Array|number[], color?:[r,g,b],
+ *                                    uvs?:Float32Array (2 per vertex, glTF: v runs down), image?:{ key, bytes:Uint8Array, mime } } }
+ *                           ⬚ V0.3.5.35 — a mesh with uvs + image gets a textured material (the picture embedded once per key)
  * @param {string} [o.name]
  * @param {object} [o.extras]  asset.extras
  * @returns {ArrayBuffer}
  */
 export function sceneGlb({ roots, name = 'scene', extras = null }) {
-  const views = [], accessors = [], parts = [], nodes = [], meshes = [], materials = [];
-  const matByColor = new Map();
+  const views = [], accessors = [], parts = [], nodes = [], meshes = [], materials = [], images = [], textures = [];
+  const matByColor = new Map(), matByImage = new Map();
   let byteLength = 0;
   const pushView = (typed, target) => {
     const pad = (4 - (byteLength % 4)) % 4;
@@ -156,6 +158,15 @@ export function sceneGlb({ roots, name = 'scene', extras = null }) {
     matByColor.set(key, materials.length - 1);
     return materials.length - 1;
   };
+  const materialForImage = (img) => {
+    if (matByImage.has(img.key)) return matByImage.get(img.key);
+    const bytes = img.bytes instanceof Uint8Array ? img.bytes : new Uint8Array(img.bytes);
+    images.push({ bufferView: pushView(bytes, 0), mimeType: img.mime || 'image/png' });
+    textures.push({ source: images.length - 1, sampler: 0 });
+    materials.push({ name: `texture_${textures.length - 1}`, pbrMetallicRoughness: { baseColorTexture: { index: textures.length - 1 }, baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.8 } });
+    matByImage.set(img.key, materials.length - 1);
+    return materials.length - 1;
+  };
   const addMesh = (m, label) => {
     const pos = m.positions instanceof Float32Array ? m.positions : new Float32Array(m.positions);
     const nor = m.normals instanceof Float32Array ? m.normals : new Float32Array(m.normals);
@@ -167,7 +178,14 @@ export function sceneGlb({ roots, name = 'scene', extras = null }) {
     const accPos = pushAccessor(pushView(pos, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC3', { min, max });
     const accNor = pushAccessor(pushView(nor, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC3');
     const accIdx = pushAccessor(pushView(idx, GL_ELEMENT_ARRAY_BUFFER), GL_UNSIGNED_INT, idx.length, 'SCALAR');
-    meshes.push({ name: label, primitives: [{ attributes: { POSITION: accPos, NORMAL: accNor }, indices: accIdx, material: materialFor(m.color), mode: 4 }] });
+    const attributes = { POSITION: accPos, NORMAL: accNor };
+    let material;
+    if (m.uvs && m.image?.bytes && m.uvs.length === nV * 2) {
+      const uv = m.uvs instanceof Float32Array ? m.uvs : new Float32Array(m.uvs);
+      attributes.TEXCOORD_0 = pushAccessor(pushView(uv, GL_ARRAY_BUFFER), GL_FLOAT, nV, 'VEC2');
+      material = materialForImage(m.image);
+    } else material = materialFor(m.color);
+    meshes.push({ name: label, primitives: [{ attributes, indices: accIdx, material, mode: 4 }] });
     return meshes.length - 1;
   };
   const addNode = (item) => {
@@ -189,6 +207,10 @@ export function sceneGlb({ roots, name = 'scene', extras = null }) {
     scenes: [{ name, nodes: rootIdx }],
     nodes, meshes, materials, accessors, bufferViews: views, buffers: [{ byteLength }],
   };
+  if (images.length) {
+    json.images = images; json.textures = textures;
+    json.samplers = [{ magFilter: 9729, minFilter: 9987, wrapS: 33071, wrapT: 33071 }];   // linear, mipmapped, clamped
+  }
   if (!meshes.length) { delete json.meshes; delete json.materials; delete json.accessors; delete json.bufferViews; }
   const jsonBytes = new TextEncoder().encode(JSON.stringify(json));
   const jsonPad = (4 - (jsonBytes.length % 4)) % 4, binPad = (4 - (byteLength % 4)) % 4;

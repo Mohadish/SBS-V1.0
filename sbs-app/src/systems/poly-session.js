@@ -35,7 +35,7 @@ import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';   // �
 import { matches as keyMatches, keyLabel } from '../core/keymap.js';
 import { setIsolateKeepSet, clearIsolate, getIsolateKeepSet } from '../core/isolate-state.js';
 import { subDir, joinPath } from '../core/project-paths.js';
-import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal } from './poly-core.js';
+import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal, triangulateFace } from './poly-core.js';
 import { PRIMITIVE_DEFS, defaultPrimitiveParams, buildPrimitiveGeometry } from './primitives.js';   // ⬚ V0.3.5.18 — primitives added inside the editor
 import { geometryToPoly, geometryTriangles } from './poly-convert.js';
 import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost } from './poly-edit.js';
@@ -97,6 +97,7 @@ export function polySessionInfo() {
     tab: _s.tab || 'model', bg: _s.bg || null,
     selParts: selParts.length,
     projected: [...alive].filter(id => _s.items.get(id)?.proj).length,   // ⬚ V0.3.5.30 — parts the pictures are projected onto
+    baked: [...alive].filter(id => _s.items.get(id)?.bake).length,       // ⬚ V0.3.5.35 — parts with a baked texture
     refs: polyRefsInfo(),                                    // ⬚ V0.3.5.25 — the reference pictures
     scale: !!_s.scale,                                       // ⬚ V0.3.5.28 — the scale box is up
     scl: _scalePct(),                                        //   the scale record of the one selected object, % of how it came in
@@ -380,6 +381,7 @@ async function _start(nodeIds, opts = {}) {
     // NEW asset made from it wears that same colour — not a look-alike
     const srcPid = src.node?.id ? (materials.meshColorAssignments[src.node.id] ?? materials.meshDefaultColors[src.node.id] ?? null) : null;
     const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true, frame0, presetId: srcPid || null };
+    try { const bk = _bakeFromFile(src, poly); if (bk) { it.bake = bk; it.presetId = null; } } catch (err) { console.warn('[poly session] baked texture', src.name, err); }
     sess.items.set(it.id, it);
     if (src.srcId) okSources.add(src.srcId);
     return it.id;
@@ -466,7 +468,7 @@ function _refreshPartMesh(part) {
   part.mesh.geometry?.dispose?.();
   part.mesh.geometry = g;
   if (_s?.scale) _s.scale.dirty = true;                    // the scale box is measured from the vertices: any new shape (an undo of a face edit too)
-  if (part.proj) _markSkins();                             // a projected part: the pictures go onto the new shape
+  if (part.proj || part.bake) _markSkins();                // a projected / baked part: the texture goes onto the new shape
   sceneCore.requestRender?.(120);
 }
 
@@ -817,7 +819,8 @@ export function polyDuplicateSelected() {
     const nid = `${it.kind === 'folder' ? 'f' : 'p'}${(++_s.seq).toString(36)}`;
     if (it.kind === 'folder') { const f = { id: nid, kind: 'folder', name: it.name, parent, children: [], uid: _newUid(), frame: { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null } }; _s.items.set(nid, f); f.children = it.children.map(c => copy(c, nid)); }
     else {
-      const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null, uid: _newUid(), presetId: it.presetId || null, colorEdited: !!it.presetId };   // a copy is a new object
+      const p = { id: nid, kind: 'part', name: `${it.name} copy`, parent, poly: clonePoly(it.poly), color: it.color.slice(), mesh: null, uid: _newUid(), presetId: it.presetId || null, colorEdited: !!it.presetId,   // a copy is a new object
+        proj: it.proj ? { through: { ...it.proj.through } } : null, bake: it.bake || null };   // …that wears the same projection / baked texture
       _s.items.set(nid, p); _buildPartMesh(p);
       p.mesh.position.copy(it.mesh.position); p.mesh.quaternion.copy(it.mesh.quaternion); p.mesh.scale.copy(it.mesh.scale);
     }
@@ -1844,7 +1847,7 @@ function _stampOrigs() {
   if (!_s) return;
   for (const it of _s.items.values()) {
     if (it.orig) continue;
-    if (it.kind === 'part') { if (it.mesh) it.orig = { poly: clonePoly(it.poly), pos: it.mesh.position.clone(), quat: it.mesh.quaternion.clone(), color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited }; }
+    if (it.kind === 'part') { if (it.mesh) it.orig = { poly: clonePoly(it.poly), pos: it.mesh.position.clone(), quat: it.mesh.quaternion.clone(), color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited, proj: it.proj ? { through: { ...it.proj.through } } : null, bake: it.bake || null }; }
     else if (it.frame) it.orig = { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null };
   }
 }
@@ -1856,7 +1859,7 @@ export function polyRestoreSelected() {
   const items = [..._selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.orig && it.mesh), ..._foldersInSelection().filter(f => f.orig)];
   if (!items.length) { setStatus('Select what should be restored first.', 'warn', 3500); return false; }
   const now = (it) => (it.kind === 'part'
-    ? { poly: clonePoly(it.poly), pos: it.mesh.position.clone(), quat: it.mesh.quaternion.clone(), color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited, scl: _sclOf(it).slice() }
+    ? { poly: clonePoly(it.poly), pos: it.mesh.position.clone(), quat: it.mesh.quaternion.clone(), color: it.color.slice(), presetId: it.presetId || null, edited: !!it.colorEdited, scl: _sclOf(it).slice(), proj: it.proj ? { through: { ...it.proj.through } } : null, bake: it.bake || null }
     : { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null, scl: _sclOf(it).slice() });
   const rows = items.map(it => ({ it, before: now(it), after: { ...it.orig, scl: [1, 1, 1] } }));
   const put = (key) => {
@@ -1864,7 +1867,7 @@ export function polyRestoreSelected() {
       it.scl = s.scl.slice();
       if (it.kind !== 'part') { it.frame.q.copy(s.q); it.frame.p = s.p ? s.p.clone() : null; continue; }
       it.poly = clonePoly(s.poly); it.mesh.position.copy(s.pos); it.mesh.quaternion.copy(s.quat);
-      it.color = s.color.slice(); it.presetId = s.presetId; it.colorEdited = s.edited;
+      it.color = s.color.slice(); it.presetId = s.presetId; it.colorEdited = s.edited; it.proj = s.proj ? { through: { ...s.proj.through } } : null; it.bake = s.bake || null;
       it.mesh.updateMatrixWorld(true); _refreshPartMesh(it); _paintPart(it); _partChanged(it.id);
     }
   };
@@ -1952,7 +1955,7 @@ let _skinRaf = 0;
 /** Something a projection depends on changed: the skins are rebuilt on the next frame (once, however many changes). */
 function _markSkins() {
   if (!_s || _skinRaf) return;
-  if (![..._s.items.values()].some(it => it.proj || it.skin)) return;
+  if (![..._s.items.values()].some(it => it.proj || it.bake || it.skin)) return;
   _skinRaf = requestAnimationFrame(() => { _skinRaf = 0; _flushSkins(); });
 }
 function _flushSkins() {
@@ -1960,8 +1963,8 @@ function _flushSkins() {
   const P = polyRefProjectors(), editing = isPolyEditing(), sel = new Set(_selectedPartIds()), alive = _aliveIds();
   for (const it of _s.items.values()) {
     if (it.kind !== 'part' || !it.mesh) continue;
-    if (!it.proj || !alive.has(it.id)) { _disposeSkin(it); continue; }
-    try { _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
+    if ((!it.proj && !it.bake) || !alive.has(it.id)) { _disposeSkin(it); continue; }
+    try { if (it.bake) _buildBakedSkin(it); else _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
     if (it.skin) { it.skin.visible = !editing; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) ? 0x0b3a52 : 0x000000); }
   }
   if (P.stale) setTimeout(() => _markSkins(), 100);        // a merge was held back during a drag: catch up when the hand rests
@@ -1989,8 +1992,8 @@ export async function polyProjectPictures() {
     try { through = await panel.askPolyProjectThrough(ask); } finally { if (_s) _s.asking = false; }
     if (!through || !_s) return false;
   }
-  const rows = parts.map(it => ({ it, before: it.proj ? { through: { ...it.proj.through } } : null, after: { through: { ...through } } }));
-  const put = (k) => { for (const r of rows) r.it.proj = r[k] ? { through: { ...r[k].through } } : null; _markSkins(); };
+  const rows = parts.map(it => ({ it, bake: it.bake || null, before: it.proj ? { through: { ...it.proj.through } } : null, after: { through: { ...through } } }));
+  const put = (k) => { for (const r of rows) { r.it.proj = r[k] ? { through: { ...r[k].through } } : null; r.it.bake = k === 'before' ? r.bake : null; } _markSkins(); };   // a fresh projection replaces a bake
   put('after');
   _push(parts.length > 1 ? 'Project pictures onto parts' : 'Project pictures onto a part', () => put('before'), () => put('after'));
   _syncScene(); _emit('tree');
@@ -1998,15 +2001,195 @@ export async function polyProjectPictures() {
   setStatus(`Projected onto ${parts.length} part${parts.length === 1 ? '' : 's'}${used.length ? ` (${used.join(', ')})` : ''}.${bare.length ? ` No picture for ${bare.join(' / ')}: those faces keep their colour.` : ''} Move or scale a picture and its projection follows. (A preview — not written into the asset yet.)`, 'success', 9000);
   return true;
 }
-/** The selected parts (none selected = every part) lose their projection. */
+
+// ── ⬚ V0.3.5.35 — BAKE: the projection frozen into the part's OWN texture ───────────────────────
+// His words: "whatever you bake onto the UVW is what is stored in the texture — usually this mess of
+// triangles". Every face of the part gets its own spot in one picture (an atlas): the face is laid flat
+// in its own plane, the spots are packed side by side, and each is painted with what the projection puts
+// there (over the part's colour, so a face with no picture — or a clear part of a picture — keeps it).
+// From then on the texture belongs to the part: it moves, turns and is copied with it (multiples of an
+// asset), and Apply writes it into the .glb. "Project" again starts a fresh, live projection.
+const BAKE_SIZE = 2048, BAKE_PAD = 4;
+let _bakeSeq = 0;
+const _bakeValid = (part) => !!part.bake && part.bake.faceUV.length === part.poly.f.length && part.bake.faceUV.every((uv, fi) => uv.length === part.poly.f[fi].length);
+/** A face laid flat in its own plane (part units) → { pts: [[x, y]…], w, h }. */
+function _faceFlat(poly, fi) {
+  const f = poly.f[fi], n = faceNormal(poly, fi), V = (i) => [poly.v[i * 3], poly.v[i * 3 + 1], poly.v[i * 3 + 2]];
+  const o = V(f[0]);
+  let e1 = null;
+  for (let k = 1; k < f.length && !e1; k++) { const p = V(f[k]), d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]], l = Math.hypot(...d); if (l > 1e-12) e1 = d.map(x => x / l); }
+  if (!e1) e1 = [1, 0, 0];
+  const e2 = [n[1] * e1[2] - n[2] * e1[1], n[2] * e1[0] - n[0] * e1[2], n[0] * e1[1] - n[1] * e1[0]];
+  const pts = f.map(i => { const p = V(i), d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]]; return [d[0] * e1[0] + d[1] * e1[1] + d[2] * e1[2], d[0] * e2[0] + d[1] * e2[1] + d[2] * e2[2]]; });
+  const x0 = Math.min(...pts.map(p => p[0])), y0 = Math.min(...pts.map(p => p[1]));
+  for (const p of pts) { p[0] -= x0; p[1] -= y0; }
+  return { pts, w: Math.max(...pts.map(p => p[0])), h: Math.max(...pts.map(p => p[1])) };
+}
+/** Shelf packing of the flat faces into N × N → { s: px per part unit, at: [[x, y]…] } or null. */
+function _packFlats(flats, N) {
+  const area = flats.reduce((a, q) => a + q.w * q.h, 0) || 1;
+  let s = Math.sqrt((N * N * 0.5) / area);
+  const order = flats.map((_, i) => i).sort((a, b) => flats[b].h - flats[a].h);
+  for (let tries = 0; tries < 60; tries++, s *= 0.92) {
+    const at = new Array(flats.length);
+    let x = 0, y = 0, rowH = 0, ok = true;
+    for (const i of order) {
+      const w = Math.ceil(flats[i].w * s) + BAKE_PAD, h = Math.ceil(flats[i].h * s) + BAKE_PAD;
+      if (w > N) { ok = false; break; }
+      if (x + w > N) { x = 0; y += rowH; rowH = 0; }
+      if (y + h > N) { ok = false; break; }
+      at[i] = [x + BAKE_PAD / 2, y + BAKE_PAD / 2]; x += w; rowH = Math.max(rowH, h);
+    }
+    if (ok) return { s, at };
+  }
+  return null;
+}
+/** The 2-D affine map taking three points a[i] onto b[i] → [a, b, c, d, e, f] for setTransform, or null. */
+function _affine3(a, b) {
+  const [[x0, y0], [x1, y1], [x2, y2]] = a, det = x0 * (y1 - y2) - y0 * (x1 - x2) + (x1 * y2 - x2 * y1);
+  if (Math.abs(det) < 1e-12) return null;
+  const solve = (r0, r1, r2) => [(r0 * (y1 - y2) + r1 * (y2 - y0) + r2 * (y0 - y1)) / det, (r0 * (x2 - x1) + r1 * (x0 - x2) + r2 * (x1 - x0)) / det, (r0 * (x1 * y2 - x2 * y1) + r1 * (x2 * y0 - x0 * y2) + r2 * (x0 * y1 - x1 * y0)) / det];
+  const [A, C, E] = solve(b[0][0], b[1][0], b[2][0]), [B, D, F] = solve(b[0][1], b[1][1], b[2][1]);
+  return [A, B, C, D, E, F];
+}
+/** One part's projection painted into its own atlas → the bake ({ id, canvas, faceUV }) or null. */
+function _bakePart(part, P) {
+  const poly = part.poly, m = part.mesh; if (!m) return null;
+  const through = part.proj?.through || {}, views = _faceViews(part), N = BAKE_SIZE;
+  const flats = poly.f.map((_, fi) => _faceFlat(poly, fi));
+  const pack = _packFlats(flats, N);
+  if (!pack) return null;
+  const canvas = document.createElement('canvas'); canvas.width = N; canvas.height = N;
+  const g = canvas.getContext('2d'), base = _hexOf(part.color);
+  g.fillStyle = base; g.fillRect(0, 0, N, N);
+  g.imageSmoothingQuality = 'high';
+  m.updateMatrix();
+  const w = new (T().Vector3)(), faceUV = [];
+  for (let fi = 0; fi < poly.f.length; fi++) {
+    const f = poly.f[fi], [ox, oy] = pack.at[fi];
+    const D = flats[fi].pts.map(([x, y]) => [ox + x * pack.s, oy + y * pack.s]);
+    faceUV.push(D.map(([x, y]) => [x / N, y / N]));
+    // the face's spot, a little larger than the face (no hairline seams where the texture is sampled at its edge)
+    const cx = D.reduce((a, p) => a + p[0], 0) / D.length, cy = D.reduce((a, p) => a + p[1], 0) / D.length;
+    const E = D.map(([x, y]) => { const dx = x - cx, dy = y - cy, l = Math.hypot(dx, dy) || 1; return [x + dx / l * 1.5, y + dy / l * 1.5]; });
+    g.save();
+    g.beginPath(); E.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath();
+    g.clip();
+    const v = views[fi], key = P[v] ? v : (through[v] && P[_OPP_VIEW[v]] ? _OPP_VIEW[v] : null);
+    if (key) {
+      const pr = P[key], img = pr.tex?.image, Wc = img?.width || 0, Hc = img?.height || 0;
+      if (Wc && Hc) {
+        // where the face's corners fall on the merged picture (its canvas runs down), and where they go in the atlas
+        const S = f.map(i => { w.set(poly.v[i * 3], poly.v[i * 3 + 1], poly.v[i * 3 + 2]).applyMatrix4(m.matrix); const [s, tt] = pr.uv(w); return [s * Wc, (1 - tt) * Hc]; });
+        let best = null, bestA = 0;                         // the three corners that span the face best
+        for (let i = 1; i < f.length - 1; i++) for (let j = i + 1; j < f.length; j++) {
+          const A = Math.abs((D[i][0] - D[0][0]) * (D[j][1] - D[0][1]) - (D[i][1] - D[0][1]) * (D[j][0] - D[0][0]));
+          if (A > bestA) { bestA = A; best = [0, i, j]; }
+        }
+        const T6 = best ? _affine3(best.map(k => S[k]), best.map(k => D[k])) : null;
+        if (T6) { g.setTransform(...T6); g.drawImage(img, 0, 0); }
+      }
+    }
+    g.restore();
+  }
+  return { id: `bk${(++_bakeSeq).toString(36)}${Date.now().toString(36)}`, canvas, faceUV, tex: null, jpeg: null };
+}
+/** A baked part on screen: its own texture over every face. */
+function _buildBakedSkin(part) {
+  const bake = part.bake, m = part.mesh;
+  if (!m || !_bakeValid(part)) { _disposeSkin(part); return; }   // the faces changed since the bake: the part shows its colour (bake again)
+  const Th = T();
+  if (!bake.tex) { const tx = new Th.CanvasTexture(bake.canvas); tx.flipY = false; if ('SRGBColorSpace' in Th) tx.colorSpace = Th.SRGBColorSpace; tx.anisotropy = 4; tx.needsUpdate = true; bake.tex = tx; }
+  const keep = part.skin?.material?.[0]?.map === bake.tex ? part.skin.material[0] : null;
+  if (part.skin) { part.skin.parent?.remove(part.skin); part.skin.geometry?.dispose?.(); if (!keep) for (const mm of part.skin.material || []) mm.dispose?.(); part.skin = null; }
+  const poly = part.poly, P3 = [], N3 = [], UV = [];
+  for (let fi = 0; fi < poly.f.length; fi++) {
+    const f = poly.f[fi], n = faceNormal(poly, fi), uv = bake.faceUV[fi];
+    for (const tri of triangulateFace(poly, fi, n)) for (const vi of tri) {
+      const k = f.indexOf(vi);
+      P3.push(poly.v[vi * 3], poly.v[vi * 3 + 1], poly.v[vi * 3 + 2]); N3.push(n[0], n[1], n[2]); UV.push(uv[k][0], uv[k][1]);
+    }
+  }
+  const g = new Th.BufferGeometry();
+  g.setAttribute('position', new Th.Float32BufferAttribute(P3, 3));
+  g.setAttribute('normal', new Th.Float32BufferAttribute(N3, 3));
+  g.setAttribute('uv', new Th.Float32BufferAttribute(UV, 2));
+  g.addGroup(0, P3.length / 3, 0);
+  g.computeBoundingSphere();
+  const mat = keep || new Th.MeshStandardMaterial({ map: bake.tex, roughness: 0.8, metalness: 0, side: Th.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const skin = new Th.Mesh(g, [mat]);
+  skin.name = 'poly:baked'; skin.raycast = () => {};
+  m.add(skin);
+  part.skin = skin;
+}
+/** A part read from a .glb this editor wrote: the baked texture it carries (its picture + where each face sits in it). */
+function _bakeFromFile(src, poly) {
+  const ud = src.mesh?.userData, sb = ud?.sbsBake, sp = ud?.sbsPoly;
+  if (!sb || !Array.isArray(sb.faceUV) || !isPoly(sp) || sb.faceUV.length !== poly.f.length) return null;
+  const mat = (src.node?.id && materials.originalMaterials.get(src.node.id)) || src.mesh.material;
+  const img = (Array.isArray(mat) ? mat[0] : mat)?.map?.image;
+  if (!img || !(img.width > 0)) return null;
+  // the faces as the file has them, or turned round (a mirrored source): the corners' order follows
+  const rev = poly.f[0] && sp.f[0] && poly.f[0].join() !== sp.f[0].join() && poly.f[0].join() === sp.f[0].slice().reverse().join();
+  const faceUV = sb.faceUV.map((uv, fi) => (rev ? uv.slice().reverse() : uv).map(q => [Number(q[0]) || 0, Number(q[1]) || 0]));
+  if (faceUV.some((uv, fi) => uv.length !== poly.f[fi].length)) return null;
+  const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
+  canvas.getContext('2d').drawImage(img, 0, 0);
+  return { id: String(sb.sig || `bk-file-${(++_bakeSeq).toString(36)}`), canvas, faceUV, tex: null, jpeg: null };
+}
+/** 🔥 Bake the projection of the selected parts (none selected = every projected part). One undo step. */
+export async function polyBakeProjection({ quiet = false } = {}) {
+  if (!_s) return false;
+  if (isPolyEditing()) exitPolyEdit();
+  if (!_s) return false;
+  const alive = _aliveIds();
+  let parts = _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.proj && it.mesh);
+  if (!parts.length && (!_s.sel.size || quiet)) parts = [..._s.items.values()].filter(it => it.kind === 'part' && it.proj && it.mesh && alive.has(it.id));
+  if (!parts.length) { if (!quiet) setStatus('Nothing selected has a projection to bake — project the pictures first.', 'info', 4000); return false; }
+  let P = polyRefProjectors();
+  if (P.stale) { await new Promise(r => setTimeout(r, 120)); if (!_s) return false; P = polyRefProjectors(); }   // the merged pictures must be up to date
+  setStickyStatus(`⬚ Baking ${parts.length} part${parts.length === 1 ? '' : 's'}…`, 'info', 'polySession');
+  await new Promise(r => setTimeout(r, 0));
+  const rows = [], failed = [];
+  for (const it of parts) {
+    let bake = null;
+    try { bake = _bakePart(it, P); } catch (err) { console.warn('[poly session] bake', it.name, err); }
+    if (bake) rows.push({ it, proj: { through: { ...(it.proj.through || {}) } }, before: it.bake || null, bake }); else failed.push(it.name);
+  }
+  if (!_s) return false;
+  _hint();
+  if (!rows.length) { setStatus(`Nothing could be baked${failed.length ? ` (${failed.join(', ')})` : ''}.`, 'warn', 5000); return false; }
+  const put = (on) => { for (const r of rows) { r.it.bake = on ? r.bake : r.before; r.it.proj = on ? null : { through: { ...r.proj.through } }; } _markSkins(); };
+  put(true);
+  _push(rows.length > 1 ? 'Bake projections' : 'Bake projection', () => put(false), () => put(true));
+  _syncScene(); _emit('tree');
+  if (!quiet) setStatus(`Baked ${rows.length} part${rows.length === 1 ? '' : 's'}: the texture is the part's own now — it moves, turns and is copied with it, and Apply writes it into the asset.${failed.length ? ` Not baked: ${failed.join(', ')}.` : ''}`, 'success', 9000);
+  return true;
+}
+/** For Apply: the white colour a textured part wears in the project (a colour multiplies its texture). */
+function _whitePresetId() {
+  let p = (state.get('colorPresets') || []).find(x => typeof x.color === 'string' && x.color.toLowerCase() === '#ffffff');
+  if (!p) { try { p = materials.createPreset({ color: '#ffffff', name: 'Texture (white)', roughness: 0.8, metalness: 0 }); } catch { p = null; } }
+  return p?.id || null;
+}
+function _jpegOf(bake) {
+  if (!bake.jpeg) {
+    const b64 = bake.canvas.toDataURL('image/jpeg', 0.92).split(',')[1] || '', bin = atob(b64), out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    bake.jpeg = out;
+  }
+  return bake.jpeg;
+}
+
+/** The selected parts (none selected = every part) lose their projection — or their baked texture. */
 export function polyRemoveProjection() {
   if (!_s) return false;
   const alive = _aliveIds();
-  let parts = _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.proj);
-  if (!parts.length && !_s.sel.size) parts = [..._s.items.values()].filter(it => it.kind === 'part' && it.proj && alive.has(it.id));
-  if (!parts.length) { setStatus('Nothing selected has a projection.', 'info', 3000); return false; }
-  const rows = parts.map(it => ({ it, before: { through: { ...it.proj.through } } }));
-  const put = (on) => { for (const r of rows) r.it.proj = on ? { through: { ...r.before.through } } : null; _markSkins(); };
+  let parts = _selectedPartIds().map(id => _s.items.get(id)).filter(it => it?.proj || it?.bake);
+  if (!parts.length && !_s.sel.size) parts = [..._s.items.values()].filter(it => it.kind === 'part' && (it.proj || it.bake) && alive.has(it.id));
+  if (!parts.length) { setStatus('Nothing selected has a projection or a baked texture.', 'info', 3000); return false; }
+  const rows = parts.map(it => ({ it, proj: it.proj ? { through: { ...it.proj.through } } : null, bake: it.bake || null }));
+  const put = (on) => { for (const r of rows) { r.it.proj = on && r.proj ? { through: { ...r.proj.through } } : null; r.it.bake = on ? r.bake : null; } _markSkins(); };
   put(false);
   _push('Remove projection', () => put(true), () => put(false));
   _syncScene(); _emit('tree');
@@ -2026,7 +2209,8 @@ export function polyShowMenu(x, y) {
     { label: _s.reedit ? '↩ Restore from the saved file (as it came in)' : '↩ Restore (as it came in)', disabled: !nParts, action: () => polyRestoreSelected() },
     { separator: true },
     { label: '🎯 Project the reference pictures (box)', disabled: !nParts, action: () => polyProjectPictures() },
-    { label: '✕ Remove the projection', disabled: !_selectedPartIds().some(id => _s.items.get(id)?.proj), action: () => polyRemoveProjection() },
+    { label: '🔥 Bake the projection (into the part\'s own texture)', disabled: !_selectedPartIds().some(id => _s.items.get(id)?.proj), action: () => polyBakeProjection() },
+    { label: '✕ Remove the projection / baked texture', disabled: !_selectedPartIds().some(id => _s.items.get(id)?.proj || _s.items.get(id)?.bake), action: () => polyRemoveProjection() },
     { label: '✛ Pivot', disabled: !one, submenu: [
       { label: _s.pivotMode ? '✔ Moving the pivot only — click to finish' : '✛ Move the pivot only (with the gizmo)', action: () => polySetPivotMode(!_s.pivotMode) },
       { separator: true },
@@ -2203,6 +2387,7 @@ function _teardown(how = 'discard') {
   try {
     _s.group.parent?.remove(_s.group);
     for (const it of _s.items.values()) if (it.mesh) { _disposeSkin(it); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
+    for (const it of _s.items.values()) { try { it.bake?.tex?.dispose?.(); if (it.bake) it.bake.tex = null; } catch { /* fine */ } }
   } catch { /* already gone */ }
   _showProject(how);
   _partSubs.clear();
@@ -2267,6 +2452,7 @@ function _assetLayout(space = 'scene') {
   const r6 = (x) => Math.round(x * 1e6) / 1e6;
   const frameOut = (p, q) => ({ p: p ? [r6(p.x), r6(p.y), r6(p.z)] : null, q: [r6(q.x), r6(q.y), r6(q.z), r6(q.w)] });
   const parts = [];
+  let whiteId;                                               // the white colour textured parts wear in the project (made once, if needed)
   const node = (id, parentUid) => {
     const it = _s.items.get(id);
     if (!it.uid) it.uid = _newUid();
@@ -2282,13 +2468,27 @@ function _assetLayout(space = 'scene') {
     const fp = new Th.Vector3(), fq = new Th.Quaternion();
     M.decompose(fp, fq, new Th.Vector3());
     const pfr = frameOut(fp, fq);
-    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr, tint: it.presetId ? { presetId: it.presetId, edited: !!it.colorEdited } : null });
-    const baked = clonePoly(it.poly), v = new Th.Vector3();
+    const tex = _bakeValid(it) ? it.bake : null;              // ⬚ V0.3.5.35 — a baked part is written with its texture
+    const white = tex ? (whiteId ??= _whitePresetId()) : null;
+    parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr, tint: white ? { presetId: white, edited: true } : it.presetId ? { presetId: it.presetId, edited: !!it.colorEdited } : null });
+    const baked = clonePoly(it.poly), v = new Th.Vector3(), flip = M.determinant() < 0;
     for (let i = 0; i < baked.v.length; i += 3) { v.set(baked.v[i], baked.v[i + 1], baked.v[i + 2]).applyMatrix4(M); baked.v[i] = v.x; baked.v[i + 1] = v.y; baked.v[i + 2] = v.z; }
-    if (M.determinant() < 0) baked.f = baked.f.map(f => f.slice().reverse());
+    if (flip) baked.f = baked.f.map(f => f.slice().reverse());
+    const r4 = (x) => Math.round(x * 1e5) / 1e5;
+    if (tex) {
+      // positions, normals and texture coordinates triangle by triangle — the same triangles the coordinates are read for
+      const faceUV = flip ? tex.faceUV.map(uv => uv.slice().reverse()) : tex.faceUV, P3 = [], N3 = [], UV = [];
+      for (let fi = 0; fi < baked.f.length; fi++) {
+        const f = baked.f[fi], n = faceNormal(baked, fi);
+        for (const tri of triangulateFace(baked, fi, n)) for (const vi of tri) { const k = f.indexOf(vi); P3.push(baked.v[vi * 3], baked.v[vi * 3 + 1], baked.v[vi * 3 + 2]); N3.push(n[0], n[1], n[2]); UV.push(faceUV[fi][k][0], faceUV[fi][k][1]); }
+      }
+      const positions = new Float32Array(P3), indices = new Uint32Array(positions.length / 3); for (let i = 0; i < indices.length; i++) indices[i] = i;
+      const r5 = (x) => Math.round(x * 1e5) / 1e5;
+      return { name: it.name, mesh: { positions, normals: new Float32Array(N3), indices, uvs: new Float32Array(UV), image: { key: tex.id, bytes: _jpegOf(tex), mime: 'image/jpeg' }, color: [1, 1, 1] },
+        extras: { sbsId: it.uid, sbsFrame: pfr, sbsPoly: { v: baked.v.map(r4), f: baked.f }, sbsBake: { sig: tex.id, faceUV: faceUV.map(uv => uv.map(q => [r5(q[0]), r5(q[1])])) } } };
+    }
     const { positions, normals } = polyToArrays(baked);
     const indices = new Uint32Array(positions.length / 3); for (let i = 0; i < indices.length; i++) indices[i] = i;
-    const r4 = (x) => Math.round(x * 1e5) / 1e5;
     return { name: it.name, mesh: { positions, normals, indices, color: it.color }, extras: { sbsId: it.uid, sbsFrame: pfr, sbsPoly: { v: baked.v.map(r4), f: baked.f } } };
   };
   const roots = _s.rootIds.map(id => node(id, null)).filter(Boolean);
@@ -2309,7 +2509,6 @@ function _assetLayout(space = 'scene') {
 export async function applyPolySession() {
   if (!_s || _s.applying || _s.asking) return false;
   if (isPolyEditing()) exitPolyEdit();
-  if ([..._s.items.values()].some(it => it.proj)) setStatus('Note: the projected pictures are a preview in the editor for now — they are not written into the asset yet.', 'warn', 9000);
   _s.asking = true;
   try {
     const panel = await import('../ui/poly-editor-panel.js');
@@ -2338,6 +2537,7 @@ export async function applyPolySession() {
 
 async function _applyUpdate() {
   const re = _s.reedit;
+  if ([..._s.items.values()].some(it => it.proj)) { await polyBakeProjection({ quiet: true }); if (!_s) return false; }   // a live projection is saved as it is seen
   const { roots, parts } = _assetLayout('asset');
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
   const plan = planPolyAssetUpdate(re.modelId, parts);
@@ -2386,6 +2586,7 @@ async function _applyUpdate() {
 }
 
 async function _applyNew({ oldModel = null } = {}) {
+  if ([..._s.items.values()].some(it => it.proj)) { await polyBakeProjection({ quiet: true }); if (!_s) return false; }   // a live projection is saved as it is seen
   const { roots, parts } = _assetLayout('scene');
   const presetsBefore = new Set((state.get('colorPresets') || []).map(p => p.id));
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
