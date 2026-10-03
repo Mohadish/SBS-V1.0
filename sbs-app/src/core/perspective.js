@@ -32,10 +32,11 @@ export const K_WIDE  = Math.tan(WIDE_FOV_DEG  * RAD / 2);
  * ⬚ V0.3.5.38 — an even longer lens is allowed for whoever asks for it (the Poly Editor's flat views, where
  * vertices are lined up against reference pictures: at 0.5° a part as deep as the frame is tall still
  * converges ~0.9 %, a visible drift). The wheel and the slider still stop at ORTHO_FOV_DEG; isOrtho covers
- * everything at or below it. Not lower than this: the camera stands ~1150× the frame away at 0.05°, and the
- * depth buffer's precision falls with that distance.
+ * everything at or below it. V0.3.5.39 — his call, to try: 0.005° (0.05° still drifted when zoomed in close).
+ * The camera then stands ~11 500× the frame away, and the depth buffer's precision falls with that distance
+ * (z-fighting between close surfaces, AO noise, the overlay scene's own depth) — the price of near-true flat views.
  */
-export const MIN_FOV_DEG = 0.05;
+export const MIN_FOV_DEG = 0.005;
 export const K_MIN = Math.tan(MIN_FOV_DEG * RAD / 2);
 
 /** k = tan(fov/2) — the perspective amount of a vertical fov in degrees. */

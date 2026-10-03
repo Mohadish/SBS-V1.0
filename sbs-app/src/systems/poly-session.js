@@ -996,11 +996,11 @@ function _sessionBox(onlySelected = false) {
   return box.isEmpty() ? null : box;
 }
 
-// ⬚ V0.3.5.38 — the editor's flat views: a ten times longer lens than the project's "orthographic" 0.5°. His
+// ⬚ V0.3.5.38 — the editor's flat views: a much longer lens than the project's "orthographic" 0.5°. His
 // finding: at 0.5° vertices far behind still drift against the ones in front (the parallax of a real, if long,
 // lens) — modelling against a reference picture needs them to line up. (A true orthographic camera would
 // change every part of the renderer that reads the camera; see core/perspective.js.)
-const POLY_FLAT_FOV = 0.05;
+const POLY_FLAT_FOV = 0.005;                                // V0.3.5.39 — his call: 0.05° still drifted zoomed in close
 export function setPolyView(view, { fit = true, selectionOnly = false } = {}) {
   if (!_s) return;
   const Th = T(); const cam = sceneCore.camera;
