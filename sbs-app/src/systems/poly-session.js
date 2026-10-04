@@ -1926,7 +1926,7 @@ export function polySetScalePercent(pct) {
   if (!_s) return false;
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
-  _boolEnd(); _endShapeEdit(); if (_s.pick) _endPick(true);   // ⬚ V0.3.5.47 (C8) — as the scale box does: an open outline would undo the stretch on its next drag
+  _boolEnd(); if (_s.shapeEdit) _endShapeEdit(); if (_s.pick) _endPick(true);   // ⬚ V0.3.5.47 (C8) — an open OUTLINE would undo the stretch on its next drag (a new shape being drawn is left alone, V0.3.5.50)
   const one = _singleTop(); if (!one) return false;
   const cur = _sclOf(one), f = [0, 1, 2].map(i => { const v = Number(pct?.[i]); return Number.isFinite(v) && v >= 1 && cur[i] > 1e-9 ? (v / 100) / cur[i] : 1; });
   if (f.every(x => Math.abs(x - 1) < 1e-6)) return false;
