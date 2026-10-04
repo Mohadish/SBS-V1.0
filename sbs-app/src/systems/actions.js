@@ -10862,9 +10862,11 @@ export function setPrimitiveParams(nodeId, partial, { undoLabel = null, before =
   _setPrimParamsRaw(nodeId, after);
   state.markDirty();
   if (undoLabel) {
+    // V0.3.5.47: undo/redo dirty the project too — the raw setter doesn't,
+    // so a Ctrl+Z after Save left the close guard silent.
     undoManager.push(undoLabel,
-      () => _setPrimParamsRaw(nodeId, beforeParams),
-      () => _setPrimParamsRaw(nodeId, after),
+      () => { _setPrimParamsRaw(nodeId, beforeParams); state.markDirty(); },
+      () => { _setPrimParamsRaw(nodeId, after);        state.markDirty(); },
     );
   }
 }
@@ -10905,9 +10907,10 @@ export function convertPrimitiveToPoly(nodeId) {
   const after  = { kind: 'poly', params: poly };
   _setPrimKindParamsRaw(nodeId, after.kind, after.params);
   state.markDirty();
+  // V0.3.5.47: undo/redo mark dirty (the raw setter doesn't).
   undoManager.push('Convert to editable poly',
-    () => _setPrimKindParamsRaw(nodeId, before.kind, before.params),
-    () => _setPrimKindParamsRaw(nodeId, after.kind, after.params));
+    () => { _setPrimKindParamsRaw(nodeId, before.kind, before.params); state.markDirty(); },
+    () => { _setPrimKindParamsRaw(nodeId, after.kind, after.params);   state.markDirty(); });
   return true;
 }
 function _setPrimKindParamsRaw(nodeId, kind, params) {

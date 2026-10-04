@@ -3172,6 +3172,13 @@ async function _doImportStepsInner(project, srcStepIds, srcName, targetStepId, a
   if (videoSrc.length) {
     const tgtDir = startProjectPath.replace(/[\\/][^\\/]*$/, '');
     const copied = new Map();      // source mp4 path → { abs, rel }
+    // V0.3.5.47 — the clip name is fixed per segment key, so an earlier import's
+    // steps may already play this file. Reuse it (same key = same clip) and let
+    // Stop / a failed encode delete only what THIS run wrote.
+    const created = new Set();     // abs paths written by this run
+    const _clipThere = async (abs) => {
+      try { return ((await window.sbsNative.statFile?.(abs))?.size || 0) > 0; } catch { return false; }
+    };
     // 📣 V0.3.4.182 — the work plan behind the banner: each UNIQUE segment is
     // converted or copied once (several steps can share one). A transparent
     // segment costs its clip length (the alpha encode); a solid copy, a token
@@ -3224,32 +3231,40 @@ async function _doImportStepsInner(project, srcStepIds, srcName, targetStepId, a
             // Slow encode (libvpx) but paid ONCE per imported segment.
             const rel = `media/imported-seg-${seg.key}.webm`;
             const abs = `${tgtDir}/${rel}`;
-            // 📁 V0.3.4.94 — ffmpeg does not create folders: in a project that had no
-            // media/ yet it died with "No such file or directory" (the solid path never
-            // did — fs:writeFile makes the folder). Touch the output first: the folder
-            // exists, ffmpeg's -y overwrites the empty file.
-            const touch = await window.sbsNative.writeFile(abs, '', 'utf-8');
-            if (!touch?.ok) throw new Error(touch?.error || 'could not create the media folder');
-            paint(label, `Encoding alpha WebM (${fmtDuration(seg.segDurationMs || 0)} of video) — starting…`);
-            const tEnc = performance.now();
-            const ff = await _encodeAlphaWebm(seg, abs, (f, speed) => {
-              curFrac = f;
-              paint(label, `Encoding alpha WebM — ${Math.round(f * 100)}% of this clip`, speed);
-            }, () => banner.cancelled);
-            if (!ff?.ok) {
-              try { await window.sbsNative.deletePath?.(abs); } catch { /* the empty file is harmless */ }
-              throw new Error(`alpha encode failed (ffmpeg ${ff?.code}): ${ff?.stderrTail?.slice(-200) || 'unknown'}`);
+            if (await _clipThere(abs)) {
+              dest = { abs, rel };
+            } else {
+              // 📁 V0.3.4.94 — ffmpeg does not create folders: in a project that had no
+              // media/ yet it died with "No such file or directory" (the solid path never
+              // did — fs:writeFile makes the folder). Touch the output first: the folder
+              // exists, ffmpeg's -y overwrites the empty file.
+              const touch = await window.sbsNative.writeFile(abs, '', 'utf-8');
+              if (!touch?.ok) throw new Error(touch?.error || 'could not create the media folder');
+              created.add(abs);
+              paint(label, `Encoding alpha WebM (${fmtDuration(seg.segDurationMs || 0)} of video) — starting…`);
+              const tEnc = performance.now();
+              const ff = await _encodeAlphaWebm(seg, abs, (f, speed) => {
+                curFrac = f;
+                paint(label, `Encoding alpha WebM — ${Math.round(f * 100)}% of this clip`, speed);
+              }, () => banner.cancelled);
+              if (!ff?.ok) {
+                try { await window.sbsNative.deletePath?.(abs); created.delete(abs); } catch { /* the empty file is harmless */ }
+                throw new Error(`alpha encode failed (ffmpeg ${ff?.code}): ${ff?.stderrTail?.slice(-200) || 'unknown'}`);
+              }
+              _rememberAlphaEncodeRate(performance.now() - tEnc, Number(seg.segDurationMs) || 0);
+              dest = { abs, rel };
             }
-            _rememberAlphaEncodeRate(performance.now() - tEnc, Number(seg.segDurationMs) || 0);
-            dest = { abs, rel };
           } else {
             paint(label, 'Copying the rendered clip…');
-            const rd = await window.sbsNative.readFile(seg.file, 'buffer');
-            if (!rd?.ok) throw new Error(rd?.error || 'segment read failed');
             const rel = `media/imported-seg-${seg.key}.mp4`;
             const abs = `${tgtDir}/${rel}`;
-            const wr  = await window.sbsNative.writeFile(abs, rd.data, null);
-            if (!wr?.ok) throw new Error(wr?.error || 'segment copy failed');
+            if (!(await _clipThere(abs))) {
+              const rd = await window.sbsNative.readFile(seg.file, 'buffer');
+              if (!rd?.ok) throw new Error(rd?.error || 'segment read failed');
+              const wr  = await window.sbsNative.writeFile(abs, rd.data, null);
+              if (!wr?.ok) throw new Error(wr?.error || 'segment copy failed');
+              created.add(abs);
+            }
             dest = { abs, rel };
           }
           copied.set(copyKey, dest);
@@ -3264,7 +3279,7 @@ async function _doImportStepsInner(project, srcStepIds, srcName, targetStepId, a
     }
     if (banner.cancelled) {
       // ⏹ Stopped: a clean abort — nothing lands, this run's converted files go.
-      for (const d of copied.values()) { try { await window.sbsNative.deletePath?.(d.abs); } catch { /* best effort */ } }
+      for (const abs of created) { try { await window.sbsNative.deletePath?.(abs); } catch { /* best effort */ } }
       banner.finish('Import stopped — nothing was added.', 'warn', 8000);
       setStatus('Import stopped — nothing was added.', 'warn', 6000);
       return;

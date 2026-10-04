@@ -135,6 +135,17 @@ function _swapCanvas(ref, canvas) {
   ref.w = canvas.width; ref.h = canvas.height;
 }
 
+/**
+ * ⬚ V0.3.5.47 (diagnostic C6) — the anchor moved by `d` (session space) while nothing else did (a new pivot
+ * for the object's folder, another folder becoming the object's): the pictures are measured again from it,
+ * so they — and their projections — stay exactly where they were.
+ */
+export function shiftPolyRefs(d) {
+  if (!d || !_refs.length) return;
+  for (const ref of _refs) { const b = _basis(ref.view); ref.u -= d.dot(b.right); ref.v -= d.dot(b.up); }
+  syncPolyRefs(); _h?.moved?.();
+}
+
 /** Everything where it belongs: which pictures show, where, how; the handles of the selected one. */
 export function syncPolyRefs() {
   if (!_h?.group || !_root) return;

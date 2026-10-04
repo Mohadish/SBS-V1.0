@@ -758,7 +758,19 @@ async function _onLoadEnvironment() {
 
 // ── Files actions ─────────────────────────────────────────────────────────────
 
+/**
+ * ⬚ V0.3.5.47 (diagnostic C15/C16) — the Poly Editor's work lives OUTSIDE the project until Apply
+ * (polySessionDirty, not projectDirty): New / Open / Save-and-close went straight over it and it was
+ * gone. While the editor is open they refuse, with what to do instead.
+ */
+function _polyEditorBlocks(what) {
+  if (!state.get('polySession')) return false;
+  setStatus(`The Poly Editor is open — Apply or Discard it first, then ${what}.`, 'warn', 7000);
+  return true;
+}
+
 function _onNewProject() {
+  if (_polyEditorBlocks('start a new project')) return;
   if (state.get('projectDirty') && !confirm('Discard unsaved changes and start a new project?')) return;
   // B1/H1 (V0.3.2.105): dispose GPU resources BEFORE dropping the scene —
   // remove() alone leaked every geometry/material/texture per New Project.
@@ -845,6 +857,7 @@ function _onNewProject() {
 }
 
 async function _onOpenProject() {
+  if (_polyEditorBlocks('open a project')) return;
   if (state.get('projectDirty') && !confirm('Open a project? Unsaved changes will be lost.')) return;
   try {
     const picked = await pickProjectFile();
@@ -1493,6 +1506,8 @@ let _saveInFlight = null;
  *  global dirty flag (a later unrelated save or project load would then
  *  close the window out from under the user). */
 async function _onSaveForClose() {
+  // the Poly Editor's work is not in the project: saving the project would close over it — the window stays
+  if (_polyEditorBlocks('close')) { try { window.sbsNative?.saveResult?.(false); } catch { /* no bridge */ } return; }
   let ok = false;
   try { ok = await _onSaveProject(false); } catch { ok = false; }
   try { window.sbsNative?.saveResult?.(ok); } catch { /* no bridge */ }

@@ -322,7 +322,7 @@ export async function computeSegmentPlan() {
     if (n.type === 'model') {
       modelId = n.id;
       if (!_isIdentityXf(n)) srcXfOfModel.set(n.id, { id: n.id, p: n.sourceLocalPosition || [0, 0, 0], q: n.sourceLocalQuaternion || [0, 0, 0, 1], s: n.sourceLocalScale || [1, 1, 1] });
-      for (const [id, e] of Object.entries(n.polyManifest?.nodes || {})) if (e?.k === 'm' && e.h) polyHashOfNode.set(id, { id, h: e.h });
+      for (const [id, e] of Object.entries(n.polyManifest?.nodes || {})) if (e?.k === 'm' && e.h) polyHashOfNode.set(id, { id, h: e.h, ...(e.b ? { b: e.b } : {}) });   // b: V0.3.5.47 (C18) — a re-bake re-renders
     }
     if (modelId) modelOfNode.set(n.id, modelId);
     (n.children || []).forEach(c => walk(c, modelId));

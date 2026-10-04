@@ -30,7 +30,11 @@ import * as placePicker from './hardware-place-picker.js';
 const _clone = (v) => JSON.parse(JSON.stringify(v ?? null));
 const _node  = (id) => { const n = state.get('nodeById')?.get(id); return n && n.type === 'hand' ? n : null; };
 
-export function snapshotParams(id) { const n = _node(id); return n ? _clone(n.handParams || hands.defaultHandParams()) : null; }
+export function snapshotParams(id) {
+  const n = _node(id);
+  for (const k of _dragStart.keys()) if (k.startsWith(`${id}:`)) _dragStart.delete(k);   // V0.3.5.47 — a new drag starts clean (a hidden gizmo never committed the last one)
+  return n ? _clone(n.handParams || hands.defaultHandParams()) : null;
+}
 const _xfOf = (n) => ({ localOffset: [...(n.localOffset || [0, 0, 0])], localQuaternion: [...(n.localQuaternion || [0, 0, 0, 1])], orientationSteps: [...(n.orientationSteps || [0, 0, 0])] });
 
 // ── tree attach / detach ─────────────────────────────────────────────────────
@@ -368,13 +372,20 @@ export function selectHandControl(id, key) {
 /** Move a control to a world position (live, no undo): a fingertip target (pins it) or the forearm point. */
 export function moveHandControlLive(id, key, worldPos) {
   const n = _node(id);
-  if (!n) return;
+  if (!n || (key !== 'forearm' && !hands.HAND_FINGERS.includes(key))) return;
+  // V0.3.5.47 — the drag's own start point means "not moved": put back the params the
+  // drag began with. Esc reverts with a zero delta, which used to pin an unpinned tip
+  // where it stood (and push 'Pin the … tip').
+  const k = `${id}:${key}`;
+  let s = _dragStart.get(k);
+  if (!s) { const w = hands.controlWorld(n, key); s = { before: _clone(n.handParams || hands.defaultHandParams()), at: w ? w.clone() : null }; _dragStart.set(k, s); }
+  if (s.at && s.at.distanceToSquared(worldPos) < 1e-12) { _applyParams(id, s.before, { flush: false }); return; }
   const p = _clone(n.handParams || hands.defaultHandParams());
   const g = n.object3d; if (g) g.updateMatrixWorld(true);
   const inHand = (w) => { const l = g ? g.worldToLocal(w.clone()) : w; return [l.x, l.y, l.z]; };
   if (key === 'forearm') {
     p.forearmLocal = inHand(worldPos); delete p.forearm;   // V0.3.4.130 — in the hand's frame: rides the hand and its group
-  } else if (hands.HAND_FINGERS.includes(key)) {
+  } else {
     const t = p.targets?.[key];
     if (t?.nodeId) {   // keep it riding the same part: re-express under that part
       const host = state.get('nodeById')?.get(t.nodeId)?.object3d;
@@ -383,7 +394,7 @@ export function moveHandControlLive(id, key, worldPos) {
     } else {
       p.targets[key] = { local: inHand(worldPos) };   // not on a part: in the hand's frame, so it follows the hand
     }
-  } else return;
+  }
   const r = _applyParams(id, p, { flush: false });
   // V0.3.4.149 — a dragged pin stays within the finger's REACH: past it the tip cannot
   // follow, the spread search sees a flat landscape and the left-right control dies
@@ -391,7 +402,6 @@ export function moveHandControlLive(id, key, worldPos) {
   // that leaves the finger clearly short of its pin is refused; the pin keeps the
   // last place the finger did reach, and follows again once the mouse comes back.
   if (hands.HAND_FINGERS.includes(key)) {
-    const k = `${id}:${key}`;
     const L = Number(p.scale) || 190;
     const gap = r?.gaps?.[key] ?? 0;
     if (gap > 0.025 * L && _lastReachable.has(k)) _applyParams(id, _lastReachable.get(k), { flush: false });
@@ -399,19 +409,24 @@ export function moveHandControlLive(id, key, worldPos) {
   }
 }
 const _lastReachable = new Map();   // `${handId}:${finger}` → the params of the last reachable pin during a drag
+const _dragStart = new Map();       // V0.3.5.47 — `${handId}:${key}` → { before, at } from the drag's first live move
 
 /** The drag is over: one undo entry from the snapshot taken at its start. */
 export function commitHandControl(id, key, before) {
   const n = _node(id);
   if (!n) return;
   _lastReachable.delete(`${id}:${key}`);
+  _dragStart.delete(`${id}:${key}`);
   const after = _clone(n.handParams || hands.defaultHandParams());
   const prev = before || after;
   const label = key === 'forearm' ? 'Move the forearm' : `Pin the ${hands.FINGER_LABEL[key]?.toLowerCase() || 'finger'} tip`;
   _applyParams(id, after);
+  if (JSON.stringify(prev) === JSON.stringify(after)) return;   // V0.3.5.47 — nothing moved (Esc, a click-armed handle): no entry, not dirty
   state.markDirty();
   // V0.3.4.186 — undo/redo of a fingertip / forearm drag is saved state too (Save → Ctrl+Z → close was silent)
-  undoManager.push(label, () => { _applyParams(id, prev); state.markDirty(); }, () => { _applyParams(id, after); state.markDirty(); });
+  // V0.3.5.47 — … and lands on the step that was edited, not whichever is open (as setHandParams)
+  const stepId = state.get('activeStepId');
+  undoManager.push(label, () => _applyParamsToStep(id, prev, stepId), () => _applyParamsToStep(id, after, stepId));
 }
 
 // ── 🧤 skin: the rig out as .glb, a skinned hand back in ─────────────────────

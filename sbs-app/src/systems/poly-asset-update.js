@@ -387,8 +387,10 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   const reshaped = new Set();
   for (const [id, e] of Object.entries(newM.nodes)) {       // what the next open compares the file with
     if (e.k !== 'm') continue;
-    const h = polyContentHash(parsed.byUid.get(uidOfId.get(id))?.userData?.sbsPoly);
+    const src = parsed.byUid.get(uidOfId.get(id));
+    const h = polyContentHash(src?.userData?.sbsPoly);
     if (h) e.h = h;
+    e.b = src?.userData?.sbsBake?.sig || null;               // ⬚ V0.3.5.47 (C18) — the bake is part of what the export cache compares
   }
 
   for (const id of diff.kept) {                              // KEPT: the same node, the same mesh object; new geometry only where the shape changed
@@ -529,6 +531,9 @@ export function reconcilePolyAssetsOnLoad(items) {
         if (newM.nodes[id].k !== 'm') continue;
         const ho = oldM.nodes[id]?.h, hn = newM.nodes[id].h, node = nb.get(id), fp = it.savedFp?.get(id);
         if (ho && hn ? ho !== hn : !!(node && fp && node.fingerprint && fp !== node.fingerprint)) reshaped.add(id);
+        // ⬚ V0.3.5.47 (C18) — re-baked outside this project (same shape, new texture): its steps get their ★. Only when the
+        // old manifest already recorded bakes ('b' present) — older projects never stored it and must not all light up.
+        else if (oldM.nodes[id] && 'b' in oldM.nodes[id] && (oldM.nodes[id].b || null) !== (newM.nodes[id].b || null)) reshaped.add(id);
       }
       if (isEmptyDiff(diff) && !reshaped.size) continue;     // the file is what the project last saw: nothing is touched
       const root = state.get('treeData');

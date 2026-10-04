@@ -32,7 +32,7 @@
 
 export function makeManifest(rootId, entries) {
   const nodes = {};
-  for (const e of entries || []) nodes[e.id] = { k: e.kind === 'folder' || e.kind === 'f' ? 'f' : 'm', p: e.parent || rootId, n: String(e.name ?? ''), u: e.uid || null, ...(e.hash ? { h: e.hash } : {}), ...(e.frame ? { fr: e.frame } : {}) };
+  for (const e of entries || []) nodes[e.id] = { k: e.kind === 'folder' || e.kind === 'f' ? 'f' : 'm', p: e.parent || rootId, n: String(e.name ?? ''), u: e.uid || null, ...(e.hash ? { h: e.hash } : {}), ...('bake' in e ? { b: e.bake || null } : {}), ...(e.frame ? { fr: e.frame } : {}) };   // b: V0.3.5.47 — the bake signature (only from a file read; a spec-built manifest has none)
   return { v: 1, root: rootId, nodes };
 }
 

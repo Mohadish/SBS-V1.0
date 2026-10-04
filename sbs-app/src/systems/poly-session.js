@@ -49,7 +49,7 @@ import { materials } from './materials.js';   // ⬚ V0.3.5.22 — the scene's c
 import * as shapeEditor from './shape-editor.js';
 import { booleanPoly, warmBooleanLib } from './poly-csg.js';   // ⬚ V0.3.5.43 — booleans between parts (the Manifold kernel the extrude already uses)         // ⬚ V0.3.5.40 — the project's flat-shape tool, drawing the editor's shapes
 import { xorPolygonList } from './flat-shapes.js';
-import { initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef, polyRefProjectors, REF_VIEWS } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
+import { shiftPolyRefs, initPolyRefs, disposePolyRefs, syncPolyRefs, polyRefsInfo, polyRefsForSave, polyRefsPointerDown, polyRefsEditing, setPolyRefsEdit, removePolyRef, polyRefProjectors, REF_VIEWS } from './poly-refs.js';   // ⬚ V0.3.5.25 — reference pictures per view
 
 const T = () => window.THREE;
 const SCOPE = 'polySession';
@@ -758,12 +758,25 @@ function _structRestore(snap) {
   for (const r of snap.items) { const it = _s.items.get(r.id); if (!it) continue; if (r.id !== keepName) it.name = r.name; it.parent = r.parent; if (it.kind === 'folder') it.children = r.children.slice(); else if (it.mesh) it.mesh.name = r.name; }
 }
 /** Run a tree change with one undo entry (before / after structure snapshots). */
+/**
+ * ⬚ V0.3.5.47 (diagnostic C6) — the reference pictures hang on the object folder's pivot (_refsHost). When
+ * that point changes while nothing moves — a new pivot, another folder becoming the object's — they are
+ * re-measured so they stay put (else every picture and its projection jumped by the difference, and Save
+ * kept the jump). Returns the shift, for the undo entry to take back.
+ */
+function _keepRefsPut(a0) {
+  const d = _refsHost.anchor().clone().sub(a0);
+  if (d.lengthSq() <= 1e-18) return null;
+  shiftPolyRefs(d);
+  return d;
+}
+
 function _treeOp(label, fn) {
-  const before = _structSnap();
+  const before = _structSnap(), a0 = _refsHost.anchor().clone();
   const ok = fn();
   if (ok === false) return false;
-  const after = _structSnap();
-  _push(label, () => _structRestore(before), () => _structRestore(after));
+  const after = _structSnap(), d = _keepRefsPut(a0);
+  _push(label, () => { _structRestore(before); if (d) shiftPolyRefs(d.clone().negate()); }, () => { _structRestore(after); if (d) shiftPolyRefs(d); });
   _syncScene(); _emit('tree');
   return true;
 }
@@ -1276,8 +1289,10 @@ function _setFrame(it, pos, quat, label) {
   if (it.kind === 'folder') {
     const before = { q: it.frame.q.clone(), p: it.frame.p ? it.frame.p.clone() : null }, after = { q: q1, p: pos ? pos.clone() : null };
     const set = (f) => { it.frame.q.copy(f.q); it.frame.p = f.p ? f.p.clone() : null; };
+    const a0 = _refsHost.anchor().clone();
     set(after);
-    _push(label, () => set(before), () => set(after));
+    const d = _keepRefsPut(a0);                            // the object's folder got a new pivot: the pictures stay where they are
+    _push(label, () => { set(before); if (d) shiftPolyRefs(d.clone().negate()); }, () => { set(after); if (d) shiftPolyRefs(d); });
   } else {
     const m = it.mesh, sc = m.scale.clone();
     const M = new Th.Matrix4().compose(pos, q1, sc).invert().multiply(new Th.Matrix4().compose(m.position, m.quaternion, sc));
@@ -3151,6 +3166,10 @@ async function _applyNew({ oldModel = null } = {}) {
     setStatus(`Poly Editor: saved ${path.split(/[\\/]/).pop()} (${Math.round(glb.byteLength / 1024)} KB) and loaded it into the scene.${refsLost > 0 ? ` ${refsLost} reference picture(s) were left out: the model is turned in this step, so they fit no flat view of the new asset.` : ''}`, refsLost > 0 ? 'warn' : 'success', refsLost > 0 ? 12000 : 7000);
     // parts coloured from the scene's colours wear those same colours (not the look-alikes the import made)
     try { applyPolyPartColours(modelNode.assetId, parts, presetsBefore); } catch (err) { console.warn('[poly session] colours', err); }
+    // ⬚ V0.3.5.47 (diagnostic C12) — the new model and its colours came in with no undo entry: older entries
+    // (whole colour-list snapshots, step captures) would now take them away again. Nothing before Apply can be
+    // undone from here on — as with a Replace. Archive / Delete / Group of the originals below stay undoable.
+    undoManager.clear();
     const { askPolyOriginals } = await import('../ui/poly-editor-panel.js');
     // The session held the whole old asset (seeded from its manifest). Two things follow for the NEW model:
     // a part that was archived in the project stays archived, and a part some step keeps OUTSIDE the old

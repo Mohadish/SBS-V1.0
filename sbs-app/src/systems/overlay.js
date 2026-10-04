@@ -2258,7 +2258,8 @@ async function _commitSquareUp() {
     src: dataUrl, image: newImg, naturalW: out.width, naturalH: out.height, crop: null,
     x: node.x() + dx, y: node.y() + dy, width: out.width * kx, height: out.height * ky,
     cropMask: mask, cropMaskId: null,
-    squaredUp: { rect: { ...out.rect }, aspect: aspect || 'auto' },
+    // V0.3.5.47 — the shift + the original scale, so Back to the original file puts it back where it was (summed over chained square-ups)
+    squaredUp: { rect: { ...out.rect }, aspect: aspect || 'auto', dx: dx + (before.squaredUp?.dx || 0), dy: dy + (before.squaredUp?.dy || 0), unitsPerPx: before.squaredUp?.unitsPerPx ?? (nw / cw) },
   };
   const write = (s) => {
     if (!_isLiveNode(node)) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; }
@@ -2298,15 +2299,19 @@ async function _revertToOriginalFile(node) {
     src: node.getAttr('src'), image: node.image?.(), naturalW: node.getAttr('naturalW'), naturalH: node.getAttr('naturalH'),
     cropMask: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, cropMaskId: node.getAttr('cropMaskId') || null,
     squaredUp: node.getAttr('squaredUp') || null, width: node.width(), height: node.height(),
+    x: node.x(), y: node.y(),
   };
-  const k = (node.width() || 1) / (Number(node.getAttr('naturalW')) || img.width);   // keep the on-screen scale
-  const after = { src: dataUrl, image: img, naturalW: img.width, naturalH: img.height, cropMask: null, cropMaskId: null, squaredUp: null, width: img.width * k, height: img.height * k };
+  // V0.3.5.47 — undo the square-up's shift (relative, so a later move is kept) at the pre-square-up scale; old records lack both → as before
+  const su = before.squaredUp || {};
+  const k = su.unitsPerPx || (node.width() || 1) / (Number(node.getAttr('naturalW')) || img.width);   // keep the on-screen scale
+  const after = { src: dataUrl, image: img, naturalW: img.width, naturalH: img.height, cropMask: null, cropMaskId: null, squaredUp: null, width: img.width * k, height: img.height * k,
+    x: node.x() - (su.dx || 0), y: node.y() - (su.dy || 0) };
   const write = (s) => {
     if (!_isLiveNode(node)) return;
     node.setAttr('src', s.src); node.setAttr('naturalW', s.naturalW); node.setAttr('naturalH', s.naturalH);
     if (s.image) node.image(s.image);
     node.setAttr('crop', undefined);
-    node.width(s.width); node.height(s.height);
+    node.position({ x: s.x, y: s.y }); node.width(s.width); node.height(s.height);
     node.setAttr('cropMask', s.cropMask); node.setAttr('cropMaskId', s.cropMaskId); node.setAttr('squaredUp', s.squaredUp || undefined);
     _installMaskDraw(node);
     _layer?.batchDraw();
@@ -4151,10 +4156,14 @@ async function _replaceImageSource(node) {
   const oldW = Number(node.getAttr('naturalW')) || img.width;
   const oldH = Number(node.getAttr('naturalH')) || img.height;
   const oldCrop = node.crop?.();
+  // V0.3.5.47 — the new file becomes "the original": a stale srcPath / squaredUp made Back to the original file bring the OLD picture back
+  let abs = '';
+  try { abs = (typeof file.path === 'string' && file.path) ? file.path : (window.sbsNative?.pathForFile?.(file) || ''); } catch { abs = ''; }
   const before = {
     src: node.getAttr('src'), image: node.image?.(),
     naturalW: node.getAttr('naturalW'), naturalH: node.getAttr('naturalH'),
     crop: oldCrop?.width ? { ...oldCrop } : null,
+    srcPath: node.getAttr('srcPath') || null, squaredUp: node.getAttr('squaredUp') || null,
   };
   const kx = img.width / (oldW || 1), ky = img.height / (oldH || 1);
   const after = {
@@ -4162,6 +4171,7 @@ async function _replaceImageSource(node) {
     crop: before.crop
       ? { x: before.crop.x * kx, y: before.crop.y * ky, width: before.crop.width * kx, height: before.crop.height * ky }
       : null,
+    srcPath: abs || null, squaredUp: null,
   };
   const write = (s) => {
     if (node.isDestroyed?.()) return;
@@ -4170,6 +4180,7 @@ async function _replaceImageSource(node) {
     node.setAttr('naturalH', s.naturalH);
     if (s.image) node.image(s.image);
     if (s.crop) node.crop(s.crop); else node.setAttr('crop', undefined);
+    node.setAttr('srcPath', s.srcPath || undefined); node.setAttr('squaredUp', s.squaredUp || undefined);
     _layer?.batchDraw();
     _scheduleSave();
   };

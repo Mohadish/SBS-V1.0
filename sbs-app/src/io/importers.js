@@ -231,7 +231,8 @@ export function polyManifestOfModel(modelNode) {
       const uid = typeof u === 'string' && u && assetId && polyPartNodeId(assetId, u, isMesh) === c.id ? u : null;
       const fr = c.object3d?.userData?.sbsFrame;         // ⬚ V0.3.5.19 — the part's / folder's pivot + axes in the Poly Editor
       const frame = fr && Array.isArray(fr.q) && fr.q.length === 4 ? { p: Array.isArray(fr.p) && fr.p.length === 3 ? fr.p.slice() : null, q: fr.q.slice() } : null;
-      entries.push({ id: c.id, kind: isMesh ? 'mesh' : 'folder', parent: parentId, name: c.name, uid, hash: isMesh ? polyContentHash(c.object3d?.userData?.sbsPoly) : null, frame });
+      // ⬚ V0.3.5.47 (diagnostic C18) — + the baked texture's signature: a re-bake with the same shape is a change too
+      entries.push({ id: c.id, kind: isMesh ? 'mesh' : 'folder', parent: parentId, name: c.name, uid, hash: isMesh ? polyContentHash(c.object3d?.userData?.sbsPoly) : null, ...(isMesh ? { bake: c.object3d?.userData?.sbsBake?.sig || null } : {}), frame });
       if (!isMesh) walk(c, c.id);
     }
   })(inner, inner.id);
