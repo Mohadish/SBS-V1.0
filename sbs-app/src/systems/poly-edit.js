@@ -804,7 +804,10 @@ function _onDown(e) {
 function _beginMarquee(e) {
   _swallow(e);
   _ed.missEvent = e;
-  _ed.marq = { x: e.clientX, y: e.clientY, x2: e.clientX, y2: e.clientY, started: false, shift: !!e.shiftKey, ctrl: !!(e.ctrlKey || e.metaKey), alt: !!e.altKey };
+  // ⬚ V0.3.5.52 (diagnostic U8) — vertex / edge mode: a click on the poly's own surface that missed a dot / an
+  // edge is not "off the poly" — it must not end the mode (face / element modes never get here on a face)
+  const onPoly = (_ed.mode === 'vertex' || _ed.mode === 'edge') && _hitFace(e).face >= 0;
+  _ed.marq = { onPoly, x: e.clientX, y: e.clientY, x2: e.clientX, y2: e.clientY, started: false, shift: !!e.shiftKey, ctrl: !!(e.ctrlKey || e.metaKey), alt: !!e.altKey };
   _clearPreview();
 }
 
@@ -880,6 +883,12 @@ function _onUp(e) {
 function _endMarquee(e) {
   const m = _ed.marq; _ed.marq = null;
   hideMarqueeBox();
+  if (!m.started && m.onPoly) {                                     // ⬚ V0.3.5.52 (U8) — on the surface: a plain click clears, Ctrl/Shift keep
+    _ed.swallowClick = true;
+    if (!m.shift && !m.ctrl) { _ed.selVerts = new Set(); _ed.selEdges = new Set(); }
+    _refreshHelpers(); _syncGizmo();
+    return;
+  }
   if (!m.started) {
     const host = _ed.host, ev = _ed.missEvent;
     _ed.swallowClick = !!host.onMissClick;                            // a host that handles the click keeps the app's handler out

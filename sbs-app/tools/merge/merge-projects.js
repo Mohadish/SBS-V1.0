@@ -63,6 +63,21 @@ for (const key of ['shapes', 'cables', 'hardware', 'cameras', 'colors', 'notes',
   if (P[key] || Q[key]) P[key] = unionSection(P[key], Q[key]);
 }
 
+// ── V0.3.5.52: ADD's steps may say "my poly params are the tree's" (primParamsRef:
+// 'tree', a file-size saving of the app's save). The merged file keeps BASE's tree,
+// so those must be filled in from ADD's OWN tree before the steps come across.
+(function resolveAddPolyRefs() {
+  const params = new Map();
+  (function walk(n) { if (!n || typeof n !== 'object') return; if (n.type === 'primitive' && n.primKind === 'poly' && n.primParams) params.set(n.id, n.primParams); (n.children || []).forEach(walk); })(Q.tree?.root);
+  let n = 0, miss = 0;
+  for (const st of stepsOf(Q)) (function walk(s) {
+    if (!s || typeof s !== 'object') return;
+    if (s.primParamsRef === 'tree') { const p = params.get(s.id); if (p) { s.primParams = JSON.parse(JSON.stringify(p)); n++; } else miss++; delete s.primParamsRef; }
+    (s.children || []).forEach(walk);
+  })(st?.snapshot?.tree);
+  report.addPolyRefsResolved = n; if (miss) report.addPolyRefsMissing = miss;
+})();
+
 // ── Append ADD's unique steps + chapters (dedup by id) ───────────────────────
 const pStepIds = new Set(stepsOf(P).map(s => s.id));
 const addSteps = stepsOf(Q).filter(s => !pStepIds.has(s.id));

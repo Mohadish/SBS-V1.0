@@ -405,14 +405,25 @@ export async function squarePolyRef(id) {
   const sq = await panel.askPolySquareUp(src, { title: ref.name, quad: ref.quad, aspect: ref.aspect, sq: ref.sq || null });
   if (!sq || !_h || !_refs.includes(ref)) return false;
   const before = { quad: ref.quad, aspect: ref.aspect, sq: ref.sq || null }, after = sq === 'asis' ? { quad: null, aspect: null, sq: null } : { quad: sq.quad, aspect: sq.aspect || null, sq: sq.sq || null };
-  const apply = (s) => {
-    try { _swapCanvas(ref, _finalCanvas(src, s.quad, s.aspect)); ref.quad = s.quad; ref.aspect = s.aspect; ref.sq = s.sq; return true; }
-    catch (err) { setStatus(`Squaring the picture failed: ${err?.message || err}`, 'warn', 7000); return false; }
-  };
-  if (!apply(after)) return false;                           // ⬚ V0.3.5.47 (C7) — a failed square-up changed nothing: no undo entry for it
-  _h.push('Square up reference picture', () => { apply(before); syncPolyRefs(); }, () => { apply(after); syncPolyRefs(); });
+  try { _swapCanvas(ref, _finalCanvas(src, after.quad, after.aspect)); }
+  catch (err) { setStatus(`Squaring the picture failed: ${err?.message || err}`, 'warn', 7000); return false; }   // ⬚ V0.3.5.47 (C7) — a failed square-up changed nothing: no undo entry for it
+  _setSquare(ref, after);
+  src = null;
+  // ⬚ V0.3.5.52 (U14) — undo/redo re-read the file instead of holding the 4096² source canvas (up to 64 MB per entry)
+  _h.push('Square up reference picture', () => { _resquare(ref, before); syncPolyRefs(); }, () => { _resquare(ref, after); syncPolyRefs(); });
   _changed();
   return true;
+}
+function _setSquare(ref, s) { ref.quad = s.quad; ref.aspect = s.aspect; ref.sq = s.sq; }
+/** ⬚ V0.3.5.52 (U14) — undo/redo of a square-up: the corners now (they are what is saved), the pixels when the file is read again. */
+function _resquare(ref, s) {
+  _setSquare(ref, s);
+  const tok = ref._sqTok = (ref._sqTok || 0) + 1, gen = _gen;   // a quick undo-redo-undo: only the last one draws
+  _readImage(ref.path).then(src => {
+    if (!_h || gen !== _gen || ref._sqTok !== tok) return;
+    _swapCanvas(ref, _finalCanvas(src, ref.quad, ref.aspect));
+    _changed();
+  }).catch(err => { if (_h && ref._sqTok === tok) setStatus(`The file of that picture could not be opened: ${err?.message || err}`, 'warn', 7000); });
 }
 
 export function removePolyRef(id) {

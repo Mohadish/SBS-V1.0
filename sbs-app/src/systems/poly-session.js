@@ -337,6 +337,7 @@ async function _start(nodeIds, opts = {}) {
     view: 'persp', space: 'world', subMode: null, sourceIds: [], group: new Th.Group(), prev: null, listeners: null, xf: null, fovPersp: sceneCore.camera?.fov || 35, edits: 0,
     reedit: plan.reedit || null,
     native: plan.native || null,                           // the asset this session was seeded from (stays when Apply can only make a NEW asset)
+    bakeTex: new Set(),                                    // ⬚ V0.3.5.52 (U13) — bakes that hold a GPU texture
   };
   sess.group.name = 'PolyEditorSession';
   // ⬚ V0.3.5.16 — the session's own space. A plain session works in the scene's space (identity).
@@ -388,12 +389,20 @@ async function _start(nodeIds, opts = {}) {
     // NEW asset made from it wears that same colour — not a look-alike
     const srcPid = src.node?.id ? (materials.meshColorAssignments[src.node.id] ?? materials.meshDefaultColors[src.node.id] ?? null) : null;
     const it = { id: newId('p'), kind: 'part', name: src.name, parent, poly, color: c, mesh: null, uid: uidFor(src), archived: src.archived === true, frame0, presetId: srcPid || null };
-    try { const bk = _bakeFromFile(src, poly); if (bk) { it.bake = bk; it.presetId = null; } } catch (err) { console.warn('[poly session] baked texture', src.name, err); }
+    try {
+      const bk = _bakeFromFile(src, poly);
+      if (bk) {
+        const enc = bakeImgs.get(bk.id);                   // ⬚ V0.3.5.52 (U5 / U11) — the file's own encoded picture: written again as it is
+        if (enc) { bk.jpeg = enc.bytes; bk.mime = enc.mime; }
+        it.bake = bk; it.presetId = null;
+      }
+    } catch (err) { console.warn('[poly session] baked texture', src.name, err); }
     sess.items.set(it.id, it);
     if (src.srcId) okSources.add(src.srcId);
     return it.id;
   };
   const okSources = new Set();                             // only what really came in counts as an "original" at Apply
+  const bakeImgs = await _fileBakeImages(plan.roots);
   for (const r of plan.roots) { const id = await add(r, null); if (id) sess.rootIds.push(id); }
   sess.sourceIds = [...okSources];
   if (empty && sess.rootIds.length === 1) { sess.sel = new Set(sess.rootIds); sess.primary = sess.rootIds[0]; }   // what is added lands in the object's folder
@@ -1389,12 +1398,16 @@ export function polyPivotBy3Points() {
 // (the picked points touch, the normals oppose). 3 points: a circle on the object (a pin, a rim), a circle
 // on the other part (a hole) → the centres meet, the axes line up (the smaller of the two turns: the
 // object is not flipped over).
-function _alignRigid(srcP, srcDir, tgtP, tgtDir, label) {
+function _alignRigid(srcP, srcDir, tgtP, tgtDir, label, selIds = null) {
   if (!_s) return;
   const Th = T();
   const wasPivot = _s.pivotMode; _s.pivotMode = false;
   try {
-    _xfBegin();
+    // ⬚ V0.3.5.52 (U1) — what moves is what was selected when the pick STARTED (a tree click during the pick
+    // changes the selection; the picked points belong to the object the pick began on)
+    const cur = _s.sel;
+    if (selIds) _s.sel = new Set(selIds.filter(id => _s.items.has(id)));
+    try { _xfBegin(); } finally { _s.sel = cur; }
     const xf = _s.xf; if (!xf) return;
     _s.group.updateWorldMatrix(true, false);
     xf.pivot = srcP.clone().applyMatrix4(_s.group.matrixWorld.clone().invert());   // the turn is about the picked point
@@ -1413,19 +1426,19 @@ function _alignReady() {
 }
 export function polyAlignToSurface() {
   if (!_alignReady()) return false;
-  const sel = new Set(_selectedPartIds());
+  const sel = new Set(_selectedPartIds()), selIds = [..._s.sel];
   _startPick({
     need: 2, allow: (i) => (i === 0 ? { only: sel } : { not: sel }),
     what: (i) => (i === 0 ? 'Align — click a face ON THE OBJECT you are aligning (the face that will touch)' : 'Align — now click the face it should sit on'),
     miss: (i) => (i === 0 ? 'Click on the selected object — the face of it that should touch.' : 'Click on ANOTHER part — the surface to sit on.'),
     // a FACE of the object meets the surface (normals opposed); its PIVOT sits on it (the pivot's Y along the surface, like "Pivot to a surface")
-    done: ([a, b]) => _alignRigid(a.p, a.snap === 'pivot' ? a.n.clone().negate() : a.n, b.p, b.n.clone().negate(), 'Align to surface'),
+    done: ([a, b]) => _alignRigid(a.p, a.snap === 'pivot' ? a.n.clone().negate() : a.n, b.p, b.n.clone().negate(), 'Align to surface', selIds),
   });
   return true;
 }
 export function polyAlignBy3Points() {
   if (!_alignReady()) return false;
-  const sel = new Set(_selectedPartIds());
+  const sel = new Set(_selectedPartIds()), selIds = [..._s.sel];
   _startPick({
     need: 6, circles: true, allow: (i) => (i < 3 ? { only: sel } : { not: sel }),
     what: (i) => (i < 3 ? `Align — point ${i + 1} of 3 ON THE OBJECT (3 corners of the face that will touch, or 3 points of a rim)` : `Align — point ${i - 2} of 3 where it goes (the face / rim it will sit against)`),
@@ -1435,7 +1448,7 @@ export function polyAlignBy3Points() {
       if (!s || !g) { setStatus('Three of those points are on one line — no circle goes through them.', 'warn', 5000); return; }
       // V0.3.5.22 (his test): the two planes MEET — the object's face against the other face, normals opposed —
       // exactly like Align to a surface. (Lining the axes up by the smaller turn left a box sunk INSIDE the other.)
-      _alignRigid(s.c, s.n, g.c, g.n.clone().negate(), 'Align by 3 points');
+      _alignRigid(s.c, s.n, g.c, g.n.clone().negate(), 'Align by 3 points', selIds);
     },
   });
   return true;
@@ -2068,6 +2081,11 @@ function _flushSkins() {
     try { if (it.bake) _buildBakedSkin(it); else _buildSkin(it, P); } catch (err) { console.warn('[poly session] projection', it.name, err); _disposeSkin(it); }
     if (it.skin) { it.skin.visible = true; for (const mm of it.skin.material) mm.emissive?.setHex(sel.has(it.id) && !editing ? 0x0b3a52 : 0x000000); }
   }
+  // ⬚ V0.3.5.52 (U13) — a baked texture no part shows any more (re-baked, projected again, removed, swapped by a
+  // Boolean / Restore) leaves the GPU. Undo rows keep the bake and its canvas: one that comes back gets a new texture.
+  const worn = new Set();
+  for (const it of _s.items.values()) if (it.skin && it.bake) worn.add(it.bake);
+  for (const b of [...(_s.bakeTex || [])]) if (!worn.has(b)) { try { b.tex?.dispose?.(); } catch { /* fine */ } b.tex = null; _s.bakeTex.delete(b); }
   if (P.stale) setTimeout(() => _markSkins(), 100);        // a merge was held back during a drag: catch up when the hand rests
   sceneCore.requestRender?.(60);
 }
@@ -2201,6 +2219,7 @@ function _buildBakedSkin(part) {
   if (!m || !_bakeValid(part)) { _disposeSkin(part); return; }   // the faces changed since the bake: the part shows its colour (bake again)
   const Th = T();
   if (!bake.tex) { const tx = new Th.CanvasTexture(bake.canvas); tx.flipY = false; if ('SRGBColorSpace' in Th) tx.colorSpace = Th.SRGBColorSpace; tx.anisotropy = 4; tx.needsUpdate = true; bake.tex = tx; }
+  _s.bakeTex?.add(bake);                                   // ⬚ V0.3.5.52 (U13) — every bake with a GPU texture: freed when no part wears it (_flushSkins) and at the end
   const keep = part.skin?.material?.[0]?.map === bake.tex ? part.skin.material[0] : null;
   if (part.skin) { part.skin.parent?.remove(part.skin); part.skin.geometry?.dispose?.(); if (!keep) for (const mm of part.skin.material || []) mm.dispose?.(); part.skin = null; }
   const poly = part.poly, P3 = [], N3 = [], UV = [];
@@ -2237,6 +2256,60 @@ function _bakeFromFile(src, poly) {
   const canvas = document.createElement('canvas'); canvas.width = img.width; canvas.height = img.height;
   canvas.getContext('2d').drawImage(img, 0, 0);
   return { id: String(sb.sig || `bk-file-${(++_bakeSeq).toString(36)}`), canvas, faceUV, tex: null, jpeg: null, fromFile: true };
+}
+/**
+ * ⬚ V0.3.5.52 (U5 / U11) — the pictures a .glb of this editor holds, by bake signature → { bytes, mime }: the
+ * encoded image exactly as it is in the file. A bake read back from a file and left alone is written again
+ * with THOSE bytes — encoding its canvas once more lost a little detail and colour on every Apply.
+ */
+function _glbBakeImages(buf) {
+  const out = new Map();
+  try {
+    const ab = buf instanceof ArrayBuffer ? buf : ArrayBuffer.isView(buf) ? buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) : null;
+    if (!ab || ab.byteLength < 20) return out;
+    const dv = new DataView(ab);
+    if (dv.getUint32(0, true) !== 0x46546C67) return out;   // 'glTF'
+    let o = 12, json = null, bin = null;
+    while (o + 8 <= ab.byteLength) {
+      const len = dv.getUint32(o, true), type = dv.getUint32(o + 4, true); o += 8;
+      if (o + len > ab.byteLength) break;
+      if (type === 0x4E4F534A && !json) json = JSON.parse(new TextDecoder().decode(new Uint8Array(ab, o, len)));
+      else if (type === 0x004E4942 && !bin) bin = new Uint8Array(ab, o, len);
+      o += len;
+    }
+    if (!json || !bin) return out;
+    for (const n of json.nodes || []) {
+      const sig = n?.extras?.sbsBake?.sig;
+      if (!sig || out.has(String(sig)) || !Number.isInteger(n.mesh)) continue;
+      const mi = json.meshes?.[n.mesh]?.primitives?.[0]?.material;
+      const ti = json.materials?.[mi]?.pbrMetallicRoughness?.baseColorTexture?.index;
+      const im = json.images?.[json.textures?.[ti]?.source], bv = json.bufferViews?.[im?.bufferView];
+      if (!bv || (bv.buffer || 0) !== 0 || !/^image\/(jpeg|png)$/.test(im.mimeType || '')) continue;
+      const a = bv.byteOffset || 0, len = bv.byteLength;
+      if (!(len > 0) || a + len > bin.byteLength) continue;
+      out.set(String(sig), { bytes: bin.slice(a, a + len), mime: im.mimeType });
+    }
+  } catch { /* not readable: those bakes are encoded again */ }
+  return out;
+}
+/** The files the baked parts of these sources came from, read once each → their pictures by bake signature. */
+async function _fileBakeImages(roots) {
+  const out = new Map(), paths = new Set(), assets = state.get('assets') || [];
+  (function walk(list) {
+    for (const r of list || []) {
+      if (r.kind === 'folder') { walk(r.children); continue; }
+      if (!r.mesh?.userData?.sbsBake?.sig) continue;
+      const aid = r.assetId || r.node?.sourceAssetId, p = aid ? assets.find(a => a.id === aid)?.originalPath : null;
+      if (p && /\.glb$/i.test(p)) paths.add(p);
+    }
+  })(roots);
+  const nat = window.sbsNative;
+  if (!paths.size || !nat?.readFile) return out;
+  for (const p of paths) {
+    try { const r = await nat.readFile(p, 'buffer'); if (r?.ok) for (const [k, v] of _glbBakeImages(r.data)) if (!out.has(k)) out.set(k, v); }
+    catch (err) { console.warn('[poly session] baked pictures of', p, err); }
+  }
+  return out;
 }
 /** 🔥 Bake the projection of the selected parts (none selected = every projected part). One undo step. */
 export async function polyBakeProjection({ quiet = false } = {}) {
@@ -2277,10 +2350,24 @@ function _whitePresetId({ make = true } = {}) {
   let p = all.find(x => x?.textureWhite) || all.find(x => x?.name === WHITE_NAME) || null;
   if (p && !p.textureWhite) p.textureWhite = true;
   if (!p && make) { try { p = materials.createPreset({ color: '#ffffff', name: WHITE_NAME, roughness: 0.8, metalness: 0, textureWhite: true }); } catch { p = null; } }
-  return p?.id || (make ? null : 'white');
+  return p?.id || (make ? null : WHITE_TBD);
 }
+/**
+ * ⬚ V0.3.5.52 (U3 / U6) — the white colour is made only past the point of no return (every refusal and the save
+ * dialog behind): a refused or cancelled Apply left an orphan colour in the project, outside undo. Fills it into
+ * the layout's tints → the id of the preset made here (null = none was needed, or it was there already).
+ */
+const WHITE_TBD = '\u0000poly-white';
+function _makeWhite(parts) {
+  if (!parts.some(p => p.tint?.presetId === WHITE_TBD)) return null;
+  const had = _whitePresetId({ make: false }), id = had !== WHITE_TBD ? had : _whitePresetId({ make: true });
+  for (const p of parts) if (p.tint?.presetId === WHITE_TBD) p.tint = id ? { ...p.tint, presetId: id } : null;
+  return had !== WHITE_TBD ? null : id;
+}
+const _unmakeWhite = (id) => { if (id) { try { materials.deletePreset(id); } catch { /* it stays */ } } };
 function _jpegOf(bake) {
-  if (!bake.jpeg) {
+  if (!bake.jpeg) {                                        // (a bake read from a file carries the file's own bytes + mime: never re-encoded)
+    bake.mime = 'image/jpeg';
     const b64 = bake.canvas.toDataURL('image/jpeg', 0.92).split(',')[1] || '', bin = atob(b64), out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     bake.jpeg = out;
@@ -2510,6 +2597,8 @@ function _shapeFaceClick(e) {
     const dr = state.get('shapeDrawing'); _s.shapeFacePick = null;
     let loops = null;
     try { loops = actions.computeFaceCrossSection(hit, dr?.plane); } catch (err) { console.warn('[poly session] face outline', err); }
+    // ⬚ V0.3.5.52 (U16) — the loops come in the clicked part's units; the shape editor draws in world units
+    if (loops?.length) { const g = _gs(); loops = loops.map(l => l.map(([x, y]) => [x * g, y * g])); }
     if (!loops?.length || loops[0].length < 3 || !shapeEditor.addPolygonFromFace(loops)) setStatus('No outline could be taken from that face.', 'warn', 4000);
     _hint(); return;
   }
@@ -2522,7 +2611,9 @@ function _shapeFaceClick(e) {
   let loops = null;
   try { loops = actions.computeFaceCrossSection(hit, plane); } catch (err) { console.warn('[poly session] face outline', err); }
   if (!loops?.length || loops[0].length < 3) { setStatus('No outline could be taken from that face — try another spot or a wider angle.', 'warn', 5000); _hint(); return; }
-  _addShapePart(plane, _scalePolys([{ outer: loops[0], holes: loops.slice(1).filter(l => l.length >= 3) }], 1 / _gs()), 'Shape');
+  // ⬚ V0.3.5.52 (U16) — computeFaceCrossSection measures in the clicked mesh's own space (the session group's
+  // scale included): the loops are part units already — dividing by _gs() again shrank and shifted the shape
+  _addShapePart(plane, [{ outer: loops[0], holes: loops.slice(1).filter(l => l.length >= 3) }], 'Shape');
   _hint(); _emit('mode');
 }
 /** The right-click menu while a shape's outline is edited (the project's own, plus the way to extrude). */
@@ -2851,6 +2942,9 @@ function _onKey(e) {
   // so the "only what was done in the editor" guard below must run for it too.
   if (e.key === 'Escape' && _s.scale?.drag) { e.preventDefault(); e.stopImmediatePropagation(); _scaleFinish(false); return; }   // also with Alt / Shift held: they are the pull's own modifiers
   const undoKey = (e.ctrlKey || e.metaKey) && (e.code === 'KeyZ' || e.code === 'KeyY');
+  // ⬚ V0.3.5.52 (U17) — a scale in the hand: an undo would move the parts under the pull (it holds where they
+  // were at pointerdown) and the release would bake the stretch at the undone place. Nothing happens until the mouse is let go.
+  if (undoKey && _s.scale?.drag) { e.preventDefault(); e.stopImmediatePropagation(); setStatus('Let go of the mouse first (Esc puts the scale back).', 'info', 2500); return; }
   if (_typing() && !(undoKey && document.activeElement?.tagName === 'SELECT')) return;
   // the right-click menu closes on Esc through a listener this handler would cut off: close it here, and nothing else
   if (e.key === 'Escape' && document.getElementById('context-menu')?.style.display === 'block') { e.preventDefault(); e.stopImmediatePropagation(); hideContextMenu(); return; }
@@ -2955,6 +3049,7 @@ function _teardown(how = 'discard') {
     _s.group.parent?.remove(_s.group);
     for (const it of _s.items.values()) if (it.mesh) { _disposeSkin(it); _syncEdges(it, false); it.mesh.geometry?.dispose?.(); it.mesh.material?.dispose?.(); }
     for (const it of _s.items.values()) { try { it.bake?.tex?.dispose?.(); if (it.bake) it.bake.tex = null; } catch { /* fine */ } }
+    for (const b of _s.bakeTex || []) { try { b.tex?.dispose?.(); b.tex = null; } catch { /* fine */ } }   // ⬚ V0.3.5.52 (U13) — also the ones only undo rows held
   } catch { /* already gone */ }
   _showProject(how);
   _partSubs.clear();
@@ -3009,7 +3104,7 @@ async function _targetPath(name) {
  * baked in — in the SCENE's space for a new asset (it lands where it stands), in the ASSET's own
  * space when saving over the asset being re-edited.
  */
-function _assetLayout(space = 'scene', { dry = false } = {}) {   // dry: read only (Apply's question) — no colour is made
+function _assetLayout(space = 'scene') {   // read only: a white colour still to be made is WHITE_TBD in the tints (_makeWhite)
   const Th = T();
   sceneCore.rootGroup.updateWorldMatrix(true, true);
   const rootInv = (space === 'asset' ? _s.group.matrixWorld : sceneCore.rootGroup.matrixWorld).clone().invert();
@@ -3036,7 +3131,7 @@ function _assetLayout(space = 'scene', { dry = false } = {}) {   // dry: read on
     M.decompose(fp, fq, new Th.Vector3());
     const pfr = frameOut(fp, fq);
     const tex = _bakeValid(it) ? it.bake : null;              // ⬚ V0.3.5.35 — a baked part is written with its texture
-    const white = tex ? (whiteId ??= _whitePresetId({ make: !dry })) : null;
+    const white = tex ? (whiteId ??= _whitePresetId({ make: false })) : null;
     // a bake made here replaces the colour the open step showed; one read back from the file and left alone is
     // not a recolouring (a step that ghosts the part keeps its own colour)
     parts.push({ uid: it.uid, kind: 'part', name: it.name, parentUid, frame: pfr, tint: white ? { presetId: white, edited: !tex.fromFile } : it.presetId ? { presetId: it.presetId, edited: !!it.colorEdited } : null });
@@ -3053,7 +3148,7 @@ function _assetLayout(space = 'scene', { dry = false } = {}) {   // dry: read on
       }
       const positions = new Float32Array(P3), indices = new Uint32Array(positions.length / 3); for (let i = 0; i < indices.length; i++) indices[i] = i;
       const r5 = (x) => Math.round(x * 1e5) / 1e5;
-      return { name: it.name, mesh: { positions, normals: new Float32Array(N3), indices, uvs: new Float32Array(UV), image: { key: tex.id, bytes: _jpegOf(tex), mime: 'image/jpeg' }, color: [1, 1, 1] },
+      return { name: it.name, mesh: { positions, normals: new Float32Array(N3), indices, uvs: new Float32Array(UV), image: { key: tex.id, bytes: _jpegOf(tex), mime: tex.mime || 'image/jpeg' }, color: [1, 1, 1] },
         extras: { sbsId: it.uid, sbsFrame: pfr, sbsPoly: { v: baked.v.map(r4), f: baked.f }, sbsBake: { sig: tex.id, faceUV: faceUV.map(uv => uv.map(q => [r5(q[0]), r5(q[1])])) } } };
     }
     const { positions, normals } = polyToArrays(baked);
@@ -3085,7 +3180,7 @@ export async function applyPolySession() {
     const panel = await import('../ui/poly-editor-panel.js');
     if (_s.reedit) {
       const re = _s.reedit;
-      const { roots, parts } = _assetLayout('asset', { dry: true });
+      const { roots, parts } = _assetLayout('asset');
       if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
       const plan = planPolyAssetUpdate(re.modelId, parts);
       const d = plan.ok && plan.structureChanged ? plan.diff : null;
@@ -3117,17 +3212,21 @@ async function _applyUpdate() {
   if (plan.attached.length) { await panel.showPolyBlocked(plan.attached, re.file); return false; }
   _s.applying = true;
   const name = _safeName(_s.name), others = _s.sourceIds.filter(id => id !== re.modelId);
+  let white = null;
   try {
     setStickyStatus(`⬚ Poly Editor — updating ${re.file}…`, 'info', 'polySession');
     const refs = polyRefsForSave();
     const glb = sceneGlb({ roots, name: re.file.replace(/\.glb$/i, ''), extras: { sbsPolyEditor: 1, sbsRefs: refs } });
-    const r = await updatePolyAssetInPlace(re.modelId, parts, glb, { refs });   // the session stays open until this has worked
+    white = _makeWhite(parts);                               // ⬚ V0.3.5.52 (U3 / U6) — past every refusal; taken out again if the update fails
+    const r = await updatePolyAssetInPlace(re.modelId, parts, glb, { refs, freshPresets: white ? [white] : null });   // the session stays open until this has worked
     if (!r.ok) {
+      _unmakeWhite(white);
       if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
       if (r.reason === 'attached') { await panel.showPolyBlocked(r.attached, re.file); return false; }
       setStatus(`The asset was not updated: ${r.reason}`, 'danger', 12000);
       return false;
     }
+    white = null;                                            // in use now: an error further on must not take it out
     _teardown('applied');
     try { state.setSelection?.(re.modelId, new Set([re.modelId])); } catch { /* fine */ }
     const what = r.added || r.gone || r.moved ? ` (${[r.added ? `+${r.added} new` : '', r.gone ? `−${r.gone} removed` : '', r.moved ? `${r.moved} moved` : ''].filter(Boolean).join(', ')})` : '';
@@ -3150,6 +3249,7 @@ async function _applyUpdate() {
     return true;
   } catch (err) {
     console.error('[poly session] update failed', err);
+    _unmakeWhite(white);
     if (_s) { _s.applying = false; clearStickyStatus('polySession'); _hint(); }
     setStatus(`Update failed: ${err?.message || err}`, 'danger', 12000);
     return false;
@@ -3159,16 +3259,17 @@ async function _applyUpdate() {
 async function _applyNew({ oldModel = null } = {}) {
   if ([..._s.items.values()].some(it => it.proj)) { await polyBakeProjection({ quiet: true }); if (!_s) return false; }   // a live projection is saved as it is seen
   const { roots, parts } = _assetLayout('scene');
-  const presetsBefore = new Set((state.get('colorPresets') || []).map(p => p.id));
   if (!roots.length) { setStatus('There is nothing in the tree to save.', 'warn', 4000); return false; }
   _s.applying = true;
   const name = _safeName(_s.name), sourceIds = _s.sourceIds.slice();
   const native = _s.native, aliveNow = _aliveIds();
   const archUids = [..._s.items.values()].filter(it => it.kind === 'part' && it.archived && it.uid && aliveNow.has(it.id)).map(it => it.uid);
-  let written = null;
+  let written = null, white = null, modelNode = null;
   try {
     const path = await _targetPath(name);
     if (!path) { _s.applying = false; return false; }
+    white = _makeWhite(parts);                               // ⬚ V0.3.5.52 (U3 / U6) — not before the save dialog was answered; taken out again if nothing loads
+    const presetsBefore = new Set((state.get('colorPresets') || []).map(p => p.id));
     setStickyStatus('⬚ Poly Editor — saving the asset…', 'info', 'polySession');
     // the reference pictures go through the same turn / scale as the geometry (session space → the scene's)
     const Xr = new (T().Matrix4)().multiplyMatrices(sceneCore.rootGroup.matrixWorld.clone().invert(), _s.group.matrixWorld);
@@ -3179,7 +3280,7 @@ async function _applyNew({ oldModel = null } = {}) {
     written = path;
     _teardown('applied');                                  // the project comes back (no isolate mask) before the new model lands in it
     const { importModelAtPath } = await import('../ui/sidebar-left.js');
-    const modelNode = await importModelAtPath(path);
+    modelNode = await importModelAtPath(path);
     if (!modelNode) throw new Error('the saved asset did not load back');
     setStatus(`Poly Editor: saved ${path.split(/[\\/]/).pop()} (${Math.round(glb.byteLength / 1024)} KB) and loaded it into the scene.${refsLost > 0 ? ` ${refsLost} reference picture(s) were left out: the model is turned in this step, so they fit no flat view of the new asset.` : ''}`, refsLost > 0 ? 'warn' : 'success', refsLost > 0 ? 12000 : 7000);
     // parts coloured from the scene's colours wear those same colours (not the look-alikes the import made)
@@ -3215,6 +3316,7 @@ async function _applyNew({ oldModel = null } = {}) {
     return true;
   } catch (err) {
     console.error('[poly session] apply failed', err);
+    if (!modelNode) _unmakeWhite(white);                     // nothing came in to wear it
     if (_s) _s.applying = false;
     clearStickyStatus('polySession'); if (_s) _hint();
     setStatus(written ? `The asset was saved (${written}) but did not load: ${err?.message || err}. Import it from Files ▸ Add model.` : `Apply failed: ${err?.message || err}`, 'danger', 12000);
@@ -3231,6 +3333,15 @@ async function _settleOriginals(sourceIds, name, newModelId, ask) {
   const nDel = ids.filter(deletable).length;
   const choice = await ask({ count: ids.length, deletable: nDel });
   if (!choice) return;
+  // ⬚ V0.3.5.52 (U22) — Delete pushed one entry per primitive, + Archive, + the group: ONE Ctrl+Z takes it all back
+  const n0 = undoManager.listUndo().length;
+  try { _settleRun(ids, deletable, choice, name); }
+  finally {
+    const n = undoManager.listUndo().length - n0;           // (the stack's cap drops the OLDEST entries: the newest n are all ours)
+    if (n > 1) undoManager.mergeLast(n, choice.action === 'delete' ? 'Delete the originals' : choice.action === 'archive' ? 'Archive the originals' : 'Group the originals');
+  }
+}
+function _settleRun(ids, deletable, choice, name) {
   let rest = ids;
   if (choice.action === 'delete') {
     for (const id of ids.filter(deletable)) { try { actions.deletePrimitive(id); } catch (err) { console.warn('[poly session] delete', id, err); } }

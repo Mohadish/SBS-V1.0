@@ -326,6 +326,31 @@ function _pushReplaceUndo(modelId, file, A, B) {
   undoManager.push(`Replace ${file}`, undo, redo);
 }
 
+// ⬚ V0.3.5.52 (U29) — the textures a part wore before a Replace (its old bake) are freed on the GPU once nothing
+// wears them: three frees a texture only on dispose(). An undo / redo of the Replace parses the file again — fresh
+// textures — so no undo entry can bring an old texture object back.
+const _TEX_SLOTS = ['map', 'alphaMap', 'aoMap', 'bumpMap', 'emissiveMap', 'lightMap', 'metalnessMap', 'normalMap', 'roughnessMap', 'displacementMap', 'specularMap'];   // (never envMap: the scene's)
+function _texOf(mat, out, uniforms = false) {
+  for (const m of Array.isArray(mat) ? mat : [mat]) {
+    if (!m) continue;
+    for (const k of _TEX_SLOTS) if (m[k]?.isTexture) out.add(m[k]);
+    if (uniforms && m.uniforms) for (const u of Object.values(m.uniforms)) if (u?.value?.isTexture) out.add(u.value);
+  }
+  return out;
+}
+/** old = textures that were taken off parts: the ones no mesh and no original material wears any more are disposed. */
+function _disposeUnworn(old) {
+  if (!old.size) return 0;
+  const worn = new Set(), seen = new Set();
+  const look = (o) => { if (!o || seen.has(o)) return; seen.add(o); if (o.material) _texOf(o.material, worn, true); };
+  for (const o of steps.object3dById.values()) look(o);
+  for (const n of _nodeById()?.values() || []) look(n.object3d);
+  for (const m of materials.originalMaterials.values()) _texOf(m, worn, true);
+  let n = 0;
+  for (const t of old) if (!worn.has(t)) { try { t.dispose(); n++; } catch { /* fine */ } }
+  return n;
+}
+
 const _samePoly = (a, b) => { try { return !!a && !!b && JSON.stringify(a) === JSON.stringify(b); } catch { return false; } };
 
 /**
@@ -381,10 +406,12 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   const nb = _nodeById(), model = nb.get(modelId);
   if (!model) return { ok: false, reason: 'the model is no longer in the project' };
   const before = swap || (!restore && !oldBytes) ? null : _assetState(model);   // what an undo of this Replace (or the opposite key) puts back
+  // ⬚ V0.3.5.52 (U3 / U6) — a colour the editor made for THIS Replace (its texture white) was not there before it: its undo takes it away too
+  if (before && Array.isArray(opts.freshPresets) && opts.freshPresets.length) { const fresh = new Set(opts.freshPresets); before.presets = before.presets.filter(p => !fresh.has(p?.id)); }
   const outer = steps.object3dById.get(modelId) ?? model.object3d;
   const root = state.get('treeData');
   const uidOfId = new Map([...idOf].map(([uid, id]) => [id, uid]));
-  const reshaped = new Set();
+  const reshaped = new Set(), oldTex = new Set();            // oldTex: ⬚ V0.3.5.52 (U29) — textures taken off parts here
   for (const [id, e] of Object.entries(newM.nodes)) {       // what the next open compares the file with
     if (e.k !== 'm') continue;
     const src = parsed.byUid.get(uidOfId.get(id));
@@ -401,7 +428,8 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
     const sameSkin = (mesh.userData.sbsBake?.sig || null) === (src.userData.sbsBake?.sig || null);
     if (sameSkin && _samePoly(mesh.userData.sbsPoly, src.userData.sbsPoly)) continue;
     const assign = materials.meshColorAssignments[id], orig = sameSkin ? materials.originalMaterials.get(id) : null;
-    materials.unregisterMesh(id);                           // drops the helper passes that hold the old geometry
+    if (!sameSkin) { _texOf(materials.originalMaterials.get(id), oldTex); _texOf(mesh.material, oldTex); }   // ⬚ V0.3.5.52 (U29) — the old bake
+    materials.unregisterMesh(id);                          // drops the helper passes that hold the old geometry
     const oldG = mesh.geometry;
     mesh.geometry = src.geometry;
     if (!sameSkin) { mesh.material = src.material; mesh.userData.sbsBake = src.userData.sbsBake; }   // the file's own material: its texture (or none)
@@ -426,6 +454,7 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   for (const id of diff.gone) {                              // GONE
     const node = nb.get(id), obj = steps.object3dById.get(id) ?? node?.object3d;
     if (oldM.nodes[id].k === 'm') {
+      _texOf(materials.originalMaterials.get(id), oldTex); _texOf(obj?.material, oldTex);   // ⬚ V0.3.5.52 (U29)
       materials.unregisterMesh(id);
       delete materials.meshDefaultColors[id];
       if (obj) { obj.parent?.remove(obj); try { obj.geometry?.dispose?.(); } catch { /* fine */ } }
@@ -474,6 +503,7 @@ export async function updatePolyAssetInPlace(modelId, parts, glb, opts = {}) {
   if (active?.snapshot) steps.applySnapshotInstant(active.snapshot, { suppressCamera: true });
   state.emit('change:treeData', state.get('treeData'));
   state.markDirty();
+  try { _disposeUnworn(oldTex); } catch (err) { console.warn('[poly asset] free old textures', err); }   // ⬚ V0.3.5.52 (U29) — after the step is re-staged: what is worn now is final
   let undoable = false;
   if (!restore) {
     undoManager.clear();                                     // the file is overwritten: nothing BEFORE this can be undone…

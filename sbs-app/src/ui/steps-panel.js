@@ -2314,7 +2314,12 @@ async function _scanSourceRenderCache(srcProjectPath, srcProject = null) {
       const r = await window.sbsNative.readFile(`${dir}/${e.name}`, 'utf8').catch(() => null);
       if (!r?.ok) continue;
       let sc; try { sc = JSON.parse(r.data); } catch { continue; }
-      if (!sc?.key) continue;
+      // V0.3.5.52 — sc.key is spliced into paths we READ (seg-<key>.mp4) and
+      // WRITE (target media/imported-seg-<key>.*). A crafted/corrupt JSON with
+      // "../.." in it would escape the project: accept only the hex key that
+      // the (already regex-checked) file name itself carries.
+      const nameKey = e.name.slice(4, -5);
+      if (typeof sc?.key !== 'string' || !/^[0-9a-f]+$/.test(sc.key) || sc.key !== nameKey) continue;
       const mp4   = `${dir}/seg-${sc.key}.mp4`;
       // 🅰 companion coverage mask (V0.3.2.198) → transparent import possible.
       const alphaPath = `${dir}/seg-${sc.key}.alpha.mp4`;

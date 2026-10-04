@@ -9,6 +9,7 @@
  */
 import { undoManager } from '../systems/undo.js';
 import state from '../core/state.js';                      // ⬚ V0.3.5.40 — the face-angle setting is the project's
+import * as userSettings from '../core/user-settings.js';  // ⬚ V0.3.5.52 (U26) — …and it is remembered per user
 import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
   polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, polyFixStart, polyCancelPreview, setPolyView, polyFit,
@@ -119,6 +120,9 @@ function _render(what) {
   }
   if (info.tab !== 'colors') _dropColours();
   const keepName = document.activeElement?.id === 'poly-editor-name';
+  // ⬚ V0.3.5.52 (U27) — the rebuild would refill the field with the trimmed folder name ('poly-asset' when
+  // empty) and put the caret at the end: keep what is typed and where the caret is.
+  const nameWas = keepName ? (() => { const n = document.activeElement; return { v: n.value, a: n.selectionStart, b: n.selectionEnd }; })() : null;
   const scroll = _treeEl?.scrollTop || 0, coloursScroll = _coloursMount?.scrollTop || 0;   // an element taken out of the page forgets its scroll
   _root.innerHTML = '';
 
@@ -135,6 +139,8 @@ function _render(what) {
   name.title = info.reedit ? 'The asset being edited. Apply asks: replace it, or save it as a new asset under another name' : 'The name of the asset (the .glb file and the model in the tree) — Apply asks again';
   if (info.reedit) { name.readOnly = true; name.style.opacity = '.75'; }
   name.addEventListener('input', () => { if (!info.reedit) setPolySessionName(name.value); });
+  name.addEventListener('change', () => { if (!info.reedit && !name.value.trim()) name.value = polySessionInfo()?.name || '';   // ⬚ V0.3.5.52 (U27) — left empty: show the name it really has
+  });
   name.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter' || e.key === 'Escape') name.blur(); });
   nameRow.append(el('span', 'font-size:12px;opacity:.7;', 'Asset'), name);
   _root.append(nameRow);
@@ -217,9 +223,11 @@ function _render(what) {
   const sf = row(); sf.style.marginTop = '5px'; sf.style.alignItems = 'center';
   sf.append(btn('⬚ Shape from a face', 'Click a face of a part: it and its neighbours within the angle become a flat shape on it', () => polyShapeFromFace(), `flex:1;${info.shapeTool === 'face' ? shOn : ''}`));
   const ang = el('input', 'width:52px;padding:4px 5px;border-radius:7px;border:1px solid var(--line,#334155);background:transparent;color:inherit;font-size:12px;');
-  ang.type = 'number'; ang.min = '0'; ang.max = '90'; ang.step = '1'; ang.value = String(info.faceAngle); ang.title = 'How far a neighbouring face may turn and still belong to the same face (the project\'s setting too)';
+  ang.type = 'number'; ang.min = '0'; ang.max = '90'; ang.step = '1'; ang.value = String(info.faceAngle); ang.title = 'How far a neighbouring face may turn and still belong to the same face (remembered for next time, as on the Shape tab)';
   ang.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') ang.blur(); });
-  ang.addEventListener('change', () => { const v = Math.max(0, Math.min(90, Number(ang.value) || 0)); state.setState({ shapeFaceAngleThreshold: v }); });
+  ang.addEventListener('change', () => { const v = Math.max(0, Math.min(90, Number(ang.value) || 0)); state.setState({ shapeFaceAngleThreshold: v });
+    userSettings.patch({ scene: { shapeFaceAngleThreshold: v } });   // ⬚ V0.3.5.52 (U26) — a user setting, saved as the Shape tab does (main.js seeds it)
+  });
   sf.append(el('span', 'font-size:12px;opacity:.7;', 'within ±'), ang, el('span', 'font-size:12px;opacity:.7;', '°'));
   _root.append(sf);
   _root.append(_note(`Double-click a shape to edit its outline (a corner = delete, an edge = a new corner). To make it a solid: Faces (4), click its face, Shift + drag the gizmo.`));
@@ -261,7 +269,7 @@ function _render(what) {
   _treeEl.scrollTop = scroll;
 
   _root.append(el('div', 'font-size:11px;opacity:.6;margin-top:6px;line-height:1.35;', 'Drag a row onto a folder to put it inside, onto a part to place it before it, onto the empty area to bring it to the top level. Double-click a name to rename.'));
-  if (keepName) { const n = document.getElementById('poly-editor-name'); n?.focus(); n?.setSelectionRange?.(n.value.length, n.value.length); }
+  if (keepName) { const n = document.getElementById('poly-editor-name'); if (n && nameWas && !n.readOnly) n.value = nameWas.v; n?.focus(); n?.setSelectionRange?.(nameWas?.a ?? n.value.length, nameWas?.b ?? n.value.length); }
 }
 
 const _note = (text) => el('div', 'font-size:11px;opacity:.65;margin-top:8px;line-height:1.4;', text);

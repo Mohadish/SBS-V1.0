@@ -94,8 +94,10 @@ export function triangulateFace(p, fi, normal = null) {
   const n = normal || faceNormal(p, fi);
   const { u, v } = _basis(n);
   const pts = f.map(i => _proj(p, i, u, v));
-  let ext = 0;
-  for (const a of pts) for (const b of pts) ext = Math.max(ext, Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+  // V0.3.5.52 — the widest pair difference IS the bounding box side (same float subtraction): O(n), was an O(n²) pair loop
+  let mn0 = Infinity, mx0 = -Infinity, mn1 = Infinity, mx1 = -Infinity;
+  for (const a of pts) { if (a[0] < mn0) mn0 = a[0]; if (a[0] > mx0) mx0 = a[0]; if (a[1] < mn1) mn1 = a[1]; if (a[1] > mx1) mx1 = a[1]; }
+  const ext = Math.max(0, mx0 - mn0, mx1 - mn1);
   const eps = Math.max(ext * ext * 1e-10, 1e-18);
   const cross = (a, b, c) => (pts[b][0] - pts[a][0]) * (pts[c][1] - pts[a][1]) - (pts[b][1] - pts[a][1]) * (pts[c][0] - pts[a][0]);
   // a vertex strictly inside the ear, or ON its new diagonal c→a, blocks it (the diagonal would pass through a corner)
@@ -106,6 +108,37 @@ export function triangulateFace(p, fi, normal = null) {
   // first; a zero-area ear only when nothing else is left to clip.
   const idx = f.map((_, k) => k);
   const tris = [];
+  // V0.3.5.52 — big n-gons (fine round caps): the blocker test asks a 2D grid of
+  // the corners instead of every remaining corner (O(n²) per face → ~O(n)). The
+  // box queried holds every point `inside` can accept — the ear scaled about b by
+  // 1 + eps/cr (< 2, since cr > eps) — plus slack, so the answer is unchanged.
+  const N = f.length, G = N > 32 ? Math.ceil(Math.sqrt(N)) : 0;
+  const alive = G ? new Uint8Array(N).fill(1) : null, cells = G ? Array.from({ length: G * G }, () => []) : null;
+  const cw = (mx0 - mn0) / G || 1, ch = (mx1 - mn1) / G || 1, slack = ext * 1e-9 + 1e-12;
+  const cell = (t) => (t > 0 ? Math.min(G - 1, t) : 0);                         // NaN → 0 (a NaN corner never passes `inside` anyway)
+  const cx = (x) => cell(Math.floor((x - mn0) / cw)), cy = (y) => cell(Math.floor((y - mn1) / ch));
+  if (G) for (let k = 0; k < N; k++) cells[cy(pts[k][1]) * G + cx(pts[k][0])].push(k);
+  const blocked = (a, b, c, cr) => {
+    if (!G) { for (const q of idx) { if (q !== a && q !== b && q !== c && inside(q, a, b, c)) return true; } return false; }
+    const s = 1 + eps / cr, B = pts[b], A = pts[a], C = pts[c];
+    const ax = B[0] + (A[0] - B[0]) * s, ay = B[1] + (A[1] - B[1]) * s, qx = B[0] + (C[0] - B[0]) * s, qy = B[1] + (C[1] - B[1]) * s;
+    const T3 = [B, [ax, ay], [qx, qy]];
+    const y0 = cy(Math.min(B[1], ay, qy) - slack), y1 = cy(Math.max(B[1], ay, qy) + slack);
+    for (let y = y0; y <= y1; y++) {
+      // only the cells of this row the (scaled) ear crosses: a long thin fan ear stays cheap
+      const lo = mn1 + y * ch - slack, hi = mn1 + (y + 1) * ch + slack;
+      let xa = Infinity, xb = -Infinity;
+      for (let e = 0; e < 3; e++) {
+        const P0 = T3[e], P1 = T3[(e + 1) % 3];
+        if (P0[1] >= lo && P0[1] <= hi) { if (P0[0] < xa) xa = P0[0]; if (P0[0] > xb) xb = P0[0]; }
+        for (const yy of [lo, hi]) if ((P0[1] - yy) * (P1[1] - yy) < 0) { const xx = P0[0] + (P1[0] - P0[0]) * (yy - P0[1]) / (P1[1] - P0[1]); if (xx < xa) xa = xx; if (xx > xb) xb = xx; }
+      }
+      if (!(xa <= xb)) continue;
+      const x0 = cx(xa - slack), x1 = cx(xb + slack);
+      for (let x = x0; x <= x1; x++) for (const q of cells[y * G + x]) { if (alive[q] && q !== a && q !== b && q !== c && inside(q, a, b, c)) return true; }
+    }
+    return false;
+  };
   let guard = 0;
   while (idx.length > 3 && guard++ < 100000) {
     let clipped = false, flat = -1;
@@ -114,15 +147,13 @@ export function triangulateFace(p, fi, normal = null) {
       const cr = cross(a, b, c);
       if (Math.abs(cr) <= eps) { if (flat < 0) flat = k; continue; }           // straight-through: remembered, used last
       if (cr < 0) continue;                                                     // reflex corner: not an ear
-      let ok = true;
-      for (const q of idx) { if (q !== a && q !== b && q !== c && inside(q, a, b, c)) { ok = false; break; } }
-      if (!ok) continue;
-      tris.push([f[a], f[b], f[c]]); idx.splice(k, 1); clipped = true; break;
+      if (blocked(a, b, c, cr)) continue;
+      tris.push([f[a], f[b], f[c]]); idx.splice(k, 1); if (alive) alive[b] = 0; clipped = true; break;
     }
     if (clipped) continue;
     if (flat >= 0) {                                                            // only flat vertices left to clip: a zero-area ear keeps the edge split
       const a = idx[(flat + idx.length - 1) % idx.length], b = idx[flat], c = idx[(flat + 1) % idx.length];
-      tris.push([f[a], f[b], f[c]]); idx.splice(flat, 1); continue;
+      tris.push([f[a], f[b], f[c]]); idx.splice(flat, 1); if (alive) alive[b] = 0; continue;
     }
     for (let k = 1; k + 1 < idx.length; k++) tris.push([f[idx[0]], f[idx[k]], f[idx[k + 1]]]);   // numerically stuck: fan what is left
     return tris;
@@ -161,15 +192,18 @@ export function weldPoly(p, eps = null) {
  * which face each triangle came from (picking) + the polygon edges (the wire).
  */
 export function polyToArrays(p) {
-  const tris = [];
+  // V0.3.5.52 — one Newell normal per FACE, shared by its ear clipping and all its triangles
+  // (was recomputed per triangle: O(n²) for an n-gon, on every drag frame)
+  const tris = [], fN = new Array(p.f.length);
   for (let fi = 0; fi < p.f.length; fi++) {
-    for (const t of triangulateFace(p, fi)) tris.push(fi, t[0], t[1], t[2]);
+    fN[fi] = faceNormal(p, fi);
+    for (const t of triangulateFace(p, fi, fN[fi])) tris.push(fi, t[0], t[1], t[2]);
   }
   const nT = tris.length / 4;
   const positions = new Float32Array(nT * 9), normals = new Float32Array(nT * 9), faceOfTri = new Uint32Array(nT);
   for (let t = 0; t < nT; t++) {
     const fi = tris[t * 4]; faceOfTri[t] = fi;
-    const n = faceNormal(p, fi);
+    const n = fN[fi];
     for (let c = 0; c < 3; c++) {
       const i = tris[t * 4 + 1 + c], o = t * 9 + c * 3;
       positions[o] = p.v[i * 3]; positions[o + 1] = p.v[i * 3 + 1]; positions[o + 2] = p.v[i * 3 + 2];
@@ -233,8 +267,93 @@ function _mergeLoops(P, Q) {
   return out.length === edges.length ? out : null;                                // fewer = a second loop (a hole)
 }
 
+/** `count` entries of loop L from index `from` on, wrapping. */
+const _arc = (L, from, count) => { from %= L.length; return from + count <= L.length ? L.slice(from, from + count) : L.slice(from).concat(L.slice(0, from + count - L.length)); };
+
+/**
+ * V0.3.5.52 — _mergeLoops for the usual case: P and Q share ONE run of edges.
+ * Same loop, same start vertex, same refusals (a pinch, a < 3 loop) as
+ * _mergeLoops, but the Map work is O(smaller loop): the merged polygon keeps
+ * the edge label (and vertex Set) of the BIGGER side, so a big flat region is
+ * never re-keyed as it grows. undefined = not this case (caller uses _mergeLoops).
+ * c = { owner: directed edge → label (unique, checked by the caller), K, lab: slot → label, slotOf: label → slot, verts: slot → vertex Set }.
+ */
+function _spliceLoops(P, Q, i, j, c) {
+  const { owner, K, lab } = c, nP = P.length, nQ = Q.length;
+  const S = nQ <= nP ? Q : P, other = lab[S === Q ? i : j], nS = S.length;
+  const sh = new Uint8Array(nS); let s = 0;
+  for (let k = 0; k < nS; k++) { const a = S[k], b = S[(k + 1) % nS]; if (owner.get(b * K + a) === other) { sh[k] = 1; s++; } }
+  if (s === 0 || s >= nP || s >= nQ) return undefined;
+  let r1 = -1, runs = 0;
+  for (let k = 0; k < nS; k++) if (sh[k] && !sh[(k + nS - 1) % nS]) { runs++; r1 = k; }
+  if (runs !== 1) return undefined;
+  // the run: P[kP] → … → P[kP+s] in P, the same chain backwards Q[kQ] → … → Q[kQ+s] in Q
+  let kP, kQ;
+  if (S === P) { kP = r1; kQ = Q.indexOf(P[(kP + s) % nP]); } else { kQ = r1; kP = P.indexOf(Q[(kQ + s) % nQ]); }
+  if (kP < 0 || kQ < 0 || P[kP] !== Q[(kQ + s) % nQ] || Q[kQ] !== P[(kP + s) % nP]) return undefined;
+  if (nP + nQ - 2 * s < 3) return null;
+  const qIn = _arc(Q, kQ + s + 1, nQ - s - 1);                                 // Q's own path between the run ends
+  const keepP = nQ <= nP, pIn = keepP ? null : _arc(P, kP + s + 1, nP - s - 1);
+  const vs = c.verts[keepP ? i : j];                                           // a vertex on both paths = a pinch
+  for (const x of keepP ? qIn : pIn) if (vs.has(x)) return null;
+  const m = kP >= 1 && kP + s <= nP
+    ? P.slice(0, kP + 1).concat(qIn, P.slice(kP + s))                          // P's first edge kept: the loop still starts at P[0]
+    : _arc(P, kP + s, nP - s + 1).concat(qIn);                                  // else at P's first kept edge
+  for (let t = 0; t < s; t++) { const a = P[(kP + t) % nP], b = P[(kP + t + 1) % nP]; owner.delete(a * K + b); owner.delete(b * K + a); if (t) vs.delete(a); }
+  if (keepP) {
+    for (let t = s; t < nQ; t++) owner.set(Q[(kQ + t) % nQ] * K + Q[(kQ + t + 1) % nQ], lab[i]);
+    for (const x of qIn) vs.add(x);
+  } else {
+    for (let t = s; t < nP; t++) owner.set(P[(kP + t) % nP] * K + P[(kP + t + 1) % nP], lab[j]);
+    for (const x of pIn) vs.add(x);
+    lab[i] = lab[j]; c.slotOf[lab[i]] = i; c.verts[i] = vs;
+  }
+  return m;
+}
+
 /** Greedy: absorb edge-neighbours while the polygon stays one simple loop. All inputs coplanar, same winding. */
 function _mergeCoplanar(polys) {
+  // V0.3.5.52 — same greedy order and result, but a merge no longer re-keys the whole
+  // growing polygon with string keys (a flat 80k-triangle grid took 13 s). Numeric edge
+  // keys; when a directed edge occurs twice (overlapping triangles) the original path runs.
+  let K = 1; for (const P of polys) for (const x of P) if (x >= K) K = x + 1;
+  const owner = new Map();
+  for (let i = 0; i < polys.length; i++) {
+    const P = polys[i];
+    for (let k = 0; k < P.length; k++) { const key = P[k] * K + P[(k + 1) % P.length]; if (owner.has(key)) return _mergeCoplanarStr(polys); owner.set(key, i); }
+  }
+  const c = { owner, K, lab: polys.map((_, i) => i), slotOf: polys.map((_, i) => i), verts: polys.map(P => new Set(P)) };
+  let changed = true, guard = 0;
+  while (changed && guard++ < 1000000) {
+    changed = false;
+    for (let i = 0; i < polys.length; i++) {
+      const P = polys[i]; if (!P) continue;
+      for (let k = 0; k < P.length; k++) {
+        const a = P[k], b = P[(k + 1) % P.length];
+        const L = owner.get(b * K + a); if (L == null) continue;
+        const j = c.slotOf[L];
+        if (j === i || !polys[j]) continue;
+        const Q = polys[j];
+        let m = _spliceLoops(P, Q, i, j, c);
+        if (m === undefined) {
+          m = _mergeLoops(P, Q);
+          if (m) {
+            for (const R of [P, Q]) for (let t = 0; t < R.length; t++) owner.delete(R[t] * K + R[(t + 1) % R.length]);
+            for (let t = 0; t < m.length; t++) owner.set(m[t] * K + m[(t + 1) % m.length], c.lab[i]);
+            c.verts[i] = new Set(m);
+          }
+        }
+        if (!m) continue;
+        polys[j] = null; c.verts[j] = null; polys[i] = m;
+        changed = true; break;
+      }
+    }
+  }
+  return polys.filter(Boolean);
+}
+
+/** The pre-V0.3.5.52 greedy (string keys, last writer owns a duplicated edge) — kept for inputs with repeated directed edges. */
+function _mergeCoplanarStr(polys) {
   const owner = new Map();
   const own = (i, on) => { const P = polys[i]; for (let k = 0; k < P.length; k++) { const key = `${P[k]}>${P[(k + 1) % P.length]}`; if (on) owner.set(key, i); else owner.delete(key); } };
   polys.forEach((_, i) => own(i, true));

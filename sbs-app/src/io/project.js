@@ -236,6 +236,80 @@ function stripNode(node) {
   };
 }
 
+// ⬚ V0.3.5.52 (U24) — a POLY primitive's primParams IS its whole mesh ({v, f}),
+// and every step snapshot's baked tree carried a full copy of it: one modelled
+// part was written 1 + N times. ON DISK ONLY, a step spec whose poly params are
+// byte-identical to the project tree's (the definition authority — the load seeds
+// the primitive registry from it) is written as `primParams: null` +
+// `primParamsRef: 'tree'`; the load puts the very same params back IN PLACE
+// before anything reads the steps. In memory every step stays a complete,
+// self-contained snapshot with the same key order, so render-cache keys and step
+// import are untouched. A step whose copy DIFFERS (historical shape, a part since
+// deleted from the tree) keeps it inline. Files without the marker load as before;
+// an older app OPENING such a file reads the null as "no params" and falls back to
+// the tree registry; an older app IMPORTING STEPS from it gets the default box (its
+// step import does not resolve the marker) — accepted (review of V0.3.5.52).
+function _polyParamStringsOfTree(root) {
+  const out = new Map();
+  (function walk(n) {
+    if (!n || typeof n !== 'object') return;
+    if (n.type === 'primitive' && n.primKind === 'poly' && n.primParams && typeof n.primParams === 'object'
+        && Object.keys(n.primParams).length) {
+      try { out.set(n.id, JSON.stringify(n.primParams)); } catch { /* unserializable → never referenced */ }
+    }
+    (n.children || []).forEach(walk);
+  })(root);
+  return out;
+}
+
+function _refPolyParamsToTree(project) {
+  const treeStr = _polyParamStringsOfTree(project.tree?.root);
+  if (!treeStr.size) return 0;
+  let n = 0;
+  for (const st of project.steps?.items || []) {
+    (function walk(s) {
+      if (!s || typeof s !== 'object') return;
+      if (s.type === 'primitive' && s.primKind === 'poly' && s.primParams && treeStr.has(s.id)) {
+        let str = null;
+        try { str = JSON.stringify(s.primParams); } catch { /* keep inline */ }
+        if (str !== null && str === treeStr.get(s.id)) {
+          s.primParams    = null;     // assigned in place: the key keeps its position
+          s.primParamsRef = 'tree';
+          n++;
+        }
+      }
+      (s.children || []).forEach(walk);
+    })(st?.snapshot?.tree);
+  }
+  return n;
+}
+
+function _resolvePolyParamRefs(project) {
+  let treeStr = null;
+  const parsed = new Map();    // one object per part, shared by its steps (as a live capture shares the node's)
+  let n = 0, miss = 0;
+  for (const st of project.steps?.items || []) {
+    (function walk(s) {
+      if (!s || typeof s !== 'object') return;
+      if (s.primParamsRef === 'tree') {
+        if (!treeStr) treeStr = _polyParamStringsOfTree(project.tree?.root);
+        const str = treeStr.get(s.id);
+        if (str) {
+          if (!parsed.has(s.id)) parsed.set(s.id, JSON.parse(str));
+          s.primParams = parsed.get(s.id);
+          n++;
+        } else {
+          miss++;
+        }
+        delete s.primParamsRef;
+      }
+      (s.children || []).forEach(walk);
+    })(st?.snapshot?.tree);
+  }
+  if (miss) console.warn(`[load] ${miss} step poly spec(s) referenced tree params that are missing (part not in the saved tree)`);
+  return n;
+}
+
 /**
  * Build the full project JSON from current app state.
  * Returns a plain object ready to be JSON.stringify'd.
@@ -316,6 +390,8 @@ export function serialize(targetPath = null, { onlyStepIds = null } = {}) {
       delete stp.narration.dataUrl;
     }
   }
+  // ⬚ V0.3.5.52 (U24) — the cloned steps point their poly meshes at the tree copy.
+  try { _refPolyParamsToTree(project); } catch (e) { console.warn('[save] poly params dedupe skipped:', e?.message); }
 
   // ── Chapters ─────────────────────────────────────────────────────────────
   project.chapters.items = cloneShareStrings((state.get('chapters') || []));
@@ -919,6 +995,9 @@ function _migrateParsedProject(raw) {
     const key = MIGRATION_KEY[sectionName] || sectionName;
     project[sectionName] = migrateSection(key, project[sectionName], sectionName);
   }
+  // ⬚ V0.3.5.52 (U24) — put back the poly meshes saved as a reference to the
+  // tree, before load / step import / the clip pool reads a single step.
+  _resolvePolyParamRefs(project);
   return project;
 }
 
