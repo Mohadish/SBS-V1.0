@@ -35,7 +35,7 @@ import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';   // �
 import { matches as keyMatches, keyLabel } from '../core/keymap.js';
 import { setIsolateKeepSet, clearIsolate, getIsolateKeepSet } from '../core/isolate-state.js';
 import { subDir, joinPath } from '../core/project-paths.js';
-import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal, triangulateFace, polyEdges } from './poly-core.js';
+import { isPoly, clonePoly, polyToArrays, makeBoxPoly, faceNormal, triangulateFace, polyEdges, orientOutward } from './poly-core.js';
 import { PRIMITIVE_DEFS, defaultPrimitiveParams, buildPrimitiveGeometry } from './primitives.js';   // ⬚ V0.3.5.18 — primitives added inside the editor
 import { geometryToPoly, geometryTriangles } from './poly-convert.js';
 import { enterPolyEditHost, exitPolyEdit, isPolyEditing, polyEditHostKey, polyEditMode, cleanPolyEdgesHost, setPolyEditMode, polyEditDoubleClick, polyEditContextMenu, polyEditCancelTool } from './poly-edit.js';
@@ -283,7 +283,7 @@ function _bakedPoly(src, cx) {
   const v = new Th.Vector3();
   for (let i = 0; i < poly.v.length; i += 3) { v.set(poly.v[i], poly.v[i + 1], poly.v[i + 2]).applyMatrix4(M); poly.v[i] = v.x; poly.v[i + 1] = v.y; poly.v[i + 2] = v.z; }
   if (M.determinant() < 0) poly.f = poly.f.map(f => f.slice().reverse());   // a mirrored source: keep the faces outward
-  return poly;
+  return orientOutward(poly);                              // ⬚ V0.3.5.51 — a closed part that came in inside-out is turned the right way out
 }
 
 /** The stored topology still describes THIS geometry (same box, not just the same size — the vertices may have been re-baked since). */

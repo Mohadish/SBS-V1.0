@@ -647,6 +647,26 @@ export function loopCut(p, fi, ei, t = 0.5) {
 }
 
 /** True when every edge is shared by exactly two faces in opposite directions (a closed, consistently wound mesh). */
+/** The enclosed volume, signed: > 0 when the faces wind outward (CCW seen from outside), < 0 when the solid is inside-out. */
+export function signedVolume(p) {
+  let vol = 0;
+  for (let fi = 0; fi < p.f.length; fi++) for (const [a, b, c] of triangulateFace(p, fi)) {
+    const ax = p.v[a * 3], ay = p.v[a * 3 + 1], az = p.v[a * 3 + 2], bx = p.v[b * 3], by = p.v[b * 3 + 1], bz = p.v[b * 3 + 2], cx = p.v[c * 3], cy = p.v[c * 3 + 1], cz = p.v[c * 3 + 2];
+    vol += (ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx)) / 6;
+  }
+  return vol;
+}
+
+/**
+ * ⬚ V0.3.5.51 — a CLOSED poly turned the right way out (its faces reversed when it is inside-out); anything else
+ * as it is. An inside-out part looks right in the Poly Editor (drawn double-sided) but shows its inside in the
+ * steps, and a Boolean with it comes out inside-out or the wrong shape (his "the normals were inverted").
+ */
+export function orientOutward(p) {
+  if (!isWatertight(p) || signedVolume(p) >= 0) return p;
+  return { v: p.v, f: p.f.map(f => f.slice().reverse()) };
+}
+
 export function isWatertight(p) {
   const count = new Map();
   for (const f of p.f) for (let k = 0; k < f.length; k++) {

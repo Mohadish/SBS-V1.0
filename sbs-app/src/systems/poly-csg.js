@@ -21,7 +21,7 @@
  * The wasm (540 KB) is loaded on first use and warmed when Edit poly starts,
  * so a project that never models pays nothing.
  */
-import { polyToIndexed, trianglesToPoly, weldPoly } from './poly-core.js';
+import { polyToIndexed, trianglesToPoly, weldPoly, orientOutward } from './poly-core.js';
 
 let _wasmPromise = null;
 export function warmBooleanLib() {
@@ -36,7 +36,8 @@ export function warmBooleanLib() {
 }
 
 function _solidOf(p, { Manifold, Mesh }) {
-  const { positions, indices, faceOfTri } = polyToIndexed(weldPoly(p));
+  // ⬚ V0.3.5.51 — an inside-out operand (an import wound inward) gave an inside-out or wrong result: outward first
+  const { positions, indices, faceOfTri } = polyToIndexed(orientOutward(weldPoly(p)));
   const originalID = Manifold.reserveIDs(1);
   const mesh = new Mesh({ numProp: 3, vertProperties: positions, triVerts: indices, faceID: faceOfTri, runIndex: new Uint32Array([0]), runOriginalID: new Uint32Array([originalID]) });
   mesh.merge();                                            // coincident vertices → one (a dragged-together vertex would otherwise be "not manifold")
