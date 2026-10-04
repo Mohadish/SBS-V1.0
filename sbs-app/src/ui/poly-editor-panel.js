@@ -11,7 +11,7 @@ import { undoManager } from '../systems/undo.js';
 import state from '../core/state.js';                      // ⬚ V0.3.5.40 — the face-angle setting is the project's
 import {
   onPolySession, polySessionInfo, setPolySessionName, polySelect, polyRename, polyNewFolder, polyMove,
-  polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, polyFixStart, setPolyView, polyFit,
+  polyDeleteSelected, polyDuplicateSelected, polyEnterSub, polyExitSub, polyCleanSelected, polyFixStart, polyCancelPreview, setPolyView, polyFit,
   applyPolySession, discardPolySession, polySessionUndoOk, polyPrimitiveKinds, polyAddPrimitive,
   polyShowMenu, polySetPivotMode, isPolyPivotMode, polySetScaleMode, polySetScalePercent, polyNewShape, polyShapeFromFace, polyBooleanStart,
   setPolyTab, setPolyBackground, polyColorsHost, polyProjectPictures, polyRemoveProjection, polyBakeProjection,
@@ -125,7 +125,8 @@ function _render(what) {
   const head = el('div', 'display:flex;align-items:center;gap:8px;');
   head.append(el('div', 'font-size:16px;font-weight:700;', '⬚ Poly Editor'), el('div', 'flex:1;'));
   const scopeOk = (redo) => polySessionUndoOk(redo);
-  head.append(btn('↶', 'Undo (Ctrl+Z)', () => { if (scopeOk(false)) undoManager.undo(); }), btn('↷', 'Redo (Ctrl+Y)', () => { if (scopeOk(true)) undoManager.redo(); }));
+  // ⬚ V0.3.5.47 (C1) — as the keys: a preview on show (boolean, Fix, chamfer, symmetry) is only closed
+  head.append(btn('↶', 'Undo (Ctrl+Z)', () => { if (polyCancelPreview()) return; if (scopeOk(false)) undoManager.undo(); }), btn('↷', 'Redo (Ctrl+Y)', () => { if (polyCancelPreview()) return; if (scopeOk(true)) undoManager.redo(); }));
   _root.append(head);
 
   const nameRow = el('div', 'display:flex;align-items:center;gap:6px;margin-top:8px;');

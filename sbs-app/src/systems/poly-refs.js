@@ -406,10 +406,10 @@ export async function squarePolyRef(id) {
   if (!sq || !_h || !_refs.includes(ref)) return false;
   const before = { quad: ref.quad, aspect: ref.aspect, sq: ref.sq || null }, after = sq === 'asis' ? { quad: null, aspect: null, sq: null } : { quad: sq.quad, aspect: sq.aspect || null, sq: sq.sq || null };
   const apply = (s) => {
-    try { _swapCanvas(ref, _finalCanvas(src, s.quad, s.aspect)); ref.quad = s.quad; ref.aspect = s.aspect; ref.sq = s.sq; }
-    catch (err) { setStatus(`Squaring the picture failed: ${err?.message || err}`, 'warn', 7000); }
+    try { _swapCanvas(ref, _finalCanvas(src, s.quad, s.aspect)); ref.quad = s.quad; ref.aspect = s.aspect; ref.sq = s.sq; return true; }
+    catch (err) { setStatus(`Squaring the picture failed: ${err?.message || err}`, 'warn', 7000); return false; }
   };
-  apply(after);
+  if (!apply(after)) return false;                           // ⬚ V0.3.5.47 (C7) — a failed square-up changed nothing: no undo entry for it
   _h.push('Square up reference picture', () => { apply(before); syncPolyRefs(); }, () => { apply(after); syncPolyRefs(); });
   _changed();
   return true;

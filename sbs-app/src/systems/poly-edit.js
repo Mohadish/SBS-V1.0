@@ -44,7 +44,7 @@ import { gizmo } from '../ui/gizmo.js';
 import { parseExpression } from '../ui/gizmo-numeric.js';
 import { showMarqueeBox, hideMarqueeBox } from '../ui/marquee-box.js';
 import { setStatus, setStickyStatus, clearStickyStatus } from '../ui/status.js';
-import { isPoly, makeBoxPoly, clonePoly, polyToArrays, polyEdges, extrudeFaces, loopCut, moveVertices, averageNormal, verticesOfFaces, extrusionPrism, facesOnCap, polyExtent, cleanEdges, weldPoly } from './poly-core.js';
+import { isPoly, makeBoxPoly, clonePoly, polyToArrays, polyEdges, extrudeFaces, loopCut, moveVertices, averageNormal, verticesOfFaces, extrusionPrism, facesOnCap, polyExtent, cleanEdges, weldPoly, faceNormal } from './poly-core.js';
 import { booleanPoly, warmBooleanLib } from './poly-csg.js';   // ⬚ V0.3.5.11 — the Boolean on release
 import { edgeKey, polyEdgeList, edgeLoop, chamferEdges } from './poly-edges.js';   // ⬚ V0.3.5.45 — the edge level
 import { showContextMenu, hideContextMenu } from '../ui/context-menu.js';
@@ -205,7 +205,14 @@ function _resyncFromNode() {
   clearStickyStatus('polyGesture');
   const mesh = host.mesh;
   if (mesh && mesh !== _ed.mesh) { _ed.mesh = mesh; _buildHelpers(); }
+  const old = _ed.poly;
   _ed.poly = host.getPoly();
+  // ⬚ V0.3.5.47 (diagnostic C3) — the picks are NUMBERS: after an undo / redo / Clean edges that renumbered the
+  // vertices or faces (a chamfer, a delete, a merge) they would name other ones — the gizmo jumped there and the
+  // next drag moved them. They survive only when the topology is the same (a moved vertex: yes).
+  const same = !!old && old.v.length === _ed.poly.v.length && old.f.length === _ed.poly.f.length
+    && old.f.every((f, i) => { const g = _ed.poly.f[i]; return f.length === g.length && f.every((x, k) => x === g[k]); });
+  if (!same) { _ed.selFaces = new Set(); _ed.selVerts = new Set(); _ed.selEdges = new Set(); }
   _ed.selFaces = new Set([..._ed.selFaces].filter(i => i < _ed.poly.f.length));
   _ed.selVerts = new Set([..._ed.selVerts].filter(i => i < _ed.poly.v.length / 3));
   const live = new Set(_edgeList().map(x => x.key));
@@ -484,6 +491,30 @@ function _localDeltaForPixels(dxPx, dyPx, anchorWorld) {
   return { world, local: world.clone().applyMatrix3(new Th.Matrix3().setFromMatrix4(_ed.mesh.matrixWorld.clone().invert())) };
 }
 
+// ── extrude regions ──────────────────────────────────────────────────────────
+/**
+ * ⬚ V0.3.5.47 (diagnostic C4) — the selected faces split into separate REGIONS (faces sharing a corner are one),
+ * each with its own normal — Max's group extrude. One averaged direction for all of them cancelled out for
+ * opposite faces (the top and the bottom of a box: it fell back to +Y), and the result on release differed
+ * from the preview. Now each region grows along its own normal by the same amount.
+ */
+function _capGroups(p, ids) {
+  const list = [...ids].filter(i => i < p.f.length);
+  const par = new Map();
+  const find = (x) => { while (par.get(x) !== x) { par.set(x, par.get(par.get(x))); x = par.get(x); } return x; };
+  for (const fi of list) for (const v of p.f[fi]) if (!par.has(v)) par.set(v, v);
+  for (const fi of list) { const f = p.f[fi]; for (let k = 1; k < f.length; k++) { const a = find(f[0]), b = find(f[k]); if (a !== b) par.set(a, b); } }
+  const by = new Map();
+  for (const fi of list) { const r = find(p.f[fi][0]); if (!by.has(r)) by.set(r, []); by.get(r).push(fi); }
+  return [...by.values()].map(g => ({ ids: g, n: averageNormal(p, g) }));
+}
+/** Every region's cap moved along its own normal by `dist` (the poly's own units). */
+function _moveGroups(start, groups, dist) {
+  let p = start;
+  for (const g of groups) p = moveVertices(p, g.verts, [g.n[0] * dist, g.n[1] * dist, g.n[2] * dist]);
+  return p;
+}
+
 // ── the gizmo (the app's own, through a target) ──────────────────────────────
 const _selVertexIds = () => (!_ed ? [] : _ed.mode === 'vertex' ? [..._ed.selVerts] : _ed.mode === 'edge' ? _edgeVerts(_ed.selEdges) : verticesOfFaces(_ed.poly, [..._ed.selFaces].filter(i => i < _ed.poly.f.length)));
 
@@ -538,7 +569,8 @@ const _target = {
     const Th = T();
     const d = worldD.clone().applyMatrix3(new Th.Matrix3().setFromMatrix4(gz.inv));
     gz.delta = [d.x, d.y, d.z];
-    _ed.poly = moveVertices(gz.start, gz.ids, gz.delta);
+    if (gz.groups?.length > 1) { const n = gz.normalLocal; _ed.poly = _moveGroups(gz.start, gz.groups, d.x * n[0] + d.y * n[1] + d.z * n[2]); }   // separate regions: each along its own normal
+    else _ed.poly = moveVertices(gz.start, gz.ids, gz.delta);
     _applyLive();
   },
   commitMove()  { _gzCommit(`Move ${NOUN[_ed?.mode] || 'faces'}`); },
@@ -569,9 +601,19 @@ function _gzBegin(kind) {
   const pre = clonePoly(_ed.poly);
   if (extrude) {
     const capIds = [..._ed.selFaces].filter(i => i < _ed.poly.f.length);
+    const groups = _capGroups(_ed.poly, capIds);
+    if (groups.length > 1) {                                       // regions facing opposite ways have no common arrow to pull along
+      let sx = 0, sy = 0, sz = 0; for (const fi of capIds) { const n = faceNormal(_ed.poly, fi); sx += n[0]; sy += n[1]; sz += n[2]; }
+      if (Math.hypot(sx, sy, sz) / capIds.length < 0.3) {
+        setStatus('Those faces point opposite ways — Shift + drag one of them instead: each region then grows along its own normal.', 'info', 7000);
+        _ed.gz = { kind: 'move', ids: [], pre, start: pre, pivot: _centroidWorld(_selVertexIds()), mw: _ed.mesh.matrixWorld.clone(), inv: _ed.mesh.matrixWorld.clone().invert(), delta: [0, 0, 0] };
+        return;
+      }
+    }
     const ex = extrudeFaces(_ed.poly, capIds);
+    for (const g of groups) g.verts = verticesOfFaces(ex.poly, g.ids);
     _ed.poly = ex.poly; _ed.selFaces = new Set(ex.capIds);
-    _ed.gz = { kind: 'extrude', ids: ex.capVertexIds, capIds, sides: ex.sideIds.length, normalLocal: averageNormal(ex.poly, ex.capIds), pre, start: clonePoly(ex.poly), pivot: _centroidWorld(ex.capVertexIds, ex.poly), mw: _ed.mesh.matrixWorld.clone(), inv: _ed.mesh.matrixWorld.clone().invert(), delta: [0, 0, 0] };
+    _ed.gz = { kind: 'extrude', ids: ex.capVertexIds, capIds, groups, sides: ex.sideIds.length, normalLocal: averageNormal(ex.poly, ex.capIds), pre, start: clonePoly(ex.poly), pivot: _centroidWorld(ex.capVertexIds, ex.poly), mw: _ed.mesh.matrixWorld.clone(), inv: _ed.mesh.matrixWorld.clone().invert(), delta: [0, 0, 0] };
     _applyLive();
     return;
   }
@@ -587,7 +629,7 @@ function _gzCommit(label) {
   if (!moved) { _ed.poly = gz.pre; _ed.selFaces = new Set([..._ed.selFaces].filter(i => i < _ed.poly.f.length)); _ed.before = null; _applyLive(); _syncGizmo(); return; }
   if (gz.kind === 'extrude') {
     const n = gz.normalLocal, dist = gz.delta[0] * n[0] + gz.delta[1] * n[1] + gz.delta[2] * n[2];
-    if (gz.sides > 0 && Math.abs(dist) > 1e-6) { _finishExtrude({ kind: 'extrude', preGesture: gz.pre, capIds: gz.capIds, normalLocal: n, dist, sides: gz.sides, moved: true }); return; }
+    if (gz.sides > 0 && Math.abs(dist) > 1e-6) { _finishExtrude({ kind: 'extrude', preGesture: gz.pre, capIds: gz.capIds, groups: gz.groups?.length > 1 ? gz.groups : null, normalLocal: n, dist, sides: gz.sides, moved: true }); return; }
     _commit('Extrude faces');                                      // slid sideways (no volume to join or cut): the plain ring
     return;
   }
@@ -747,8 +789,10 @@ function _onDown(e) {
   const pre = clonePoly(_ed.poly);
   if (e.shiftKey) {                                                // ⬆ extrude: build the ring now, the drag stretches it
     const ex = extrudeFaces(_ed.poly, ids);
+    const groups = _capGroups(_ed.poly, ids); for (const g of groups) g.verts = verticesOfFaces(ex.poly, g.ids);
+    const g0 = groups.find(g => g.ids.includes(face)) || groups[0];   // the drag measures along the region it grabbed
     _ed.poly = ex.poly; _ed.selFaces = new Set(ex.capIds);
-    _ed.drag = { kind: 'extrude', ids: ex.capVertexIds, capIds: ids.slice(), sides: ex.sideIds.length, normalLocal: averageNormal(ex.poly, ex.capIds), x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(ex.poly), preGesture: pre, clickToggle: wasSel ? face : -1, typed: '' };
+    _ed.drag = { kind: 'extrude', ids: ex.capVertexIds, capIds: ids.slice(), groups, sides: ex.sideIds.length, normalLocal: g0.n, x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(ex.poly), preGesture: pre, clickToggle: wasSel ? face : -1, typed: '' };
     _applyLive();
   } else {
     _ed.drag = { kind: 'faces', ids: verticesOfFaces(_ed.poly, ids), x: e.clientX, y: e.clientY, moved: false, anchor: hit.point.clone(), start: clonePoly(_ed.poly), preGesture: pre };
@@ -790,12 +834,16 @@ function _onMove(e) {
     let delta;
     if (d.kind === 'extrude') {
       const Th = T();
-      const nW = new Th.Vector3(...d.normalLocal).transformDirection(_ed.mesh.matrixWorld);   // unit, world
-      const dist = world.dot(nW);                                                              // along the normal only
-      delta = nW.clone().multiplyScalar(dist).applyMatrix3(new Th.Matrix3().setFromMatrix4(_ed.mesh.matrixWorld.clone().invert()));
-      d.dist = dist;
-    } else delta = local;
-    _ed.poly = moveVertices(d.start, d.ids, [delta.x, delta.y, delta.z]);
+      const nWraw = new Th.Vector3(...d.normalLocal).applyMatrix3(new Th.Matrix3().setFromMatrix4(_ed.mesh.matrixWorld));
+      const sN = nWraw.length() || 1;                                                          // world length of one unit along the normal
+      // ⬚ V0.3.5.47 (diagnostic C5) — the distance in the poly's OWN units (what the Boolean and the cap search
+      // measure in, and what a typed distance means): on a scaled part the world value lost the cap selection
+      d.dist = world.dot(nWraw.clone().divideScalar(sN)) / sN;
+      _ed.poly = d.groups ? _moveGroups(d.start, d.groups, d.dist) : moveVertices(d.start, d.ids, d.normalLocal.map(c => c * d.dist));
+    } else {
+      delta = local;
+      _ed.poly = moveVertices(d.start, d.ids, [delta.x, delta.y, delta.z]);
+    }
     _applyLive();
     if (d.kind === 'extrude') setStickyStatus(`⬆ extrude ${d.dist >= 0 ? '+' : ''}${d.dist.toFixed(1)} — release ${d.dist >= 0 ? 'joins' : 'cuts'} · or type the distance`, 'info', 'polyGesture');
     return;
@@ -893,7 +941,7 @@ function _applyTypedExtrude(d) {
   if (Number.isFinite(v)) {
     d.dist = v; d.moved = true;
     const n = d.normalLocal;
-    _ed.poly = moveVertices(d.start, d.ids, [n[0] * v, n[1] * v, n[2] * v]);
+    _ed.poly = d.groups ? _moveGroups(d.start, d.groups, v) : moveVertices(d.start, d.ids, [n[0] * v, n[1] * v, n[2] * v]);
     _applyLive();
   }
   setStickyStatus(`⬆ extrude: typing «${d.typed}» → ${Number.isFinite(v) ? (v >= 0 ? '+' : '') + v.toFixed(2) : '?'} mm — Enter keeps (${Number.isFinite(v) && v < 0 ? 'cuts' : 'joins'}), Esc cancels`, 'info', 'polyGesture');
@@ -915,12 +963,16 @@ async function _finishExtrude(d) {
   const pre = d.preGesture, post = _ed.poly;
   let label = 'Extrude faces', warn = null;
   try {
-    const prism = extrusionPrism(pre, post, d.capIds, d.normalLocal, d.dist, 0);
-    const res = await booleanPoly(pre, prism, d.dist > 0 ? 'union' : 'subtract');
-    if (!_ed || _ed.drag !== d) return;                                   // the mode ended meanwhile (exit restored the pre-gesture poly)
+    const groups = d.groups || [{ ids: d.capIds, n: d.normalLocal }];   // ⬚ V0.3.5.47 (C4) — one prism per region, each along its own normal
+    let res = pre;
+    for (const g of groups) {
+      res = await booleanPoly(res, extrusionPrism(pre, post, g.ids, g.n, d.dist, 0), d.dist > 0 ? 'union' : 'subtract');
+      if (!_ed || _ed.drag !== d) return;                                 // the mode ended meanwhile (exit restored the pre-gesture poly)
+      if (!res) break;
+    }
     if (res) {
       _ed.poly = res;
-      _ed.selFaces = new Set(facesOnCap(res, pre, d.capIds, d.normalLocal, d.dist, polyExtent(pre) * 1e-4));
+      _ed.selFaces = new Set(groups.flatMap(g => facesOnCap(res, pre, g.ids, g.n, d.dist, polyExtent(pre) * 1e-4)));
       _ed.selEdges = new Set(); _ed.selVerts = new Set();   // the kernel renumbered every vertex
       _ed.hoverFace = -1;
       _applyLive();

@@ -237,11 +237,24 @@ export function warpImage(img, quad, rectW, rectH, { margin = 1, maxDim = 4096, 
   try {
     if (T.LinearSRGBColorSpace) renderer.outputColorSpace = T.LinearSRGBColorSpace;   // no gamma pass on a copy
     renderer.render(scene, cam);
-    // did anything land? the rectangle's centre must be a source pixel
+    // Did it work? ⬚ V0.3.5.47 (diagnostic C7) — the failure this guards (V0.3.5.3: the texture upload failed and
+    // nothing was sampled) is a GL error; one see-through pixel at the centre is not — a line drawing on a clear
+    // background, or a frame pulled past the picture's edge, failed here. So: a GL error fails; else nothing at
+    // all on a 9 × 9 grid fails only when the source itself is mostly solid.
     const gl = renderer.getContext();
+    const glErr = gl.getError();
+    if (glErr !== gl.NO_ERROR) throw new Error(`the warp failed in WebGL (error ${glErr}) — see the console`);
     const px = new Uint8Array(4);
-    gl.readPixels(Math.round(-frame.x + rectW / 2), Math.round(frame.h - (-frame.y + rectH / 2)), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    if (px[3] === 0) throw new Error('the warp produced no pixels (WebGL) — see the console');
+    let landed = false;
+    for (let gy = 0; gy < 9 && !landed; gy++) for (let gx = 0; gx < 9 && !landed; gx++) {
+      gl.readPixels(Math.round((gx + 0.5) / 9 * frame.w), Math.round((gy + 0.5) / 9 * frame.h), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      if (px[3] > 0) landed = true;
+    }
+    if (!landed) {
+      const sd = srcCanvas.getContext('2d'); let solid = 0;
+      for (let gy = 0; gy < 9; gy++) for (let gx = 0; gx < 9; gx++) if (sd.getImageData(Math.floor((gx + 0.5) / 9 * imgW), Math.floor((gy + 0.5) / 9 * imgH), 1, 1).data[3] > 0) solid++;
+      if (solid > 40) throw new Error('the warp produced no pixels (WebGL) — see the console');
+    }
     // V0.3.5.3 — copy the result OUT of the GL canvas before the context is
     // released below: forceContextLoss wipes the drawing buffer, and the
     // caller's toDataURL on the GL canvas then returned a blank picture.

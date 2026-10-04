@@ -740,6 +740,7 @@ export function polyApplyPreset(presetId) {
 function _noteEdit() {
   if (!_s) return;
   if (isPolyFixing()) { endPolyFix(true); setStatus('Fix object closed — the part changed under it. Open it again to fix the new shape.', 'info', 4500); }
+  if (_s.bool || _s.boolPick) { _boolEnd(); setStatus('Boolean closed — its objects changed. Start it again for the new shapes.', 'info', 4500); }   // ⬚ V0.3.5.47 (C1)
   _s.edits++; if (!state.get('polySessionDirty')) state.setState({ polySessionDirty: true });
 }
 
@@ -959,8 +960,8 @@ function _setPartPoly(id, poly, label, before) {
   const sid = _s.sid;
   _noteEdit();
   undoManager.push(label || 'Edit poly',
-    () => { if (!_s || _s.sid !== sid) return false; part.poly = clonePoly(prev); _refreshPartMesh(part); _partChanged(id); _emit('undo'); },
-    () => { if (!_s || _s.sid !== sid) return false; part.poly = clonePoly(next); _refreshPartMesh(part); _partChanged(id); _emit('undo'); },
+    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); _boolEnd(true); part.poly = clonePoly(prev); _refreshPartMesh(part); _partChanged(id); _emit('undo'); },   // (as _push: an open boolean / shape edit closes first — C1)
+    () => { if (!_s || _s.sid !== sid) return false; _endShapeEdit(); _boolEnd(true); part.poly = clonePoly(next); _refreshPartMesh(part); _partChanged(id); _emit('undo'); },
     { scope: SCOPE });
   _emit('tree');
 }
@@ -1009,6 +1010,19 @@ export function polyEnterSub(mode = 'face', id = null) {
 export function polyExitSub() { if (isPolyEditing()) exitPolyEdit(); }
 
 /**
+ * ⬚ V0.3.5.47 (diagnostic C1) — a tool showing a preview (boolean, Fix object, chamfer, symmetry) has committed
+ * nothing: an undo only closes it. The keys do this in _onKey; the panel's ↶ / ↷ ask here first. True = closed.
+ */
+export function polyCancelPreview() {
+  if (!_s) return false;
+  if (_s.bool || _s.boolPick) { _boolEnd(); setStatus('Boolean cancelled.', 'info', 2000); return true; }
+  if (isPolyFixing()) { endPolyFix(); return true; }
+  if (polyEditCancelTool()) return true;
+  if (shapeEditor.isSymmetryOn()) { shapeEditor.cancelSymmetry(); return true; }
+  return false;
+}
+
+/**
  * ⬚ V0.3.5.45 — FIX OBJECT on the selected part(s): weld the points closer than a threshold, drop the
  * faces left with fewer than three corners, cap the holes — previewed in red, one undo (poly-fix.js).
  */
@@ -1032,6 +1046,7 @@ export function polyCleanSelected() {
   if (!ids.length) { setStatus('Select the part(s) to clean first.', 'warn', 3000); return false; }
   let n = 0;
   for (const id of ids) if (cleanPolyEdgesHost(_partHost(id))) n++;
+  if (n > 1) { undoManager.mergeLast(n, 'Clean edges', SCOPE); setStatus(`Edges cleaned on ${n} parts — one Ctrl+Z takes them all back.`, 'success', 4500); }   // ⬚ V0.3.5.47 (C2)
   return n > 0;
 }
 
@@ -1911,6 +1926,7 @@ export function polySetScalePercent(pct) {
   if (!_s) return false;
   if (isPolyEditing()) exitPolyEdit();
   if (!_s) return false;
+  _boolEnd(); _endShapeEdit(); if (_s.pick) _endPick(true);   // ⬚ V0.3.5.47 (C8) — as the scale box does: an open outline would undo the stretch on its next drag
   const one = _singleTop(); if (!one) return false;
   const cur = _sclOf(one), f = [0, 1, 2].map(i => { const v = Number(pct?.[i]); return Number.isFinite(v) && v >= 1 && cur[i] > 1e-9 ? (v / 100) / cur[i] : 1; });
   if (f.every(x => Math.abs(x - 1) < 1e-6)) return false;
@@ -2255,10 +2271,12 @@ export async function polyBakeProjection({ quiet = false } = {}) {
 const WHITE_NAME = 'Texture (white)';
 function _whitePresetId({ make = true } = {}) {
   const all = state.get('colorPresets') || [];
-  const fit = (x) => typeof x?.color === 'string' && x.color.toLowerCase() === '#ffffff' && !x.removeTextures && (x.solidness ?? 1) >= 0.999 && !x.flatMirror;
-  // its own first; else a white that keeps the texture and is fully solid (a white ghost would show the texture see-through)
-  let p = all.find(x => x?.name === WHITE_NAME && fit(x)) || all.find(fit);
-  if (!p && make) { try { p = materials.createPreset({ color: '#ffffff', name: WHITE_NAME, roughness: 0.8, metalness: 0 }); } catch { p = null; } }
+  // ⬚ V0.3.5.47 (diagnostic C19) — ITS OWN preset, however the user tinted it since (marked when made; an older
+  // project's is found by its name and marked). Never borrowed from an unrelated white part: recolouring that
+  // part would repaint every texture, and a tinted 'Texture (white)' got a twin.
+  let p = all.find(x => x?.textureWhite) || all.find(x => x?.name === WHITE_NAME) || null;
+  if (p && !p.textureWhite) p.textureWhite = true;
+  if (!p && make) { try { p = materials.createPreset({ color: '#ffffff', name: WHITE_NAME, roughness: 0.8, metalness: 0, textureWhite: true }); } catch { p = null; } }
   return p?.id || (make ? null : 'white');
 }
 function _jpegOf(bake) {
