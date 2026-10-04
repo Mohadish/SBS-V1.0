@@ -2259,7 +2259,13 @@ async function _commitSquareUp() {
     x: node.x() + dx, y: node.y() + dy, width: out.width * kx, height: out.height * ky,
     cropMask: mask, cropMaskId: null,
     // V0.3.5.47 — the shift + the original scale, so Back to the original file puts it back where it was (summed over chained square-ups)
-    squaredUp: { rect: { ...out.rect }, aspect: aspect || 'auto', dx: dx + (before.squaredUp?.dx || 0), dy: dy + (before.squaredUp?.dy || 0), unitsPerPx: before.squaredUp?.unitsPerPx ?? (nw / cw) },
+    // V0.3.5.49 — a zoom crop shifts the window: on the FIRST square-up the uncropped file's top-left (local
+    // -crop.x·nw/cw, -crop.y·nh/ch) is what the revert must land on, so its offset goes into dx / dy too
+    squaredUp: (() => {
+      const o = before.squaredUp ? null : xf.point({ x: -cx0 * nw / cw, y: -cy0 * nh / ch });
+      const ox = o ? o.x - node.x() : 0, oy = o ? o.y - node.y() : 0;
+      return { rect: { ...out.rect }, aspect: aspect || 'auto', dx: dx - ox + (before.squaredUp?.dx || 0), dy: dy - oy + (before.squaredUp?.dy || 0), unitsPerPx: before.squaredUp?.unitsPerPx ?? (nw / cw) };
+    })(),
   };
   const write = (s) => {
     if (!_isLiveNode(node)) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; }

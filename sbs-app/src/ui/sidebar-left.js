@@ -1565,6 +1565,10 @@ async function _loadModelFile(file, assetEntry = null, skipColorExtraction = fal
         // steps never removes the new model from the scene.
         steps.injectModelIntoAllSteps(modelNode);
       }
+      // V0.3.5.49 (diagnostic C12, its general form) — an import is not undoable, and the entries before it hold
+      // whole-state snapshots that would put back steps WITHOUT this model (it stays in the tree and the
+      // assets). As when a project opens or a Replace lands: the undo history starts here.
+      undoManager.clear();
     }
 
     if (assetEntry?.id) {

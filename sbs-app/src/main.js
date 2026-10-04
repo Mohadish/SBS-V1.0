@@ -5403,7 +5403,9 @@ window.addEventListener('keydown', async e => {
   // V0.3.5.47 — mid gizmo drag the keys belong to numeric entry (gizmo-numeric
   // only preventDefaults): a typed '1' opened Edit poly and dropped the drag,
   // letters fired f/c/l/… shortcuts. Esc stays (its branch below commits the drag).
-  if (gizmo.isDragging && !mod && key !== 'Escape') return;
+  // V0.3.5.49 — only what typing could own (letters, digits, numpad; or a key numeric entry already took):
+  // a CLICKED handle stays armed until the next click, and arrows / Space / Delete / Enter must still work.
+  if (gizmo.isDragging && !mod && key !== 'Escape' && (e.defaultPrevented || /^(Key|Digit|Numpad)/.test(e.code))) return;
 
   // 📄 V0.3.4.1 — the Document workspace is a full takeover: past Save, no
   // animation shortcut may run behind its cover. This handler is CAPTURE-phase
