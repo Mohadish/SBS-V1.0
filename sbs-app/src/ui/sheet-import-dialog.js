@@ -231,8 +231,10 @@ export function defaultLook(n, positions, noStyles = false) {
 export function defaultImageLook(n, choices = {}) {
   const pins = choices.pinnedPositions || [];
   if (pins.length) {
-    const masks = choices.masks || [];
-    return { kind: 'brand', posId: pins[n % pins.length].id, maskId: masks.length ? masks[n % masks.length].id : null };
+    // V0.3.5.62 — only a mask made WITH this position (the same name): one paired by its place in the list
+    // sat somewhere else on the frame, and the pictures loaded half or fully blank
+    const pin = pins[n % pins.length], mate = (choices.masks || []).find(m => m.name === pin.name);
+    return { kind: 'brand', posId: pin.id, maskId: mate ? mate.id : null };
   }
   const keys = (choices.positions || []).map(p => p.key);
   const order = _IMG_POS_ORDER.filter(k => keys.includes(k));
@@ -824,7 +826,7 @@ function _showViewer(fileName, sheets, choices, importer) {
       }
       html += '</tbody></table>';
       wrap.innerHTML = html;
-      if (m.total > RESULT_ROWS) moreEl.textContent = `…${m.total - RESULT_ROWS} more steps (not listed here — they are imported too)`;
+      if (m.total > RESULT_ROWS) moreEl.textContent = `…${m.total - RESULT_ROWS} more steps are not listed here`;
     };
 
     const setView = (v) => {
@@ -924,8 +926,11 @@ function _showViewer(fileName, sheets, choices, importer) {
 
     const renderSummary = () => {
       const p = plan();
-      sumEl.textContent = summaryText(p);
-      okBtn.disabled = busy || p.blocked || p.rows.length === 0;
+      // V0.3.5.62 — the importer takes at most MAX_IMPORT_ROWS: said HERE, not after every picture was prepared
+      const cap = importer?.MAX_IMPORT_ROWS || 2000, tooMany = p.rows.length > cap;
+      sumEl.textContent = tooMany ? `${p.rows.length} steps is more than one import takes (${cap}) — choose fewer rows in "Rows to import".` : summaryText(p);
+      sumEl.style.color = tooMany ? '#f87171' : '';
+      okBtn.disabled = busy || p.blocked || p.rows.length === 0 || tooMany;
     };
 
     const renderAll = () => {
@@ -1350,7 +1355,7 @@ function _showViewer(fileName, sheets, choices, importer) {
     on(okBtn, 'click', async () => {
       if (busy) return;
       const p = plan();
-      if (!p.rows.length || p.blocked) return;
+      if (!p.rows.length || p.blocked || p.rows.length > (importer?.MAX_IMPORT_ROWS || 2000)) return;
       // the importer gets clean looks — only the fields its contract names
       const titleColumns = p.titleColumns.map(t => ({
         label: t.label,

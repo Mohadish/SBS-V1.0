@@ -90,7 +90,9 @@ async function _readZipSheet(bytes, ext) {
 
   const ssXml = text(relOfType(/\/sharedStrings$/, `${wbDir}/sharedStrings.xml`));
   const shared = [];
-  if (ssXml) for (const m of ssXml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g)) shared.push(_runsText(m[1] || ''));
+  // V0.3.5.62 — the self-closing form FIRST, and the attributes never eat its "/": "<si/>" used to swallow the
+  // next item, so every shared string after it shifted by one (titles / voiceovers on the wrong steps)
+  if (ssXml) for (const m of ssXml.matchAll(/<si\b[^>]*?\/>|<si\b[^>]*?>([\s\S]*?)<\/si>/g)) shared.push(_runsText(m[1] || ''));
 
   const fmt = _dateStyles(text(relOfType(/\/styles$/, `${wbDir}/styles.xml`)));
   const date1904 = /<workbookPr\b[^>]*\bdate1904="(1|true)"/.test(wb);
@@ -105,7 +107,7 @@ async function _readZipSheet(bytes, ext) {
     if (rel && !/\/worksheet$/.test(rel.type)) continue;
     const xml = rel ? text(rel.target) : null;
     const vmCells = [];
-    const rows = xml ? _parseWorksheet(xml, shared, fmt, date1904, vmCells) : [];
+    const rows = xml ? _parseWorksheet(xml, shared, fmt, date1904, vmCells, name) : [];
     const pics = { images: {}, imagesSkipped: 0 };
     // V0.3.5.59: a broken picture part must never cost the user the TEXT of the sheet.
     try {
@@ -194,6 +196,15 @@ function _imageMime(b) {
 // at row 900,000 must not allocate the empty rows above it.
 const _COVER_MAX_ROW = 20000, _COVER_MAX_COL = 1024;
 
+// V0.3.5.62 — ONE stray cell far outside the table (a note typed in column XFD, a value left at row 100000)
+// made the reader fill a dense grid all the way to it: gigabytes for a 1 KB file — the renderer died, with the
+// open project. A sheet that reaches that far is refused with words the client can act on.
+const _GRID_MAX_COLS = 1024, _GRID_MAX_ROWS = 200000, _GRID_MAX_CELLS = 6e6;
+function _checkGrid(lastRow, lastCol, name) {
+  if (lastCol < _GRID_MAX_COLS && lastRow < _GRID_MAX_ROWS && (lastRow + 1) * (lastCol + 1) <= _GRID_MAX_CELLS) return;
+  throw new Error(`${name ? `Sheet "${name}"` : 'This sheet'} has text far outside the table — it reaches column ${columnLetter(Math.max(0, lastCol))}, row ${lastRow + 1}. Delete that stray cell in Excel and save the file again.`);
+}
+
 function _coverImages(rows, images) {
   const width = rows[0]?.length ?? 0;
   let maxR = rows.length - 1, maxC = width - 1;
@@ -204,6 +215,7 @@ function _coverImages(rows, images) {
     if (c > maxC) maxC = c;
   }
   if (maxR < rows.length && maxC < width) return rows;
+  if ((maxR + 1) * (maxC + 1) > _GRID_MAX_CELLS) return rows;   // V0.3.5.62 — a far picture never pads the grid past the same budget
   const out = [];
   for (let i = 0; i <= maxR; i++) {
     const o = new Array(maxC + 1).fill('');
@@ -319,7 +331,7 @@ function _odsCellImages(inner, part, pics, r, c) {
   }
 }
 
-function _parseWorksheet(xml, shared, fmt, date1904, vmOut) {
+function _parseWorksheet(xml, shared, fmt, date1904, vmOut, name = '') {
   const data = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml)?.[1] || '';
   // Sparse first: a styled-but-empty row 1048576 must not allocate a million rows.
   const found = [];   // [rowIndex, [[colIndex, text]]]
@@ -349,6 +361,7 @@ function _parseWorksheet(xml, shared, fmt, date1904, vmOut) {
     }
     if (cells.length) { found.push([r, cells]); if (r > lastRow) lastRow = r; }
   }
+  _checkGrid(lastRow, lastCol, name);
   const rows = [];
   for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
   for (const [r, cells] of found) for (const [c, v] of cells) rows[r][c] = v;
@@ -401,6 +414,7 @@ function _readOds(xml, part) {
       }
       r += rep;
     }
+    _checkGrid(lastRow, lastCol, name);
     const rows = [];
     for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
     for (const [ri, cells] of found) for (const [ci, v] of cells) rows[ri][ci] = v;
@@ -558,7 +572,8 @@ const _attr = (tag, name) => {
 function _runsText(fragment) {
   const body = String(fragment || '').replace(/<rPh\b[\s\S]*?<\/rPh>/g, '');
   let out = '';
-  for (const m of body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) out += _unesc(m[1]);
+  // (V0.3.5.62 — a self-closing <t .../> is an empty run, not the start of one: raw XML leaked into the text)
+  for (const m of body.matchAll(/<t\b[^>]*?\/>|<t\b(?:\s[^>]*?)?>([\s\S]*?)<\/t>/g)) out += _unesc(m[1] || '');
   // OOXML escapes control chars as _xHHHH_ (Excel's line break = _x000D_\n).
   return out.replace(/_x([0-9A-Fa-f]{4})_/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
 }

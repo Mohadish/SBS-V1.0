@@ -3571,12 +3571,25 @@ export function hideUnselected(selIds, scope = 'this') {
   const stepSel = state.get('selectedStepIds');
   const multi = scope === 'this' && stepSel instanceof Set && stepSel.size >= 2;
   const inScope = (s, idx) => (scope === 'previous' ? idx < activeIdx : scope === 'following' ? idx > activeIdx : multi ? stepSel.has(s.id) : idx === activeIdx);
+  // V0.3.5.62 (diagnostic) — every step has its OWN tree (a part moved into another folder on a later step sits
+  // elsewhere on the earlier ones): the cover worked out from the OPEN step's tree hid the selected part itself
+  // on the steps where its old parent was "unselected". Each step's cover comes from that step's tree; a step
+  // that does not hold the selection at all is left alone.
+  const selSet = new Set(sel);
+  const holdsSel = (t) => { let hit = false; (function w(n) { if (hit || !n) return; if (selSet.has(n.id)) { hit = true; return; } for (const c of n.children || []) w(c); })(t); return hit; };
+  const coverFor = (s, idx) => {
+    const t = s.snapshot?.tree;
+    if (idx === activeIdx || !t) return ids;
+    return holdsSel(t) ? unselectedCover(sel, t, nodeById) : null;
+  };
   const nextSteps = allSteps.map((s, idx) => {
     if (!inScope(s, idx)) return s;
+    const cover = coverFor(s, idx);
+    if (!cover || !cover.length) return s;
     const snap = s.snapshot || {}, oldVis = snap.visibility || {};
-    if (ids.every(id => oldVis[id] === false)) return s;
+    if (cover.every(id => oldVis[id] === false)) return s;
     const v = { ...oldVis };
-    for (const id of ids) v[id] = false;
+    for (const id of cover) v[id] = false;
     return { ...s, snapshot: { ...snap, visibility: v } };
   });
   const touched = nextSteps.filter((s, i) => s !== allSteps[i]);

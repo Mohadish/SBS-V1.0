@@ -54,6 +54,8 @@ const _POS_KEYS = new Set(TITLE_POSITIONS.map(p => p.key));
 // A runaway sheet (a whole parts database) would make thousands of steps and
 // one gigantic undo snapshot — say so instead.
 export const MAX_IMPORT_ROWS = 2000;
+/** V0.3.5.62 — the JSON weight all the steps of a project may reach (≈ 1.5 GB of heap; the renderer has ~3.5 GB and a save doubles the peak). */
+export const STEP_WEIGHT_BUDGET = 800e6;
 
 /** What the dialog offers for a Title column's look. */
 export function sheetTitleChoices() {
@@ -104,7 +106,9 @@ export function isRtlText(s) {
  *  styling a style binding keeps. */
 export function titleHtml(text, { align = 'left', fontSize = 48, fontFamily = 'Arial', color = '#ffffff' } = {}) {
   const span  = `font-family:${fontFamily};font-size:${fontSize}px;color:${color}`;
-  const style = align && align !== 'left' ? ` style="text-align:${align}"` : '';
+  // V0.3.5.62 — RTL text gets its alignment written out even for 'left': a forced-RTL box reads "no alignment"
+  // as START = right, so a Hebrew title in a top-left box showed up near the middle of the frame
+  const style = align && (align !== 'left' || isRtlText(text)) ? ` style="text-align:${align}"` : '';
   const lines = cleanCellText(text).split('\n');
   return lines.map(l => `<div${style}><span style="${span}">${escapeTextHtml(l) || '<br>'}</span></div>`).join('');
 }
@@ -354,13 +358,31 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
       if (look.posId && !pos)   { picPlans.error = `The pinned position for "${label}" is no longer in this project — pick it again.`; return; }
       if (look.maskId && !mask) { picPlans.error = `The mask for "${label}" is no longer in this project — pick it again.`; return; }
       if (!pos && !mask)        { picPlans.error = `Pick a pinned position for "${label}".`; return; }
-      // the box takes the MASK's size (what shows); without a mask, the look's size / aspect
-      const fallback = planNewPictureBox('center', { cw, ch, size: look.size, aspect: look.aspect });
-      const w = mask ? Math.max(1, Math.round(mask.w * cw)) : fallback.w;
-      const h = mask ? Math.max(1, Math.round(mask.h * ch)) : fallback.h;
-      const x = pos ? Math.round(pos.anchor === 'tr' ? (pos.x || 0) - w : (pos.x || 0)) : Math.round(mask.x * cw);
-      const y = pos ? Math.round(pos.y || 0) : Math.round(mask.y * ch);
-      picPlans.push({ box: { x, y, w, h }, posId: pos?.id || null, maskId: mask?.id || null });
+      let posId = pos?.id || null, x, y, w, h;
+      if (!mask) {                                            // pinned, no mask: the look's size / aspect at the pin
+        const fallback = planNewPictureBox('center', { cw, ch, size: look.size, aspect: look.aspect });
+        w = fallback.w; h = fallback.h;
+        x = Math.round(pos.anchor === 'tr' ? (pos.x || 0) - w : (pos.x || 0)); y = Math.round(pos.y || 0);
+      } else {
+        const mx = mask.x * cw, my = mask.y * ch, mw = Math.max(1, mask.w * cw), mh = Math.max(1, mask.h * ch);
+        x = Math.round(mx); y = Math.round(my); w = Math.round(mw); h = Math.round(mh);   // the window itself
+        if (pos) {
+          // V0.3.5.62 (diagnostic) — the pin snaps the box's CORNER home on every load while the mask stays where
+          // it is: the box must reach from the pin's corner over the WHOLE window, or the picture loads half /
+          // fully blank. A pin that lies inside or past the window cannot do that: the mask alone is bound.
+          const px = pos.x || 0, py = pos.y || 0, tr = pos.anchor === 'tr';
+          const okX = tr ? px >= mx + mw - 2 : px <= mx + 2, okY = py <= my + 2;
+          if (okX && okY) {
+            if (tr) { x = Math.round(mx); w = Math.max(1, Math.round(px - mx)); }
+            else    { x = Math.round(px); w = Math.max(1, Math.round(mx + mw - px)); }
+            y = Math.round(py); h = Math.max(1, Math.round(my + mh - py));
+          } else {
+            posId = null;
+            console.info(`[sheet-import] "${label}": its pinned position lies inside / past the mask — the pictures are bound to the mask only`);
+          }
+        }
+      }
+      picPlans.push({ box: { x, y, w, h }, posId, maskId: mask?.id || null });
       return;
     }
     const b = planNewPictureBox(look.position, { cw, ch, size: look.size, aspect: look.aspect });
@@ -461,6 +483,9 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
  */
 export async function importStepsFromSheet({ rows, titleColumns = [], imageColumns = [], groups = null } = {}) {
   if (!Array.isArray(rows) || !rows.length) return { ok: false, reason: 'No rows to import.' };
+  // V0.3.5.62 — never under a running export (it would switch the step being rendered) or the Poly Editor (the project is masked)
+  if (state.get('_exporting')) return { ok: false, reason: 'An export is running — import after it finishes.' };
+  if (state.get('polySession')) return { ok: false, reason: 'The Poly Editor is open — Apply or Discard it first.' };
   if (rows.length > MAX_IMPORT_ROWS) return { ok: false, reason: `${rows.length} rows is more than ${MAX_IMPORT_ROWS} steps — split the sheet or filter the rows first.` };
   const grouping = planSheetGroups(groups, rows.length);
   if (grouping?.error) return { ok: false, reason: grouping.error };
@@ -477,6 +502,17 @@ export async function importStepsFromSheet({ rows, titleColumns = [], imageColum
   const last = realSteps[realSteps.length - 1] || seed || null;
   const { width: cw, height: ch } = getCanonicalSize();
   const baseSnapshot = steps.captureSnapshot();
+  // V0.3.5.62 (diagnostic) — every step carries a FULL copy of the scene: on a heavy model (4 MB a step) a few
+  // hundred rows ran the renderer out of memory, with the open project. Weighed before anything is built; the
+  // existing steps count too (they weigh about the same), and a save clones them all once more.
+  let _stepChars = 0;
+  try { _stepChars = JSON.stringify(baseSnapshot).length; } catch { _stepChars = 0; }
+  const _fits = _stepChars > 0 ? Math.floor(STEP_WEIGHT_BUDGET / _stepChars) - realSteps.length : Infinity;
+  if (rows.length > _fits) {
+    return { ok: false, reason: _fits > 0
+      ? `This model is heavy — each step holds a full copy of the scene. About ${_fits} more steps fit in memory; choose fewer rows in "Rows to import".`
+      : 'This model is heavy and the project already holds about as many steps as fit in memory — nothing was imported.' };
+  }
 
   const built = buildSheetSteps({
     rows, titleColumns, imageColumns, baseSnapshot, cw, ch,
