@@ -1,0 +1,410 @@
+/**
+ * SBS — read ANY spreadsheet a client hands over into plain text rows.
+ * ────────────────────────────────────────────────────────────────────────
+ * V0.3.5.53 "Steps from Excel": no template — the client's own sheet, so
+ * this reader must take whatever Excel / LibreOffice / a web export wrote.
+ *
+ *   readSheetFile(name, bytes) → { sheets: [{ name, rows: string[][] }] }
+ *   columnLetter(i)            → 'A' … 'Z', 'AA' …
+ *
+ * .xlsx / .xlsm  zip of XML (fflate unzip). Regex over the well-known OOXML
+ *                parts, NO DOMParser — so it runs in node tests too.
+ * .ods           delegated to io/xlsx.js parseOds (already there).
+ * .csv/.tsv/.txt RFC 4180, delimiter sniffed among , ; tab (Hebrew/European
+ *                Excel writes ;), UTF-8 / UTF-16 by BOM, else windows-1255.
+ * .xls (binary)  refused with "save it as .xlsx" — not worth a BIFF parser.
+ *
+ * Rows: every cell as the text Excel shows for a plain value; all rows the
+ * same length; trailing empty rows/columns trimmed. LEADING empties stay so
+ * column index i is always Excel's column columnLetter(i).
+ *
+ * Pure: no app state, no DOM.
+ */
+
+import { unzipSync } from '../../vendor/fflate.module.js';
+import { parseOds }  from './xlsx.js';
+
+/** 0 → A, 25 → Z, 26 → AA (what the user sees in Excel's header). */
+export function columnLetter(i) {
+  let s = '', n = Math.max(0, Math.floor(i)) + 1;
+  while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = Math.floor((n - 1) / 26); }
+  return s;
+}
+
+/**
+ * @param {string} name   file name (only the extension is used, plus sniffing)
+ * @param {Uint8Array} bytes
+ * @returns {Promise<{sheets: Array<{name: string, rows: string[][]}>}>}
+ */
+export async function readSheetFile(name, bytes) {
+  if (!(bytes instanceof Uint8Array)) bytes = new Uint8Array(bytes || []);
+  const ext = (String(name || '').split('.').pop() || '').toLowerCase();
+  if (!bytes.length) throw new Error('The file is empty.');
+  // Sniff before trusting the extension: exporters misname files all the time.
+  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B;
+  const isOle = bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
+  if (isOle) {
+    // Old .xls AND password-protected .xlsx are both OLE containers.
+    throw new Error(ext === 'xls'
+      ? 'Old Excel (.xls) files can\'t be read. Open it in Excel and save it as .xlsx (File → Save As → Excel Workbook).'
+      : 'This file is password-protected or in an old Excel format. Open it in Excel, remove the password, and save it as .xlsx.');
+  }
+  if (isZip) return _readZipSheet(bytes, ext);
+  if (['xlsx', 'xlsm', 'xltx', 'xltm', 'ods'].includes(ext)) {
+    throw new Error('This file looks damaged — it isn\'t a real Excel workbook. Open it in Excel and save it again as .xlsx.');
+  }
+  return _readTextSheet(bytes, ext, name);
+}
+
+// ─── .xlsx ──────────────────────────────────────────────────────────────────
+
+async function _readZipSheet(bytes, ext) {
+  let files;
+  try { files = unzipSync(bytes); }
+  catch (e) { throw new Error('This file looks damaged and can\'t be opened. Open it in Excel and save it again as .xlsx.'); }
+  // Case-insensitive part lookup: some generators write "XL/Workbook.xml".
+  const lower = new Map(Object.keys(files).map(k => [k.toLowerCase(), k]));
+  const part = (p) => { const k = files[p] ? p : lower.get(String(p).replace(/^\//, '').toLowerCase()); return k ? files[k] : null; };
+  const text = (p) => { const b = part(p); return b ? _xmlNorm(_utf8(b)) : null; };
+
+  if (part('content.xml') && !part('xl/workbook.xml')) {
+    const ods = await parseOds(bytes);
+    return { sheets: ods.sheets.map(s => ({ name: s.name, rows: _finish(s.rows.map(r => r.map(_cellText))) })) };
+  }
+  // The workbook part is named by the package's root rels (almost always xl/workbook.xml).
+  const rootRels = _rels('_rels/.rels', text('_rels/.rels'), '');
+  const wbPath = [...rootRels.values()].find(r => /\/officeDocument$/.test(r.type))?.target || 'xl/workbook.xml';
+  const wb = text(wbPath);
+  if (!wb) throw new Error('This isn\'t an Excel workbook (no sheets inside). Open it in Excel and save it as .xlsx.');
+  const wbDir = wbPath.split('/').slice(0, -1).join('/');
+  const wbRels = _rels(wbPath, text(`${wbDir}/_rels/${wbPath.split('/').pop()}.rels`), wbDir);
+  const relOfType = (re, fallback) => [...wbRels.values()].find(r => re.test(r.type))?.target || fallback;
+
+  const ssXml = text(relOfType(/\/sharedStrings$/, `${wbDir}/sharedStrings.xml`));
+  const shared = [];
+  if (ssXml) for (const m of ssXml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g)) shared.push(_runsText(m[1] || ''));
+
+  const fmt = _dateStyles(text(relOfType(/\/styles$/, `${wbDir}/styles.xml`)));
+  const date1904 = /<workbookPr\b[^>]*\bdate1904="(1|true)"/.test(wb);
+
+  const sheets = [];
+  for (const m of wb.matchAll(/<sheet\b([^>]*?)\/?>/g)) {
+    const tag = m[1];
+    const name = _attr(tag, 'name') || `Sheet${sheets.length + 1}`;
+    const rel = wbRels.get(_attr(tag, 'r:id') || _attr(tag, 'id') || '');
+    // Chart sheets / dialog sheets have no cells — not offered.
+    if (rel && !/\/worksheet$/.test(rel.type)) continue;
+    const xml = rel ? text(rel.target) : null;
+    sheets.push({ name, rows: xml ? _parseWorksheet(xml, shared, fmt, date1904) : [] });
+  }
+  if (!sheets.length) throw new Error('This workbook has no sheets with cells in it.');
+  return { sheets };
+}
+
+/** Target paths of a .rels part, resolved to package paths. */
+function _rels(relsPath, xml, baseDir) {
+  const map = new Map();
+  if (!xml) return map;
+  for (const m of xml.matchAll(/<Relationship\b([^>]*?)\/?>/g)) {
+    const id = _attr(m[1], 'Id'), target = _attr(m[1], 'Target'), type = _attr(m[1], 'Type') || '';
+    if (!id || !target || _attr(m[1], 'TargetMode') === 'External') continue;
+    map.set(id, { target: _resolve(baseDir, target), type });
+  }
+  return map;
+}
+
+function _resolve(baseDir, target) {
+  if (target.startsWith('/')) return target.slice(1);
+  const dir = baseDir ? baseDir.split('/') : [];
+  for (const seg of target.split('/')) {
+    if (seg === '..') dir.pop();
+    else if (seg && seg !== '.') dir.push(seg);
+  }
+  return dir.join('/');
+}
+
+function _parseWorksheet(xml, shared, fmt, date1904) {
+  const data = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml)?.[1] || '';
+  // Sparse first: a styled-but-empty row 1048576 must not allocate a million rows.
+  const found = [];   // [rowIndex, [[colIndex, text]]]
+  let lastRow = -1, lastCol = -1, nextRow = 0;
+  const rowRe = /<row\b([^>]*?)(?:\/>|>([\s\S]*?)<\/row>)/g;
+  let rm;
+  while ((rm = rowRe.exec(data))) {
+    const rAttr = parseInt(_attr(rm[1], 'r') || '', 10);
+    const r = Number.isFinite(rAttr) && rAttr > 0 ? rAttr - 1 : nextRow;
+    nextRow = r + 1;
+    const cells = [];
+    const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+    let cm, autoCol = 0;
+    while ((cm = cellRe.exec(rm[2] || ''))) {
+      const tag = cm[1], inner = cm[2] || '';
+      const ref = _attr(tag, 'r');
+      const col = ref ? _colIndex(ref) : autoCol;
+      if (col < 0) continue;
+      autoCol = col + 1;
+      const v = _cellValue(_attr(tag, 't'), inner, fmt[parseInt(_attr(tag, 's') || '0', 10)], date1904, shared);
+      if (v.trim() === '') continue;
+      cells.push([col, v]);
+      if (col > lastCol) lastCol = col;
+    }
+    if (cells.length) { found.push([r, cells]); if (r > lastRow) lastRow = r; }
+  }
+  const rows = [];
+  for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
+  for (const [r, cells] of found) for (const [c, v] of cells) rows[r][c] = v;
+  return rows;
+}
+
+function _cellValue(t, inner, dateKind, date1904, shared) {
+  const v = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(inner)?.[1];
+  switch (t) {
+    case 's':         return _cellText(shared[parseInt(v ?? '-1', 10)] ?? '');
+    case 'inlineStr': return _cellText(_runsText(/<is\b[^>]*>([\s\S]*?)<\/is>/.exec(inner)?.[1] || ''));
+    case 'b':         return v == null ? '' : (v.trim() === '1' || v.trim() === 'true' ? 'TRUE' : 'FALSE');
+    case 'str':
+    case 'e':         return v == null ? '' : _cellText(_unesc(v));
+    case 'd':         return v == null ? '' : _unesc(v).replace(/T00:00(:00)?(\.0+)?Z?$/, '');
+    default: {        // 'n' or none: a number, maybe shown as a date by its style
+      if (v == null) return '';
+      const s = _unesc(v).trim();
+      const n = Number(s);
+      if (s === '' || !Number.isFinite(n)) return s;
+      return dateKind ? _serialText(n, dateKind, date1904) : _numText(n);
+    }
+  }
+}
+
+/** Excel shows at most 15 significant digits: 0.30000000000000004 → "0.3". */
+function _numText(n) {
+  if (Object.is(n, -0)) return '0';
+  return String(Number(n.toPrecision(15))).replace('e+', 'E+').replace('e-', 'E-');
+}
+
+// ─── dates (style-driven) ───────────────────────────────────────────────────
+// A date in a cell is just a serial number; only its number format says
+// "date". Shown as ISO (2026-10-05 / 14:30) — locale formats like 05/10/26
+// are ambiguous between day-first and month-first clients.
+
+const _BUILTIN_DATE = {
+  14: 'date', 15: 'date', 16: 'date', 17: 'date', 22: 'datetime',
+  18: 'time', 19: 'timesec', 20: 'time', 21: 'timesec', 45: 'timesec', 46: 'elapsed', 47: 'timesec',
+};
+for (const id of [27, 28, 29, 30, 31, 34, 35, 36, 50, 51, 52, 53, 54, 57, 58]) _BUILTIN_DATE[id] = 'date';
+for (const id of [32, 33, 55, 56]) _BUILTIN_DATE[id] = 'timesec';
+
+/** cellXfs index → date kind (or undefined for plain numbers). */
+function _dateStyles(xml) {
+  const out = [];
+  if (!xml) return out;
+  const custom = {};
+  for (const m of xml.matchAll(/<numFmt\b([^>]*?)\/?>/g)) {
+    const id = parseInt(_attr(m[1], 'numFmtId') || '', 10);
+    if (Number.isFinite(id)) custom[id] = _classifyFormat(_attr(m[1], 'formatCode') || '');
+  }
+  const xfs = /<cellXfs\b[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml)?.[1] || '';
+  for (const m of xfs.matchAll(/<xf\b([^>]*?)(?:\/>|>[\s\S]*?<\/xf>)/g)) {
+    const id = parseInt(_attr(m[1], 'numFmtId') || '0', 10);
+    out.push(id in custom ? custom[id] : _BUILTIN_DATE[id]);
+  }
+  return out;
+}
+
+function _classifyFormat(code) {
+  let s = String(code).split(/;(?=(?:[^"]*"[^"]*")*[^"]*$)/)[0];   // first section only
+  s = s.replace(/"[^"]*"/g, '').replace(/\\./g, '').replace(/[_*]./g, '');
+  if (/\[(h+|m+|s+)\]/i.test(s)) return 'elapsed';
+  s = s.replace(/\[[^\]]*\]/g, '');                                // colours, [$-409] locales
+  if (/general/i.test(s)) s = s.replace(/general/gi, '');
+  const date = /[yd]/i.test(s), time = /[hs]/i.test(s);
+  if (date && time) return 'datetime';
+  if (date) return 'date';
+  if (time) return /s/i.test(s) ? 'timesec' : 'time';
+  return undefined;
+}
+
+function _serialText(n, kind, date1904) {
+  const p2 = (x) => String(x).padStart(2, '0');
+  const totalSec = Math.round(n * 86400);
+  if (kind === 'elapsed') {
+    const neg = totalSec < 0, a = Math.abs(totalSec);
+    return `${neg ? '-' : ''}${Math.floor(a / 3600)}:${p2(Math.floor(a / 60) % 60)}:${p2(a % 60)}`;
+  }
+  if (n < 0) return _numText(n);   // Excel shows ##### for negative dates
+  // 1900 system: day 1 = 1900-01-01, and Excel's fake 1900-02-29 (serial 60) is skipped.
+  const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30);
+  const dayShift = (!date1904 && n < 60) ? 1 : 0;
+  const d = new Date(epoch + (totalSec + dayShift * 86400) * 1000);
+  const datePart = `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
+  const hm = `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
+  const sec = d.getUTCSeconds();
+  if (kind === 'date') return datePart;
+  if (kind === 'time') return hm;
+  if (kind === 'timesec') return `${hm}:${p2(sec)}`;
+  return `${datePart} ${hm}${sec ? ':' + p2(sec) : ''}`;   // datetime
+}
+
+// ─── XML helpers ────────────────────────────────────────────────────────────
+
+const _utf8Dec = new TextDecoder('utf-8');   // strips a UTF-8 BOM by itself
+const _utf8 = (b) => _utf8Dec.decode(b);
+
+/** Drop namespace prefixes on tag names (<x:c> → <c>; Open XML SDK writes them)
+ *  and normalise line ends the way an XML parser does. */
+function _xmlNorm(xml) {
+  return xml.replace(/\r\n?/g, '\n').replace(/<(\/?)[A-Za-z_][\w.-]*:(?=[A-Za-z_])/g, '<$1');
+}
+
+function _unesc(s) {
+  return String(s ?? '').replace(/&(#x[0-9a-fA-F]+|#\d+|lt|gt|amp|quot|apos);/g, (m, e) => {
+    if (e[0] === '#') {
+      const cp = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      try { return String.fromCodePoint(cp); } catch { return ''; }
+    }
+    return { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" }[e];
+  });
+}
+
+const _attr = (tag, name) => {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(`(?:^|\\s)${esc}\\s*=\\s*"([^"]*)"`).exec(tag) || new RegExp(`(?:^|\\s)${esc}\\s*=\\s*'([^']*)'`).exec(tag);
+  return m ? _unesc(m[1]) : null;
+};
+
+/** Every <t> of a string item, concatenated (rich runs → one string); the
+ *  phonetic guides (<rPh>, East-Asian ruby) are never cell content. Whitespace
+ *  is kept verbatim — Excel marks it xml:space="preserve", and a parser keeps
+ *  text whitespace either way. */
+function _runsText(fragment) {
+  const body = String(fragment || '').replace(/<rPh\b[\s\S]*?<\/rPh>/g, '');
+  let out = '';
+  for (const m of body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)) out += _unesc(m[1]);
+  // OOXML escapes control chars as _xHHHH_ (Excel's line break = _x000D_\n).
+  return out.replace(/_x([0-9A-Fa-f]{4})_/g, (m, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
+/** One line-break convention for everything that reaches a voiceover. */
+const _cellText = (s) => String(s ?? '').replace(/\r\n?/g, '\n');
+
+function _colIndex(ref) {   // "AB12" → 27
+  const m = /^\$?([A-Za-z]{1,3})/.exec(ref || '');
+  if (!m) return -1;
+  let n = 0;
+  for (const ch of m[1].toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+/** Pad to one width; trim trailing empty rows and columns (leading stay). */
+function _finish(rows) {
+  let lastRow = -1, lastCol = -1;
+  rows.forEach((r, i) => r.forEach((v, c) => {
+    if (String(v).trim() !== '') { if (i > lastRow) lastRow = i; if (c > lastCol) lastCol = c; }
+  }));
+  const out = [];
+  for (let i = 0; i <= lastRow; i++) {
+    const r = rows[i] || [];
+    const o = new Array(lastCol + 1);
+    for (let c = 0; c <= lastCol; c++) o[c] = r[c] == null ? '' : String(r[c]);
+    out.push(o);
+  }
+  return out;
+}
+
+// ─── .csv / .tsv / .txt ─────────────────────────────────────────────────────
+
+function _readTextSheet(bytes, ext, fileName) {
+  const text = _decodeText(bytes);
+  if (/^\s*</.test(text.slice(0, 512))) {
+    // Web systems' "Excel export" is often an HTML table or XML Spreadsheet 2003.
+    throw new Error('This file is a web page / XML export, not a real spreadsheet. Open it in Excel and save it as .xlsx.');
+  }
+  let body = text;
+  // Excel's own "sep=;" first line names the delimiter (and isn't data).
+  let delim = null;
+  const sep = /^sep=(.)\r?\n/i.exec(body);
+  if (sep) { delim = sep[1]; body = body.slice(sep[0].length); }
+  if (!delim) delim = _sniffDelimiter(body, ext);
+  const rows = _parseDelimited(body, delim).map(r => r.map(_cellText));
+  // A text table has one sheet; name it after the file, like Excel's tab does.
+  const base = String(fileName || '').split(/[\\/]/).pop().replace(/\.[^.]*$/, '').trim();
+  return { sheets: [{ name: base || 'Sheet1', rows: _finish(rows) }] };
+}
+
+function _decodeText(bytes) {
+  // UTF-16 by BOM: Excel's "Unicode Text (*.txt)" — the safe way to save Hebrew.
+  if (bytes[0] === 0xFF && bytes[1] === 0xFE) return new TextDecoder('utf-16le').decode(bytes.subarray(2));
+  if (bytes[0] === 0xFE && bytes[1] === 0xFF) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
+  const probe = bytes.subarray(0, Math.min(bytes.length, 8192));
+  if (probe.includes(0)) throw new Error('This file isn\'t a spreadsheet or text table. Save it from Excel as .xlsx or .csv.');
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }   // BOM stripped by default
+  catch {
+    // Not valid UTF-8 → Hebrew Excel's "CSV (Comma delimited)" is windows-1255.
+    try { return new TextDecoder('windows-1255').decode(bytes); }
+    catch { return new TextDecoder('latin1').decode(bytes); }
+  }
+}
+
+/** The candidate that splits the first lines into the most consistent >1 fields. */
+function _sniffDelimiter(text, ext) {
+  const order = ext === 'tsv' || ext === 'txt' ? ['\t', ';', ','] : [',', ';', '\t'];
+  const sample = _logicalLines(text.slice(0, 65536), 30);
+  if (!sample.length) return order[0];
+  let best = order[0], bestScore = -1;
+  for (const d of order) {
+    const counts = sample.map(line => _parseDelimited(line, d, 1)[0]?.length || 1);
+    const freq = new Map();
+    for (const c of counts) freq.set(c, (freq.get(c) || 0) + 1);
+    let mode = 1, modeN = 0;
+    for (const [c, k] of freq) if (c > 1 && (k > modeN || (k === modeN && c > mode))) { mode = c; modeN = k; }
+    const score = mode > 1 ? modeN * 1000 + mode : 0;
+    if (score > bestScore) { best = d; bestScore = score; }   // strict > keeps `order` as tie-break
+  }
+  return bestScore > 0 ? best : order[0];
+}
+
+/** Raw record texts (quotes kept) — a quoted line break doesn't end a record. */
+function _logicalLines(text, max) {
+  const out = [];
+  let start = 0, inQ = false;
+  for (let i = 0; i < text.length && out.length < max; i++) {
+    const ch = text[i];
+    if (ch === '"') inQ = !inQ;
+    else if (!inQ && (ch === '\n' || ch === '\r')) {
+      if (i > start) out.push(text.slice(start, i));
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      start = i + 1;
+    }
+  }
+  if (out.length < max && start < text.length) out.push(text.slice(start));
+  return out.filter(l => l.trim() !== '');
+}
+
+/** RFC 4180: "" escapes a quote, quoted fields may hold delimiters and line
+ *  breaks; CRLF / LF / CR all end a record. A quote mid-field is literal. */
+function _parseDelimited(text, delim, maxRows = Infinity) {
+  const rows = [];
+  let row = [], field = '', i = 0, quoted = false, fieldStart = true;
+  const n = text.length;
+  const endField = () => { row.push(field); field = ''; fieldStart = true; };
+  const endRow = () => { endField(); rows.push(row); row = []; };
+  while (i < n && rows.length < maxRows) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        quoted = false; i++; continue;
+      }
+      field += ch; i++; continue;
+    }
+    if (ch === '"' && fieldStart) { quoted = true; fieldStart = false; i++; continue; }
+    if (ch === delim) { endField(); i++; continue; }
+    if (ch === '\r' || ch === '\n') {
+      endRow();
+      i += (ch === '\r' && text[i + 1] === '\n') ? 2 : 1;
+      continue;
+    }
+    field += ch; fieldStart = false; i++;
+  }
+  if (rows.length < maxRows && (field !== '' || row.length || !fieldStart)) endRow();
+  return rows;
+}

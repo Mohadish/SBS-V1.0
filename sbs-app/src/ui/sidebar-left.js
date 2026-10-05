@@ -490,6 +490,7 @@ function _renderFilesTab() {
         <button class="btn" id="btn-save-project">Save</button>
         <button class="btn" id="btn-save-as">Save As…</button>
       </div>
+      <button class="btn" id="btn-sheet-import" style="width:100%;margin-top:8px" title="Make one step per row of a spreadsheet — pick which columns are the step name, voiceover and titles">📊 Steps from Excel…</button>
     </div>
 
     <div class="section">
@@ -545,6 +546,7 @@ function _renderFilesTab() {
   el.querySelector('#btn-open-project')?.addEventListener('click', _onOpenProject);
   el.querySelector('#btn-save-project')?.addEventListener('click', () => _onSaveProject(false));
   el.querySelector('#btn-save-as')?.addEventListener('click',      () => _onSaveProject(true));
+  el.querySelector('#btn-sheet-import')?.addEventListener('click', () => import('./sheet-import-dialog.js').then(m => m.openSheetImport()).catch(err => setStatus(`Steps from Excel failed: ${err.message}`, 'danger')));   // 📊 V0.3.5.53
   el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);

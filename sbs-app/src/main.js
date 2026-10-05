@@ -5411,6 +5411,9 @@ window.addEventListener('keydown', async e => {
   // animation shortcut may run behind its cover. This handler is CAPTURE-phase
   // on window, so the workspace cannot stop the event itself — the gate is here.
   if (_takeoverOpen()) return;
+  // V0.3.5.53 — nor behind a MODAL dialog (the Steps-from-Excel viewer: → / ← moved the timeline behind it,
+  // C took the step's camera, Space toggled Global Mode instead of pressing the focused button)
+  if (document.querySelector('dialog:modal')) return;
 
   // ⧉ Ctrl+D = DUPLICATE whatever is selected and can be duplicated (V0.3.4.104,
   // the user's rule: "one key for anything that has a duplicate"). Overlay items
