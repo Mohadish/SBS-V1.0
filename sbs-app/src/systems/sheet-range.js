@@ -12,6 +12,10 @@
  *     label (two chapters may share a name). Everything after it, up to the
  *     next code, belongs to it. Rows before the first code are a plain block.
  *
+ * V0.3.5.57 — the parse also says where each block sits in the text (spans,
+ * bad) for the coloured line; removeRowsFromGroup / groupsHolding back the
+ * viewer's "Remove from chapter".
+ *
  * Pure — no app state, no DOM. Node test: E:/claude-temp/xl-range-test.mjs
  */
 
@@ -29,17 +33,25 @@ const _isDigit = (ch) => ch >= '0' && ch <= '9';
  * @param {string} text  what the user typed
  * @param {{ firstRow:number, lastRow:number }} bounds  lowest importable Excel
  *        row (2 with a header row, else 1) and the sheet's last Excel row
+ * V0.3.5.57 — also where each part sits in the text, so the viewer can paint
+ * the typed line in its chapters' colours: `spans` cuts the WHOLE text into
+ * runs [{ start, end, group }] (group = index in `groups`, -1 = belongs to
+ * none), `bad` lists the runs [{ start, end }] an error is about.
+ *
  * @returns {{ empty:boolean, ok:boolean,
  *             groups:{code:string|null, name:string|null, rows:number[]}[],
- *             errors:string[], warnings:string[] }}
+ *             errors:string[], warnings:string[],
+ *             spans:{start:number,end:number,group:number}[], bad:{start:number,end:number}[] }}
  */
 export function parseRowSelection(text, { firstRow = 1, lastRow = Infinity } = {}) {
   const src = String(text ?? '');
-  const out = { empty: false, ok: true, groups: [], errors: [], warnings: [] };
+  const out = { empty: false, ok: true, groups: [], errors: [], warnings: [], spans: [], bad: [] };
   if (!src.replace(/[\s,;]+/g, '')) { out.empty = true; return out; }   // only separators = nothing typed
 
   const errs = new Set();
   const err = (m) => errs.add(m);
+  const bad = (a, b) => { if (b > a) out.bad.push({ start: a, end: b }); };
+  const codeAt = [];       // [{ pos, gi }] — where each chapter's text begins
   let cur = null;          // the group rows go into
   let total = 0;
   let capHit = false;
@@ -91,6 +103,7 @@ export function parseRowSelection(text, { firstRow = 1, lastRow = Infinity } = {
       j++;
     }
     const tok = src.slice(start, j);
+    bad(start, j);
     err(`"${tok.length > 24 ? tok.slice(0, 24) + '…' : tok}" is not a row number, a range like 5-15, or a chapter code like C01(Name)`);
     return j;
   };
@@ -134,9 +147,11 @@ export function parseRowSelection(text, { firstRow = 1, lastRow = Infinity } = {
         }
       } else {
         err(`${code} needs a chapter name in brackets right after it, e.g. ${code}(Clean parts)`);
+        bad(start, i);
       }
-      if (!hasNum) err(`"${src.slice(start, Math.min(i, start + 24))}" needs a number after the C, e.g. C01(Name)`);
+      if (!hasNum) { err(`"${src.slice(start, Math.min(i, start + 24))}" needs a number after the C, e.g. C01(Name)`); bad(start, start + 1); }
       cur = { code, name: name || null, rows: [] };
+      codeAt.push({ pos: start, gi: out.groups.length });
       out.groups.push(cur);
       if (unclosed) quiet.add(cur);   // its rows sit inside the open name — one error is enough
       continue;
@@ -154,6 +169,7 @@ export function parseRowSelection(text, { firstRow = 1, lastRow = Infinity } = {
         while (k < len && /\s/.test(src[k])) k++;
         if (k >= len || !_isDigit(src[k])) {
           err(`"${a.n}-" needs an end row, e.g. ${a.n}-${a.n + 10}`);
+          bad(start, k);
           i = k;
           continue;
         }
@@ -163,17 +179,27 @@ export function parseRowSelection(text, { firstRow = 1, lastRow = Infinity } = {
         const ea = rowError(a.n), eb = rowError(b.n);
         if (ea) err(ea);
         if (eb) err(eb);
-        if (!ea && !eb) pushRows(a.n, b.n);
+        if (!ea && !eb) pushRows(a.n, b.n); else bad(start, b.end);
         continue;
       }
       i = a.end;
       const e = rowError(a.n);
-      if (e) err(e); else pushRows(a.n, a.n);
+      if (e) { err(e); bad(start, a.end); } else pushRows(a.n, a.n);
       continue;
     }
 
     i = garbage(i);
   }
+
+  // V0.3.5.57 — the text up to the first code is the plain block's (when
+  // there is one); each code owns everything from itself to the next code.
+  const plain = out.groups[0] && !out.groups[0].code ? 0 : -1;
+  let at = 0, owner = plain;
+  for (const c of codeAt) {
+    if (c.pos > at) out.spans.push({ start: at, end: c.pos, group: owner });
+    at = c.pos; owner = c.gi;
+  }
+  if (len > at) out.spans.push({ start: at, end: len, group: owner });
 
   for (const g of out.groups) {
     if (g.code && !g.rows.length && !quiet.has(g)) {
@@ -276,4 +302,31 @@ export function addRowsToGroups(groups, rows, target, name) {
     next[target].rows.push(...add);
   }
   return next;
+}
+
+/**
+ * V0.3.5.57 — take `rows` OUT of group `gi` (a chapter or the plain block):
+ * every occurrence goes, the other groups are untouched. A group left with no
+ * rows is dropped — an empty chapter would not parse ("has no rows").
+ * → { groups, removed (how many entries went), dropped (the emptied group or null) }
+ */
+export function removeRowsFromGroup(groups, rows, gi) {
+  const next = (groups || []).map(g => ({ code: g.code, name: g.name, rows: g.rows.slice() }));
+  const g = next[gi];
+  if (!g) return { groups: next, removed: 0, dropped: null };
+  const out = new Set((rows || []).map(Number));
+  const before = g.rows.length;
+  g.rows = g.rows.filter(r => !out.has(r));
+  const removed = before - g.rows.length;
+  let dropped = null;
+  if (removed && !g.rows.length) { dropped = { code: g.code, name: g.name }; next.splice(gi, 1); }
+  return { groups: next, removed, dropped };
+}
+
+/** V0.3.5.57 — indexes of the groups that hold any of `rows` (for the menu). */
+export function groupsHolding(groups, rows) {
+  const want = new Set((rows || []).map(Number));
+  const out = [];
+  (groups || []).forEach((g, gi) => { if (g.rows.some(r => want.has(r))) out.push(gi); });
+  return out;
 }

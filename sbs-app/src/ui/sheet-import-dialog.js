@@ -20,6 +20,11 @@
  * their numbers. Every edit rewrites the line through formatRowSelection.
  * A "Skip rows with nothing in the marked columns" tick for the all-rows case.
  *
+ * V0.3.5.57 — colour per block everywhere (one theme-aware palette): each
+ * order number in its block's colour, the typed line painted the same way
+ * (textarea over a coloured mirror), right-click → Remove from chapter / from
+ * the import list, and a "Result" view listing the import as it comes out.
+ *
  * The planning (roles → rows) is pure and exported so a node test can drive
  * it; the reader and the importer load on demand, so this module carries no
  * app state of its own.
@@ -27,9 +32,99 @@
 
 import { setStatus }         from './status.js';
 import { chooseFromButtons } from './prompt.js';
-import { parseRowSelection, formatRowSelection, compressRows, addRowsToGroups, nextChapterCode } from '../systems/sheet-range.js';
+import { parseRowSelection, formatRowSelection, compressRows, addRowsToGroups, nextChapterCode,
+         removeRowsFromGroup, groupsHolding } from '../systems/sheet-range.js';
 
 const PREVIEW_ROWS = 300;   // the table is a preview — the import uses every row
+const RESULT_ROWS = 2000;   // V0.3.5.57 — the Result view lists this many steps at most
+
+// V0.3.5.57 — ONE palette for the bars, the order numbers, the typed line and
+// the Result view. Bright on the dark panels; the light theme gets darker
+// twins (white behind them). Hues kept apart (amber / violet / green / pink /
+// blue / orange / silver / tan) so neighbours differ for colour-blind eyes as
+// far as 8 can. Red stays out — it means "error" here.
+const _PALETTE = {
+  dark:  { plain: '#22d3ee', ch: ['#fbbf24', '#a78bfa', '#4ade80', '#f472b6', '#60a5fa', '#fb923c', '#cbd5e1', '#d4a373'] },
+  light: { plain: '#0e7490', ch: ['#b45309', '#6d28d9', '#15803d', '#be185d', '#1d4ed8', '#c2410c', '#475569', '#8a5a2b'] },
+};
+
+/**
+ * A group's colour slot: -1 = the plain block, else from the chapter's OWN
+ * number (C02 → slot 1), so taking one chapter out never recolours the rest.
+ */
+export function chapterSlot(group) {
+  if (!group?.code) return -1;
+  const n = parseInt(String(group.code).slice(1), 10);
+  const k = _PALETTE.dark.ch.length;
+  return Number.isFinite(n) ? (((n - 1) % k) + k) % k : k - 1;
+}
+
+/** Slot → colour for the current theme (`light` = the app's light theme). */
+export function slotColor(slot, light) {
+  const p = light ? _PALETTE.light : _PALETTE.dark;
+  return slot < 0 ? p.plain : p.ch[slot % p.ch.length];
+}
+
+const _isLight = () => typeof document !== 'undefined' && document.documentElement?.getAttribute('data-theme') === 'light';
+
+/**
+ * V0.3.5.57 — the typed line cut into painted runs for the mirror behind the
+ * text box: each chapter's code, name and rows in its colour, the plain block
+ * in its own, the parts an error is about underlined. Runs cover the text
+ * exactly once, in order. → [{ text, color|null, bad:boolean }]
+ */
+export function lineRuns(text, selection, light) {
+  const src = String(text ?? '');
+  const n = src.length;
+  const col = new Array(n).fill(null);
+  const bad = new Uint8Array(n);
+  for (const s of selection?.spans || []) {
+    const c = s.group >= 0 ? slotColor(chapterSlot(selection.groups[s.group]), light) : null;
+    for (let i = Math.max(0, s.start); i < Math.min(n, s.end); i++) col[i] = c;
+  }
+  for (const b of selection?.bad || []) for (let i = Math.max(0, b.start); i < Math.min(n, b.end); i++) bad[i] = 1;
+  const runs = [];
+  for (let i = 0; i < n;) {
+    let j = i + 1;
+    while (j < n && col[j] === col[i] && bad[j] === bad[i]) j++;
+    runs.push({ text: src.slice(i, j), color: col[i], bad: !!bad[i] });
+    i = j;
+  }
+  return runs;
+}
+
+/**
+ * V0.3.5.57 — the "Result" view's content: the import as it WILL come out,
+ * block by block in order (plain block first, then each chapter), from the
+ * plan + the sheet rows. Pure, so a node test can read it.
+ * → { sections:[{ code, name, slot, steps:[{ n, row, name, named, voice, titles, empty }] }],
+ *     total, notIn (sheet rows the line leaves out), skipped (empty rows the tick skipped) }
+ */
+export function resultModel(plan, rows) {
+  const mapped = [plan.nameCol, plan.voiceCol, ...plan.titleCols].filter(i => i >= 0);
+  const cell = (row, i) => String(row?.[i] ?? '').trim();
+  const sections = [];
+  let cur = null;
+  plan.rows.forEach((st, k) => {
+    const gi = plan.stepGroup[k];
+    if (!cur || cur.gi !== gi) {
+      const g = plan.groupInfo[gi];
+      cur = { gi, code: g?.code || null, name: g?.code ? g.name : null, slot: chapterSlot(g), steps: [] };
+      sections.push(cur);
+    }
+    const src = rows[plan.order[k] - 1] || [];
+    cur.steps.push({
+      n: k + 1, row: plan.order[k], name: st.name,
+      named: plan.nameCol >= 0 && cell(src, plan.nameCol) !== '',
+      voice: st.voice, titles: st.titles,
+      empty: !mapped.length || mapped.every(i => cell(src, i) === ''),
+    });
+  });
+  for (const s of sections) delete s.gi;
+  const ranged = plan.selection && !plan.selection.empty;
+  const notIn = ranged ? Math.max(0, plan.dataCount - new Set(plan.order).size) : 0;
+  return { sections, total: plan.rows.length, notIn, skipped: ranged ? 0 : plan.skipped };
+}
 
 export const ROLE_LABELS = { ignore: 'Ignore', name: 'Step name', voice: 'Voiceover', title: 'Title' };
 
@@ -316,6 +411,22 @@ function _showViewer(fileName, sheets, choices, importer) {
         #sxi-wrap tbody tr.sxi-pick { opacity:1 !important; }
         #sxi-wrap tbody tr.sxi-pick > td:first-child { outline:1px solid rgba(165,180,252,.7); outline-offset:-1px; }
         #sxi-wrap:focus { outline:none; }
+        /* V0.3.5.57 — the "Rows to import" box: a textarea with see-through
+           text over a mirror (#sxi-range-hl) that paints the same text in the
+           chapters' colours. Both MUST share font, padding, line height and
+           wrapping, or the colours drift off the caret. */
+        #sxi-range-box { position:relative; flex:1; min-width:260px; border:1px solid var(--line); border-radius:8px; background:#111827; }
+        html[data-theme="light"] #sxi-range-box { background:var(--panel); }
+        #sxi-range-box:focus-within { border-color:var(--accent); }
+        #sxi-range, #sxi-range-hl { box-sizing:border-box; margin:0; border:0; padding:4px 10px;
+          font:13px/20px Consolas, ui-monospace, monospace; letter-spacing:0; word-spacing:0; tab-size:4;
+          white-space:pre-wrap; overflow-wrap:break-word; word-break:normal; text-align:left; direction:ltr; }
+        #sxi-range-hl { position:absolute; inset:0; overflow:hidden; pointer-events:none; color:var(--text); }
+        #sxi-range { position:relative; display:block; width:100%; height:28px; min-height:28px; resize:none; overflow-y:hidden;
+          background:transparent !important; color:transparent; caret-color:var(--text); outline:none; box-shadow:none; border-radius:8px; }
+        #sxi-range::placeholder { color:var(--muted); }
+        #sxi-range::selection { background:rgba(129,140,248,.38); color:transparent; }
+        #sxi-view .tabBtn { padding:3px 12px; font-size:12px; }
       </style>
       <div class="sbs-dialog__body" style="display:flex;flex-direction:column;gap:10px;">
         <div>
@@ -334,16 +445,24 @@ function _showViewer(fileName, sheets, choices, importer) {
           </label>
         </div>
         <div style="display:flex;flex-direction:column;gap:4px;">
-          <label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span style="white-space:nowrap;">Rows to import</span>
-            <input type="text" id="sxi-range" spellcheck="false" autocomplete="off" dir="ltr"
-              placeholder="empty = all rows" style="flex:1;min-width:260px;height:28px;font-family:monospace;" />
-          </label>
-          <div class="small muted">e.g. 1-8, 56, 23-38 · chapters: C01(Name)5-15,54-56 · empty = all — the # numbers below, in the order typed. New chapters go right after the chapter of the selected step. Or pick rows below (click, Shift+click, Ctrl+click) and right-click them.</div>
+          <div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+            <label for="sxi-range" style="white-space:nowrap;line-height:30px;">Rows to import</label>
+            <div id="sxi-range-box">
+              <div id="sxi-range-hl" aria-hidden="true"></div>
+              <textarea id="sxi-range" rows="1" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" dir="ltr"
+                wrap="soft" placeholder="empty = all rows"></textarea>
+            </div>
+          </div>
+          <div class="small muted">e.g. 1-8, 56, 23-38 · chapters: C01(Name)5-15,54-56 · empty = all — the # numbers below, in the order typed. New chapters go right after the chapter of the selected step. Or pick rows below (click, Shift+click, Ctrl+click) and right-click them. "Result" shows the steps as they will come out.</div>
           <div id="sxi-range-err" class="small" style="color:#f87171;display:none;"></div>
           <div id="sxi-range-warn" class="small" style="color:#fbbf24;display:none;"></div>
           <div id="sxi-range-note" class="small" style="color:#7dd3fc;display:none;"></div>
           <div id="sxi-flash" class="small" style="color:#a5b4fc;display:none;"></div>
+        </div>
+        <div id="sxi-view" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <button class="tabBtn active" data-view="sheet" title="The spreadsheet — mark the columns, pick rows">Sheet</button>
+          <button class="tabBtn" data-view="result" title="The steps as they will come out of the import, in order">Result</button>
+          <span id="sxi-view-note" class="small muted"></span>
         </div>
         <div id="sxi-wrap" tabindex="-1" style="overflow:auto;max-height:46vh;border:1px solid var(--line);border-radius:8px;"></div>
         <div id="sxi-more" class="small muted"></div>
@@ -364,6 +483,12 @@ function _showViewer(fileName, sheets, choices, importer) {
     const errEl = $('#sxi-error'), okBtn = $('#sxi-ok');
     const rangeIn = $('#sxi-range'), rangeErr = $('#sxi-range-err'), rangeWarn = $('#sxi-range-warn');
     const rangeNote = $('#sxi-range-note'), flashEl = $('#sxi-flash'), skipCb = $('#sxi-skip');
+    const rangeBox = $('#sxi-range-box'), rangeHl = $('#sxi-range-hl');
+    const viewEl = $('#sxi-view'), viewNote = $('#sxi-view-note');
+    // V0.3.5.57 — 'sheet' (the table) or 'result' (the import as it comes out);
+    // each keeps its own scroll so flipping back lands where it was
+    let view = 'sheet';
+    const viewScroll = { sheet: [0, 0], result: [0, 0] };
     const ac = new AbortController();
     const on = (t, ev, fn) => t.addEventListener(ev, fn, { signal: ac.signal });
 
@@ -377,9 +502,12 @@ function _showViewer(fileName, sheets, choices, importer) {
     };
 
     const renderTable = () => {
+      if (view === 'result') { renderResult(); return; }
+      viewNote.textContent = '';
       const rows = sheets[cur].rows;
       const st = per[cur];
       const p = plan();
+      const light = _isLight();
       if (!rows.length || !p.width) {
         wrap.innerHTML = '<div class="small muted" style="padding:14px;">This sheet is empty.</div>';
         moreEl.textContent = '';
@@ -417,13 +545,19 @@ function _showViewer(fileName, sheets, choices, importer) {
         const dim = ranged ? (mapped.length && !mk) : (skip && mapped.length && skipEmpty);
         let numCell = String(xr), bar = '', tip = '';
         if (mk) {
-          const g = p.groupInfo[p.stepGroup[mk[0]]];
-          const col = _blockColor(p.stepGroup[mk[0]], p.groupInfo);
-          bar = `box-shadow:inset 3px 0 0 ${col};`;
-          const nums = mk.map(k => k + 1);
-          const shownNums = nums.length > 3 ? `${nums.slice(0, 3).join(',')},…` : nums.join(',');
-          tip = ` title="${_esc(`Row ${xr} → step ${nums.join(', ')}${g?.code ? ` · ${g.code} ${g.name}` : ''}`)}"`;
-          numCell = `<span style="color:${col};font-weight:600;margin-inline-end:6px;">→${shownNums}</span>${xr}`;
+          // V0.3.5.57 — a row used in several blocks: EACH number in its own
+          // block's colour, and the bar becomes thin side-by-side stripes
+          const groupOf = (k) => p.groupInfo[p.stepGroup[k]];
+          const colOf = (k) => slotColor(chapterSlot(groupOf(k)), light);
+          const cols = [...new Set(mk.map(colOf))].slice(0, 3);
+          bar = cols.length === 1
+            ? `box-shadow:inset 3px 0 0 ${cols[0]};`
+            : `box-shadow:${cols.map((c, n) => `inset ${(n + 1) * 2}px 0 0 ${c}`).join(',')};`;
+          const shownK = mk.slice(0, 3);
+          const nums = shownK.map(k => `<span style="color:${colOf(k)};">${k + 1}</span>`).join(',') + (mk.length > 3 ? ',…' : '');
+          const where = (k) => { const g = groupOf(k); return `step ${k + 1}${g?.code ? ` (${g.code} ${g.name})` : ''}`; };
+          tip = ` title="${_esc(`Row ${xr} → ${mk.map(where).join(', ')}`)}"`;
+          numCell = `<span style="color:${colOf(mk[0])};font-weight:600;margin-inline-end:6px;">→${nums}</span>${xr}`;
         }
         html += `<tr data-xr="${xr}"${picked.has(xr) ? ' class="sxi-pick"' : ''} style="${dim ? 'opacity:.35;' : ''}">`;
         html += `<td${tip} style="position:sticky;left:0;background:var(--panel);${bar}color:var(--muted);padding:3px 6px;border-bottom:1px solid var(--line);text-align:end;white-space:nowrap;">${numCell}</td>`;
@@ -452,7 +586,107 @@ function _showViewer(fileName, sheets, choices, importer) {
       rangeWarn.style.display = p.warnings.length ? '' : 'none';
       rangeNote.textContent = p.notes.join(' · ');
       rangeNote.style.display = p.notes.length ? '' : 'none';
-      rangeIn.style.borderColor = errs.length ? '#f87171' : '';
+      rangeBox.style.borderColor = errs.length ? '#f87171' : '';
+      paintLine(p);
+    };
+
+    // V0.3.5.57 — the mirror behind the box: same text, painted per block.
+    // A trailing space keeps a last empty line (pasted newline) as tall as the
+    // textarea's, so the two never disagree on height.
+    const paintLine = (p = plan()) => {
+      const light = _isLight();
+      rangeHl.innerHTML = lineRuns(rangeIn.value, p.selection, light).map(r =>
+        `<span style="${r.color ? `color:${r.color};` : ''}${r.bad ? 'text-decoration:underline wavy #f87171;' : ''}">${_esc(r.text)}</span>`).join('') + ' ';
+      fitLine();
+    };
+    // grow with the text up to ~5 lines, then scroll; the mirror follows. A
+    // scrollbar narrows the textarea, so the mirror reserves the same gutter.
+    const LINE_MAX = 108;
+    const fitLine = () => {
+      const keep = rangeIn.scrollTop;   // measuring at height 0 may clamp it
+      rangeIn.style.height = '0px';
+      const h = rangeIn.scrollHeight;
+      if (!h) { rangeIn.style.height = ''; return; }   // not laid out yet (before showModal)
+      const over = h > LINE_MAX + 1;
+      rangeIn.style.height = `${Math.max(28, Math.min(h, LINE_MAX))}px`;
+      rangeIn.style.overflowY = over ? 'scroll' : 'hidden';
+      rangeHl.style.scrollbarGutter = over ? 'stable' : 'auto';
+      rangeIn.scrollTop = keep;
+      rangeHl.scrollTop = rangeIn.scrollTop;
+    };
+
+    // V0.3.5.57 — the Result view: what the import makes, in order. Read-only;
+    // re-built on every change, like the table it stands in for.
+    const renderResult = () => {
+      const rows = sheets[cur].rows;
+      const p = plan();
+      const light = _isLight();
+      moreEl.textContent = '';
+      if (!rows.length || !p.width) {
+        wrap.innerHTML = '<div class="small muted" style="padding:14px;">This sheet is empty.</div>';
+        viewNote.textContent = '';
+        return;
+      }
+      if (p.nameCol < 0 && p.voiceCol < 0 && !p.titleCols.length) {
+        wrap.innerHTML = '<div class="small muted" style="padding:14px;">Nothing to show yet — in the Sheet view, choose a role above at least one column (Step name, Voiceover or Title).</div>';
+        viewNote.textContent = '';
+        return;
+      }
+      const m = resultModel(p, rows);
+      const left = [];
+      if (m.skipped) left.push(`${m.skipped} empty row${m.skipped === 1 ? '' : 's'} skipped`);
+      if (m.notIn) left.push(`${m.notIn} row${m.notIn === 1 ? '' : 's'} of the sheet not in the line`);
+      viewNote.textContent = `${m.total === 1 ? '1 step' : `${m.total} steps`}, in import order${left.length ? ` · ${left.join(' · ')} (not shown)` : ''}`;
+      const cut = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
+      const th = 'position:sticky;top:0;z-index:1;background:var(--panel);border-bottom:1px solid var(--line);padding:4px 6px;text-align:start;font-weight:600;white-space:nowrap;';
+      const td = 'padding:3px 6px;border-bottom:1px solid var(--line);vertical-align:top;text-align:start;';
+      const showVoice = p.voiceCol >= 0;
+      const ncols = 3 + (showVoice ? 1 : 0) + p.titleCols.length;
+      let html = '<table style="border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;"><thead><tr>';
+      html += `<th style="${th}">Step</th><th style="${th}">Row</th><th style="${th}">Step name</th>`;
+      if (showVoice) html += `<th style="${th}">Voiceover</th>`;
+      p.titleColumns.forEach(t => { html += `<th style="${th}" dir="auto">${_esc(t.label)}</th>`; });
+      html += '</tr></thead><tbody>';
+      if (p.blocked) {
+        html += `<tr><td colspan="${ncols}" style="${td}color:#f87171;">The "Rows to import" line still has errors — this is what it reads so far. Import stays off until it reads cleanly.</td></tr>`;
+      }
+      const hasChapters = m.sections.some(s => s.code);
+      let listed = 0;
+      for (const s of m.sections) {
+        if (listed >= RESULT_ROWS) break;
+        const col = slotColor(s.slot, light);
+        const count = s.steps.length === 1 ? '1 step' : `${s.steps.length} steps`;
+        if (s.code) {
+          html += `<tr><td colspan="${ncols}" style="${td}padding-top:10px;box-shadow:inset 3px 0 0 ${col};"><span style="color:${col};font-weight:700;">${_esc(s.code)} · <span dir="auto">${_esc(s.name || s.code)}</span></span> <span class="muted">— ${count}</span></td></tr>`;
+        } else if (hasChapters) {
+          html += `<tr><td colspan="${ncols}" style="${td}padding-top:10px;box-shadow:inset 3px 0 0 ${col};"><span style="color:${col};font-weight:700;">Before the chapters</span> <span class="muted">— ${count}</span></td></tr>`;
+        }
+        for (const st of s.steps) {
+          if (listed++ >= RESULT_ROWS) break;
+          const nm = st.named ? _esc(cut(st.name, 120)) : `<i class="muted">${_esc(st.name)}</i>`;
+          const empty = st.empty ? ' <span class="small" style="border:1px solid var(--line);border-radius:6px;padding:0 5px;color:var(--muted);">empty</span>' : '';
+          html += `<tr>`;
+          html += `<td style="${td}box-shadow:inset 3px 0 0 ${col};color:${col};font-weight:600;text-align:end;white-space:nowrap;">${st.n}</td>`;
+          html += `<td style="${td}color:var(--muted);text-align:end;white-space:nowrap;">${st.row}</td>`;
+          html += `<td dir="auto" title="${_esc(cut(st.name, 600))}" style="${td}min-width:140px;max-width:280px;">${nm}${empty}</td>`;
+          if (showVoice) html += `<td dir="auto" title="${_esc(cut(st.voice, 600))}" style="${td}min-width:180px;max-width:420px;">${st.voice ? _esc(cut(st.voice, 160)) : '<span class="muted">—</span>'}</td>`;
+          st.titles.forEach(t => { html += `<td dir="auto" title="${_esc(cut(t, 600))}" style="${td}max-width:220px;">${t ? _esc(cut(t, 80)) : '<span class="muted">—</span>'}</td>`; });
+          html += '</tr>';
+        }
+      }
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+      if (m.total > RESULT_ROWS) moreEl.textContent = `…${m.total - RESULT_ROWS} more steps (not listed here — they are imported too)`;
+    };
+
+    const setView = (v) => {
+      if (v === view) return;
+      viewScroll[view] = [wrap.scrollLeft, wrap.scrollTop];
+      view = v;
+      viewEl.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+      hideMenu();
+      renderTable();
+      [wrap.scrollLeft, wrap.scrollTop] = viewScroll[v];
     };
 
     const renderTitles = () => {
@@ -532,6 +766,21 @@ function _showViewer(fileName, sheets, choices, importer) {
     });
     on(skipCb, 'change', () => { skipEmpty = skipCb.checked; renderTable(); renderRange(); renderSummary(); });
     on(rangeIn, 'input', () => { per[cur].range = rangeIn.value; showError(''); renderTable(); renderRange(); renderSummary(); });
+    // V0.3.5.57 — a textarea now (so it can wrap over the coloured mirror),
+    // but still ONE line to the user: Enter adds nothing. Pasted newlines are
+    // fine — the line reads them as separators.
+    on(rangeIn, 'keydown', (e) => { if (e.key === 'Enter') e.preventDefault(); });
+    on(rangeIn, 'scroll', () => { rangeHl.scrollTop = rangeIn.scrollTop; rangeHl.scrollLeft = rangeIn.scrollLeft; });
+    on(window, 'resize', fitLine);
+    on(viewEl, 'click', (e) => {
+      const b = e.target.closest('[data-view]');
+      if (b) setView(b.dataset.view);
+    });
+    // V0.3.5.57 — the palette follows the app's theme (setTheme flips
+    // data-theme on <html>): repaint the bars, numbers, line and Result.
+    const themeWatch = new MutationObserver(() => { renderTable(); paintLine(); });
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    ac.signal.addEventListener('abort', () => themeWatch.disconnect());
     on(wrap, 'change', (e) => {
       const sel = e.target.closest('select[data-col]');
       if (!sel) return;
@@ -597,6 +846,7 @@ function _showViewer(fileName, sheets, choices, importer) {
         b.textContent = it.submenu ? `${it.label}  ▸` : it.label;
         b.disabled = !!it.disabled;
         if (it.title) b.title = it.title;
+        if (it.color && !b.disabled) b.style.color = it.color;   // V0.3.5.57 — a chapter in its colour
         if (it.submenu) {
           const open = () => { if (!b.disabled) openSub(b, it.submenu); };
           on(b, 'mouseenter', open);
@@ -713,6 +963,22 @@ function _showViewer(fileName, sheets, choices, importer) {
       setLine(addRowsToGroups(plan().selection.groups, rows, 'new', name), `＋ ${code} (${name}) made from ${rowsText(rows).toLowerCase()}`);
     };
 
+    // V0.3.5.57 — take the picked rows OUT of one block (every time they
+    // appear in it). A chapter left empty leaves the line, and the note says so.
+    const removeFrom = (gi, rows) => {
+      const p = plan();
+      const g = p.selection.groups[gi];
+      if (!lineUsable(p) || !g) return;
+      const hit = rows.filter(r => g.rows.includes(r));
+      const res = removeRowsFromGroup(p.selection.groups, rows, gi);
+      if (!res.removed) return;
+      const where = g.code ? `${g.code} (${g.name || g.code})` : 'the import list';
+      let msg = `➖ ${rowsText(hit)} taken out of ${where}`;
+      if (res.dropped && g.code) msg += ` — it had no rows left, so ${g.code} is gone from the line`;
+      if (!res.groups.length) msg += ' — the line is empty now, which means EVERY row is imported';
+      setLine(res.groups, msg);
+    };
+
     const copyRows = async (rows) => {
       const text = compressRows(rows);
       let done = false;
@@ -740,12 +1006,29 @@ function _showViewer(fileName, sheets, choices, importer) {
       const fix = usable ? '' : 'Fix the "Rows to import" line first';
       const chapters = p.selection.groups.map((g, gi) => ({ g, gi })).filter(o => o.g.code);
       const what = rows.length === 1 ? `row ${rows[0]}` : `${rows.length} rows`;
+      const light = _isLight();
+      const chLabel = (g) => `${g.code} ${g.name || ''}`.trim();
+      // V0.3.5.57 — Remove entries only where the picked rows actually are
+      const holding = usable ? groupsHolding(p.selection.groups, rows) : [];
+      const inPlain = holding.find(gi => !p.selection.groups[gi].code);
+      const inChapters = holding.filter(gi => p.selection.groups[gi].code);
+      const removeItems = [];
+      if (inPlain != null) removeItems.push({ label: '➖ Remove from the import list', action: () => removeFrom(inPlain, rows) });
+      if (inChapters.length) {
+        removeItems.push({ label: '➖ Remove from chapter',
+          submenu: inChapters.map(gi => {
+            const g = p.selection.groups[gi];
+            const n = new Set(rows.filter(r => g.rows.includes(r))).size;
+            return { label: `${chLabel(g)}  (${n === 1 ? '1 row' : `${n} rows`})`, color: slotColor(chapterSlot(g), light), action: () => removeFrom(gi, rows) };
+          }) });
+      }
       menuEl = buildMenu([
         { label: `➕ Add ${what} to the import list`, disabled: !usable, title: fix, action: () => addToList(rows) },
         { label: chapters.length ? '📁 Add to chapter' : '📁 Add to chapter (no chapters in the line yet)',
           disabled: !usable || !chapters.length, title: fix,
-          submenu: chapters.map(({ g, gi }) => ({ label: `${g.code} ${g.name || ''}`.trim(), action: () => addToChapter(gi, rows) })) },
+          submenu: chapters.map(({ g, gi }) => ({ label: chLabel(g), color: slotColor(chapterSlot(g), light), action: () => addToChapter(gi, rows) })) },
         { label: '＋ New chapter from these rows…', disabled: !usable, title: fix, action: () => newChapter(rows) },
+        ...(removeItems.length ? [{ separator: true }, ...removeItems] : []),
         { separator: true },
         { label: '📋 Copy row numbers   Ctrl+C', action: () => copyRows(rows) },
       ]);
@@ -872,17 +1155,8 @@ function _showViewer(fileName, sheets, choices, importer) {
 
     renderAll();
     try { dlg.showModal(); } catch { close(null); }
+    if (!closed) fitLine();   // V0.3.5.57 — the box can only measure itself once shown
   });
-}
-
-// V0.3.5.54 — the left bar of a chosen row: one colour per chapter, cyan for
-// the plain (chapter-less) block, so where a chapter starts and ends is visible.
-const _CHAPTER_COLORS = ['#f59e0b', '#a78bfa', '#34d399', '#f472b6', '#60a5fa', '#fb923c', '#facc15', '#2dd4bf'];
-function _blockColor(gi, groupInfo) {
-  const g = groupInfo?.[gi];
-  if (!g || !g.code) return '#22d3ee';
-  const n = groupInfo.slice(0, gi).filter(x => x.code).length;
-  return _CHAPTER_COLORS[n % _CHAPTER_COLORS.length];
 }
 
 function _esc(s) {
