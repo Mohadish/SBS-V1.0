@@ -18,7 +18,7 @@
  * V0.3.5.56 — the table is pickable: click / Shift+click / Ctrl+click rows,
  * right-click → add them to the line, to a chapter, to a new chapter, or copy
  * their numbers. Every edit rewrites the line through formatRowSelection.
- * A "Skip rows with nothing in the marked columns" tick for the all-rows case.
+ * A "Skip rows with nothing in the marked columns" tick — for every row, the typed line too (V0.3.5.58).
  *
  * V0.3.5.57 — colour per block everywhere (one theme-aware palette): each
  * order number in its block's colour, the typed line painted the same way
@@ -188,10 +188,11 @@ export function defaultLook(n, positions) {
  * row of each imported step), `stepGroup` (its index in `groupInfo`),
  * `selection` (the parse), `warnings`, `chapters`, `blocked` (line has errors).
  *
- * V0.3.5.56 — `skipEmpty` (the "Skip rows with nothing in the marked
- * columns" tick, ON by default) only governs the empty line = every row.
- * Rows the user CHOSE in the line always come in, even empty — an empty one
- * becomes an empty "Step N", said in `notes` (info, not a warning).
+ * V0.3.5.58 — `skipEmpty` (the "Skip rows with nothing in the marked
+ * columns" tick, ON by default) governs EVERY row, the typed line's too (his
+ * expectation: tick it and the empty ones leave the range at once, the step
+ * numbers close up). Unticked, an empty row becomes an empty "Step N", said in
+ * `notes`. `skippedRows` = the Excel rows the tick left out (for the marks).
  *
  * @param {string[][]} rows    the whole sheet
  * @param {{ headerRow:boolean, roles:string[], looks:object[], range?:string, skipEmpty?:boolean }} opts
@@ -226,6 +227,7 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
   const warnings = [], notes = [];
   const groupInfo = [];   // [{ code, name, count }] — only groups that kept steps
   let skipped = 0, emptyTaken = 0, groups, chapters = 0;
+  const skippedRows = new Set();
   if (!mapped.length) {
     // nothing marked = nothing to make steps from (the summary says so)
   } else if (selection.empty) {
@@ -244,11 +246,15 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
       const before = out.length;
       for (const r of g.rows) {
         const row = rows[r - 1] || [];
-        if (isEmpty(row)) emptyRows.push(r);   // V0.3.5.56 — chosen = imported, even empty
+        if (isEmpty(row)) {
+          if (skipEmpty) { skipped++; skippedRows.add(r); continue; }   // V0.3.5.58 — the tick filters the line too
+          emptyRows.push(r);
+        }
         take(row, r, gi);
       }
       const count = out.length - before;
       if (count) groupInfo.push({ code: g.code, name: g.code ? (g.name || g.code) : null, count });
+      else if (g.code && g.rows.length) warnings.push(`${g.code} has only empty rows — it is left out (untick "Skip rows…" to keep them)`);
     }
     emptyTaken = emptyRows.length;
     if (emptyRows.length) {
@@ -270,7 +276,7 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
   }));
   return {
     rows: out, titleColumns, skipped, emptyTaken, nameCol, voiceCol, titleCols, dataCount: data.length, width, names,
-    groups, order, stepGroup, groupInfo, chapters, selection, warnings, notes, firstRow,
+    groups, order, stepGroup, groupInfo, chapters, selection, warnings, notes, firstRow, skippedRows,
     blocked: !selection.ok,
   };
 }
@@ -439,7 +445,7 @@ function _showViewer(fileName, sheets, choices, importer) {
             <input type="checkbox" id="sxi-header" />
             <span>First row is column names</span>
           </label>
-          <label style="display:flex;align-items:center;gap:6px;width:fit-content;cursor:pointer;" title="Untick to bring every row in — an empty one becomes an empty step. Rows you list in &quot;Rows to import&quot; always come in.">
+          <label style="display:flex;align-items:center;gap:6px;width:fit-content;cursor:pointer;" title="Ticked, rows with nothing in the marked columns are left out — also the ones in &quot;Rows to import&quot; (they show ⊘). Untick to bring them in as empty steps.">
             <input type="checkbox" id="sxi-skip" />
             <span>Skip rows with nothing in the marked columns</span>
           </label>
@@ -544,6 +550,10 @@ function _showViewer(fileName, sheets, choices, importer) {
         const mk = marks.get(xr);
         const dim = ranged ? (mapped.length && !mk) : (skip && mapped.length && skipEmpty);
         let numCell = String(xr), bar = '', tip = '';
+        if (ranged && !mk && p.skippedRows?.has(xr)) {   // V0.3.5.58 — chosen, but empty and skipped by the tick
+          numCell = `<span style="margin-inline-end:6px;">⊘</span>${xr}`;
+          tip = ` title="Row ${xr} is in the line but empty in the marked columns — skipped (untick &quot;Skip rows…&quot; to keep it)"`;
+        }
         if (mk) {
           // V0.3.5.57 — a row used in several blocks: EACH number in its own
           // block's colour, and the bar becomes thin side-by-side stripes
