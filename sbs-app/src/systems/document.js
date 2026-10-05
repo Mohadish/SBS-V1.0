@@ -487,7 +487,7 @@ function _captureStill(W, H, dom, layers = true) {
   const sw = dom.width / ov, sh = dom.height / ov;
   ctx.drawImage(dom, (dom.width - sw) / 2, (dom.height - sh) / 2, sw, sh, 0, 0, W, H);
   for (const [name, fn] of (layers ? [['overlay', rasterizeOverlay], ['notes', rasterizeNotesLayer], ['tags', rasterizeTagsLayer]] : [])) {
-    try { const l = fn({ width: W, height: H }); if (l) ctx.drawImage(l, 0, 0, W, H); }
+    try { const l = fn({ width: W, height: H, still: true }); if (l) ctx.drawImage(l, 0, 0, W, H); }   // still: V0.3.5.63 — the hardware tags do not fade in a picture
     catch (e) { console.warn(`[document] ${name} layer skipped:`, e?.message || e); }
   }
   return c.toDataURL('image/jpeg', 0.88);

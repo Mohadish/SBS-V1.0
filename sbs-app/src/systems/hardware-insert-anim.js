@@ -175,6 +175,65 @@ let _settled = true, _idleTicks = 0, _animProbe = null;
 export function setInsertAnimProbe(fn) { _animProbe = typeof fn === 'function' ? fn : null; }
 const _spotShown = (p) => _settled && !!p.node?.spotlight && p.mergedMesh?.visible !== false;
 
+// ── tag fades (V0.3.5.63 — his note: "they fade in nicely but snap out; they need to fade out also") ──
+// The spotlight-only tags and the insertion's own tags fade in AND out over TAG_FADE_MS, on the app clock (so
+// the export shows the same fade). A tag whose carrier goes away while it shows — the step changes, the
+// animation starts — lives on as a GHOST: its text, where it stood, fading out. The plain pre-install preview
+// tags stay instant: they are rebuilt on every step change and a fade would make them blink.
+const TAG_FADE_MS = 250;
+const _ghosts = [];                  // [{ key, div, wp, rimR, alpha }]
+let _fadeTPrev = null, _fadeTStaged = null;
+/** How far a fade moves this tick (0..1), per ticker; a long gap counts as 100 ms. */
+function _fadeK(which) {
+  const now = clock.now();
+  const last = which === 'staged' ? _fadeTStaged : _fadeTPrev;
+  if (which === 'staged') _fadeTStaged = now; else _fadeTPrev = now;
+  return last == null ? 0 : Math.max(0, Math.min(100, now - last)) / TAG_FADE_MS;
+}
+function _fadeItem(it, want, k) {
+  const a = it.alpha ?? 0;
+  it.alpha = want ? Math.min(1, a + k) : Math.max(0, a - k);
+  if (it.alpha > 0 && it.alpha < 1) sceneCore.requestRender?.(120);   // keep the frames coming until the fade lands
+  return it.alpha;
+}
+function _showTagDiv(div, a) { div.style.display = a > 0 ? 'block' : 'none'; div.style.opacity = a < 1 ? String(a) : ''; }
+/** The showing tags of a carrier that is going away become ghosts (they keep their element). */
+function _ghostFrom(nodeId, items) {
+  const T = window.THREE; if (!T) return;
+  items.forEach((it, i) => {
+    if (!it.div || !it.piece || !((it.alpha ?? 0) > 0.01)) return;
+    const wp = new T.Vector3(0, it.localY || 0, 0), sc = new T.Vector3();
+    try { it.piece.localToWorld(wp); it.piece.getWorldScale(sc); } catch { return; }
+    _ghosts.push({ key: `${nodeId}#${i}`, div: it.div, wp, rimR: (it.outerRLocal || 0) * (sc.x || 1), alpha: it.alpha });
+    it.div = null;                                           // the ghost owns the element now
+  });
+}
+/** A carrier rebuilt for a nut whose tags were showing takes them over where they are (no blink on a same-step refresh). */
+function _adoptGhosts(nodeId, items) {
+  for (let i = 0; i < items.length; i++) {
+    const gi = _ghosts.findIndex(g => g.key === `${nodeId}#${i}`);
+    if (gi < 0) continue;
+    const g = _ghosts.splice(gi, 1)[0];
+    items[i].alpha = g.alpha;
+    if (g.div?.parentNode) g.div.parentNode.removeChild(g.div);
+  }
+}
+function _tickGhosts(k) {
+  if (!_ghosts.length) return;
+  const T = window.THREE, cam = sceneCore.camera, dom = sceneCore.renderer?.domElement;
+  const rect = dom?.getBoundingClientRect?.() || null;
+  const camRight = T ? new T.Vector3() : null;
+  if (cam && camRight) cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
+  for (let i = _ghosts.length - 1; i >= 0; i--) {
+    const g = _ghosts[i];
+    g.alpha = Math.max(0, g.alpha - k);
+    if (g.alpha <= 0 || !g.div) { if (g.div?.parentNode) g.div.parentNode.removeChild(g.div); _ghosts.splice(i, 1); continue; }
+    _showTagDiv(g.div, g.alpha);
+    if (rect && cam) _anchorTag(g.div, g.wp, g.rimR, rect, cam, camRight);
+    sceneCore.requestRender?.(120);
+  }
+}
+
 /** Tags-only entries for the spotlighted candidates that have none yet. */
 function _ensureSpotTags() {
   if (!_settled || !_spotCands.length) return;
@@ -188,6 +247,7 @@ function _ensureSpotTags() {
     // only the parts' measures are needed: every tag hangs on the ASSEMBLED nut, at its part's own height
     const tagItems = _buildTagItems(tpl, resolveInsertAnim(node), parts, Array(1 + parts.washers.length).fill(merged));
     try { parts.screw?.geometry?.dispose?.(); for (const w of parts.washers) w.mesh?.geometry?.dispose?.(); } catch { /* transient */ }
+    _adoptGhosts(node.id, tagItems);                         // its tags were showing a moment ago: carry on from there
     _preview.set(node.id, { node, tagsOnly: true, spotOnly: true, group: null, elems: [], mergedMesh: merged, tagItems });
   }
 }
@@ -233,6 +293,7 @@ function _isBeforeInsertStep(insertStepId, activeStepId) {
  *  restore the merged mesh. (Geometry only — the material is shared.) */
 export function clearPreInstall() {
   for (const p of _preview.values()) {
+    if (p.spotOnly && p.node) _ghostFrom(p.node.id, p.tagItems || []);   // 🔦 V0.3.5.63 — they fade out where they stood
     if (p.group?.parent) p.group.parent.remove(p.group);
     // Dispose transient GEOMETRY only — the material is SHARED with the live
     // merged mesh (owned by the materials system); never dispose it.
@@ -244,7 +305,8 @@ export function clearPreInstall() {
   }
   _preview.clear();
   _spotCands = [];
-  if (_previewTickUnsub) { _previewTickUnsub(); _previewTickUnsub = null; }
+  if (_ghosts.length) { if (!_previewTickUnsub) _previewTickUnsub = sceneCore.addTickHook(() => _advancePreview()); }   // the ghosts need the tick
+  else if (_previewTickUnsub) { _previewTickUnsub(); _previewTickUnsub = null; }
 }
 
 /**
@@ -318,11 +380,13 @@ export function refreshPreInstall(activeStepId, opts = {}) {
     const prevLayerMask = merged.layers.mask;
     merged.layers.set(PREVIEW_HIDE_LAYER);
 
-    _preview.set(node.id, {
+    const entry = {
       group, elems, mergedMesh: merged, prevLayerMask,
       tagItems: _buildTagItems(tpl, eff, parts, elems),
       node, spotOnly: !!(eff.tagName && eff.tagSpotlight),   // 🔦 its tags wait for the spotlight
-    });
+    };
+    if (entry.spotOnly && _spotShown(entry)) _adoptGhosts(node.id, entry.tagItems);
+    _preview.set(node.id, entry);
     gated++;
   }
 
@@ -337,7 +401,7 @@ export function refreshPreInstall(activeStepId, opts = {}) {
   })(state.get('treeData'));
 
   if (diag && seen > 0) console.log(`[preview] step=${activeStepId} actors=${seen} built=${gated} | ${why.join(' || ')}`);
-  if ((_preview.size || _spotCands.length) && !_previewTickUnsub) {
+  if ((_preview.size || _spotCands.length || _ghosts.length) && !_previewTickUnsub) {
     _previewTickUnsub = sceneCore.addTickHook(() => _advancePreview());
   }
   _advancePreview();
@@ -460,6 +524,7 @@ export function stageInsertActors(actors, opts = {}) {
     if (eff.tagName && !eff.tagSpotlight) {
       entry.tagItems = _buildTagItems(tpl, eff, parts, elems);
       entry.tagShown = needsReposition || preExploded;
+      for (const it of entry.tagItems) it.alpha = preExploded ? 1 : 0;   // V0.3.5.63 — carried in from the preview: no blink; else they fade in
     }
 
     // ── Trajectory line — THICK dotted line (V0.2.22.58): a row of dash
@@ -737,15 +802,16 @@ function _positionTags() {
   const rect = dom.getBoundingClientRect();
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
+  const k = _fadeK('staged');
   for (const s of _staged.values()) {
     if (!s.tagItems) continue;
     for (const it of s.tagItems) {
       if (!it.div) continue;
       // Shown once tagShown is set AND the item's piece is visible —
-      // follows camera/object every frame (note-like).
-      if (!s.tagShown || !it.piece?.visible) { it.div.style.display = 'none'; continue; }
-      it.div.style.display = 'block';
-      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+      // follows camera/object every frame (note-like). V0.3.5.63: fades in and out.
+      const a = _fadeItem(it, !!s.tagShown && !!it.piece?.visible, k);
+      _showTagDiv(it.div, a);
+      if (a > 0) _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
     }
   }
 }
@@ -760,7 +826,7 @@ function _positionTags() {
  * the .sbs-insert-tag div styling. Returns null when nothing is showing so the
  * compositor can skip the layer. Call AFTER renderFrame(), BEFORE encode.
  */
-export function rasterizeTagsLayer({ width, height }) {
+export function rasterizeTagsLayer({ width, height, still = false }) {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return null;
   const T = window.THREE;
   const cam = sceneCore?.camera;
@@ -768,16 +834,27 @@ export function rasterizeTagsLayer({ width, height }) {
 
   // What is showing: the insertion's own tags — and (🔦 V0.3.5.61) the spotlight-only tags, which live on the
   // pre-install previews. ONLY those: the plain preview tags were never part of the export and stay so.
-  const items = [];
+  // V0.3.5.63 — each with its fade (the ticks move it on the export's clock); `still` = a document picture:
+  // no time passes there, so a tag is simply on (1) or off, and nothing is fading away.
+  const items = [];   // [{ it, a, ghost? }]
   for (const s of _staged.values()) {
-    if (!s.tagShown || !s.tagItems) continue;
-    for (const it of s.tagItems) if (it.div && it.piece?.visible && it.div.textContent) items.push(it);
+    if (!s.tagItems) continue;
+    for (const it of s.tagItems) {
+      if (!it.div || !it.piece || !it.div.textContent) continue;
+      const a = still ? ((s.tagShown && it.piece.visible) ? 1 : 0) : (it.alpha ?? 0);
+      if (a > 0) items.push({ it, a });
+    }
   }
   _ensureSpotTags();
   for (const p of _preview.values()) {
-    if (!p.spotOnly || !_spotShown(p)) continue;
-    for (const it of (p.tagItems || [])) if (it.div && it.piece && it.div.textContent) items.push(it);
+    if (!p.spotOnly) continue;
+    for (const it of (p.tagItems || [])) {
+      if (!it.div || !it.piece || !it.div.textContent) continue;
+      const a = still ? (_spotShown(p) ? 1 : 0) : (it.alpha ?? 0);
+      if (a > 0) items.push({ it, a });
+    }
   }
+  if (!still) for (const g of _ghosts) if (g.div?.textContent && g.alpha > 0) items.push({ it: g, a: g.alpha, ghost: true });
   if (!items.length) return null;
 
   // Refresh matrices — export composites BEFORE the next render() (same as notes).
@@ -801,18 +878,18 @@ export function rasterizeTagsLayer({ width, height }) {
   let drew = false;
 
   {
-    for (const it of items) {
+    for (const { it, a, ghost } of items) {
       const div = it.div;
       const text = div.textContent || '';
 
-      wp.set(0, it.localY || 0, 0); it.piece.localToWorld(wp);
+      if (ghost) wp.copy(it.wp); else { wp.set(0, it.localY || 0, 0); it.piece.localToWorld(wp); }
       ndc.copy(wp).project(cam);
       if (ndc.z > 1 || ndc.z < -1) continue;
       const cx = ( ndc.x + 1) * width  * 0.5;
       const cy = (-ndc.y + 1) * height * 0.5;
 
-      it.piece.getWorldScale(wscale);
-      rimW.copy(wp).addScaledVector(camRight, (it.outerRLocal || 0) * (wscale.x || 1));
+      if (!ghost) it.piece.getWorldScale(wscale);
+      rimW.copy(wp).addScaledVector(camRight, ghost ? it.rimR : (it.outerRLocal || 0) * (wscale.x || 1));
       const rimX  = (rimW.project(cam).x + 1) * width * 0.5;
       const rimPx = Math.abs(rimX - cx);
 
@@ -824,10 +901,12 @@ export function rasterizeTagsLayer({ width, height }) {
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 1 * scale;
       ctx.fillStyle = div.style.color || '#ffffff';
+      ctx.globalAlpha = a;
       ctx.fillText(text, cx - rimPx - 10 * scale, cy);   // 10px left of rim (matches live)
       drew = true;
     }
   }
+  ctx.globalAlpha = 1;
   ctx.shadowColor = 'transparent';
   return drew ? out : null;
 }
@@ -844,8 +923,10 @@ export function rasterizeTagsLayer({ width, height }) {
 function _advancePreview() {
   // 🔦 a step id that changed with no transition never gets its 'step:applied': quiet ticks settle it
   if (!_settled) { if (_animProbe && !_animProbe()) { if (++_idleTicks >= 30) _settled = true; } else _idleTicks = 0; }
+  const k = _fadeK('prev');
   _ensureSpotTags();
-  if (!_preview.size) return;
+  _tickGhosts(k);
+  if (!_preview.size) return;   // (the tick stays until the next clearPreInstall: unhooking from inside a tick could skip another hook)
   const T = window.THREE;
   const root = sceneCore.rootGroup;
   const cam = sceneCore.camera;
@@ -881,6 +962,12 @@ function _advancePreview() {
     const show = p.tagsOnly ? _spotShown(p) : (p.group.visible && (!p.spotOnly || _spotShown(p)));
     for (const it of (p.tagItems || [])) {
       if (!it.div) continue;
+      if (p.spotOnly) {                                        // 🔦 these fade in and out (V0.3.5.63)
+        const a = _fadeItem(it, show, k);
+        _showTagDiv(it.div, a);
+        if (a > 0) _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+        continue;
+      }
       if (!show) { it.div.style.display = 'none'; continue; }
       it.div.style.display = 'block';
       _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
