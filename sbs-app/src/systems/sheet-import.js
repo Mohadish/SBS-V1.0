@@ -13,6 +13,9 @@
  *     title (constTextBoxes def) so style + position are one setting the user
  *     changes later in one place. A 'brand' look reuses an existing def; a
  *     'new' look mints one def named after the column.
+ *   • V0.3.5.54: optional groups (the dialog's "C01(name)5-15" line) — each
+ *     named group becomes a NEW chapter, inserted right after the active
+ *     step's chapter (else after all chapters), holding its rows in order.
  *
  * The overlay text boxes are written straight into step.overlay as the same
  * compact Konva JSON the overlay saves (className 'Image', name
@@ -26,7 +29,7 @@
 
 import state            from '../core/state.js';
 import { undoManager }  from './undo.js';
-import { createStep, generateId } from '../core/schema.js';
+import { createStep, createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings }      from '../core/clone.js';
 
 /** Position presets for a NEW unified title look. */
@@ -193,6 +196,49 @@ export function planStepList(current, created, seed = null) {
   return [...kept, ...created];
 }
 
+/**
+ * V0.3.5.54 — the dialog's row-range line ("C01(Arrange)5-15, C02(Clean)28-35")
+ * arrives as groups [{ name, count }] that cover the rows in order. Checked
+ * here, not trusted: a miscounted list would silently file steps into the
+ * wrong chapter. null = no groups (today's import). Zero-row plain blocks are
+ * dropped; a zero-row chapter is an error (an empty chapter is never wanted).
+ * @returns {{ segments: {name:string|null, start:number, count:number}[] } | { error: string } | null}
+ */
+export function planSheetGroups(groups, total) {
+  if (groups == null || (Array.isArray(groups) && !groups.length)) return null;
+  if (!Array.isArray(groups)) return { error: 'The row list could not be read — retype it.' };
+  const segments = [];
+  let start = 0;
+  for (const g of groups) {
+    const count = Number(g?.count);
+    if (!Number.isInteger(count) || count < 0) return { error: 'The row list could not be read — retype it.' };
+    const name = g?.name == null ? null : (String(g.name).trim() || 'Chapter');
+    if (!count) { if (name !== null) return { error: `Chapter "${name}" has no rows.` }; continue; }
+    segments.push({ name, start, count });
+    start += count;
+  }
+  if (start !== total) return { error: 'The row list does not match the rows to import — retype it.' };
+  return { segments };
+}
+
+/** V0.3.5.54 — where new chapters go: right after the ACTIVE step's chapter,
+ *  else (no chapters / active step chapter-less) after all of them = null. */
+export function anchorChapterId(stepsArr, chaptersArr, activeStepId) {
+  const act = (stepsArr || []).find(s => s.id === activeStepId);
+  const cid = act?.chapterId;
+  return cid && (chaptersArr || []).some(c => c.id === cid) ? cid : null;
+}
+
+/** V0.3.5.54 — the chapter list with `added` spliced in right after `afterId`
+ *  (in their own order); at the end when afterId is null or gone (deleted
+ *  between undo and redo). Later chapters shift on: 3 after #4 → #5 is #8. */
+export function insertChaptersAfter(chaptersArr, added, afterId) {
+  const out = (chaptersArr || []).slice();
+  const i = afterId ? out.findIndex(c => c.id === afterId) : -1;
+  out.splice(i < 0 ? out.length : i + 1, 0, ...added);
+  return out;
+}
+
 const _EMPTY_SCENE_TREE = () => ({ id: 'scene_root', name: 'Scene', type: 'scene', localVisible: true, archived: false, children: [] });
 
 /**
@@ -272,12 +318,17 @@ export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styl
 
 /**
  * @param {{ rows: {name:string, voice:string, titles:string[]}[],
- *           titleColumns: {label:string, look:{kind:'brand',constId:string}|{kind:'new',styleId:string|null,position:string}}[] }} p
- * @returns {Promise<{ok:true, created:number}|{ok:false, reason:string}>}
+ *           titleColumns: {label:string, look:{kind:'brand',constId:string}|{kind:'new',styleId:string|null,position:string}}[],
+ *           groups?: {name:string|null, count:number}[] }} p
+ *   groups (V0.3.5.54): cover `rows` in order; name null = a plain block
+ *   (today's placement), a name = a NEW chapter holding those rows' steps.
+ * @returns {Promise<{ok:true, created:number, chapters:number}|{ok:false, reason:string}>}
  */
-export async function importStepsFromSheet({ rows, titleColumns = [] } = {}) {
+export async function importStepsFromSheet({ rows, titleColumns = [], groups = null } = {}) {
   if (!Array.isArray(rows) || !rows.length) return { ok: false, reason: 'No rows to import.' };
   if (rows.length > MAX_IMPORT_ROWS) return { ok: false, reason: `${rows.length} rows is more than ${MAX_IMPORT_ROWS} steps — split the sheet or filter the rows first.` };
+  const grouping = planSheetGroups(groups, rows.length);
+  if (grouping?.error) return { ok: false, reason: grouping.error };
 
   const [{ default: steps }, overlay, { getCanonicalSize }] = await Promise.all([
     import('./steps.js'), import('./overlay.js'), import('../core/safe-frame.js'),
@@ -306,6 +357,21 @@ export async function importStepsFromSheet({ rows, titleColumns = [] } = {}) {
   const createdIds = new Set(created.map(s => s.id));
   const newDefIds  = new Set(newDefs.map(d => d.id));
 
+  // V0.3.5.54 — chapter codes: each named group is a NEW chapter (the app's
+  // own factory, like "+ Chapter") owning its rows' steps in typed order;
+  // plain groups keep the chapter given above. Steps are appended in typed
+  // order, so normalizeOrder (chapter-list order, stable inside a chapter)
+  // lays each chapter out exactly as typed — and nothing reshuffles later.
+  const newChapters = [];
+  for (const seg of grouping?.segments || []) {
+    if (seg.name === null) continue;
+    const chap = createChapter({ name: seg.name });
+    newChapters.push(chap);
+    for (let i = seg.start; i < seg.start + seg.count; i++) created[i].chapterId = chap.id;
+  }
+  const newChapterIds = new Set(newChapters.map(c => c.id));
+  const chapterAnchor = anchorChapterId(all0, state.get('chapters') || [], state.get('activeStepId'));
+
   // Steps kept from before that have NO tree while there is no model either
   // (a named-but-empty first step): give them the empty scene tree too, or
   // the first model load would skip them (it only injects into steps with a
@@ -330,7 +396,12 @@ export async function importStepsFromSheet({ rows, titleColumns = [] } = {}) {
     if (patched.size) cur = cur.map(s => (patched.get(s.id)?.orig === s ? patched.get(s.id).next : s));
     const curSeed = seed ? cur.find(s => s.id === seed.id) : null;
     const defsNow = (state.get('constTextBoxes') || []).filter(d => !newDefIds.has(d.id));
-    state.setState({ steps: planStepList(cur, created, curSeed), constTextBoxes: [...defsNow, ...newDefs] });
+    const next = { steps: planStepList(cur, created, curSeed), constTextBoxes: [...defsNow, ...newDefs] };
+    // chapters in the SAME setState as their steps — no render ever sees a step whose chapter is missing
+    if (newChapters.length) {
+      next.chapters = insertChaptersAfter((state.get('chapters') || []).filter(c => !newChapterIds.has(c.id)), newChapters, chapterAnchor);
+    }
+    state.setState(next);
     steps.normalizeOrder();
     state.markDirty();
     if (state.get('activeStepId') !== created[0].id) steps.activateStep(created[0].id, false);
@@ -340,7 +411,9 @@ export async function importStepsFromSheet({ rows, titleColumns = [] } = {}) {
     let cur = (state.get('steps') || []).filter(s => !createdIds.has(s.id));
     if (patched.size) cur = cur.map(s => (patched.get(s.id)?.next === s ? patched.get(s.id).orig : s));
     if (seed && !cur.some(s => s.id === seed.id)) cur.splice(Math.min(Math.max(0, seedIndex), cur.length), 0, seed);
-    state.setState({ steps: cur, constTextBoxes: (state.get('constTextBoxes') || []).filter(d => !newDefIds.has(d.id)) });
+    const undone = { steps: cur, constTextBoxes: (state.get('constTextBoxes') || []).filter(d => !newDefIds.has(d.id)) };
+    if (newChapters.length) undone.chapters = (state.get('chapters') || []).filter(c => !newChapterIds.has(c.id));
+    state.setState(undone);
     steps.normalizeOrder();
     state.markDirty();
     const act = state.get('activeStepId');
@@ -353,6 +426,6 @@ export async function importStepsFromSheet({ rows, titleColumns = [] } = {}) {
 
   place();
   undoManager.push(`Steps from Excel (${created.length})`, unplace, place);
-  console.log(`[sheet-import] ${created.length} step(s)${seed ? ' (replaced the empty starting step)' : ''}, ${newDefs.length} new title type(s).`);
-  return { ok: true, created: created.length };
+  console.log(`[sheet-import] ${created.length} step(s)${seed ? ' (replaced the empty starting step)' : ''}, ${newDefs.length} new title type(s), ${newChapters.length} new chapter(s)${newChapters.length ? (chapterAnchor ? ` after chapter ${chapterAnchor}` : ' at the end') : ''}.`);
+  return { ok: true, created: created.length, chapters: newChapters.length };
 }
