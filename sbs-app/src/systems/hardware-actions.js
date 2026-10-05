@@ -49,6 +49,7 @@ import { washerStackThickness }         from './hardware-generator.js';
 import { applyNodeTransformToObject3D, setStoredQuaternion } from '../core/transforms.js';
 import { undoManager }                  from './undo.js';
 import { stripNodesFromAllStepSnapshots } from './actions.js';   // V0.3.2.73 — a delete must clear step snapshots too
+import { starStepsWhereNodesVisible } from './altered-stars.js';   // ★ V0.3.5.61 — insertion settings change the picture
 
 const HARDWARE_FOLDER_NAME = 'Hardware';
 
@@ -567,7 +568,7 @@ export function setInsertAnimParams(nodeIds, patch = {}) {
   if (!Array.isArray(nodeIds)) nodeIds = [nodeIds];
   if (!nodeIds.length) return;
 
-  const KEYS = ['distance', 'repositionMs', 'tagName', 'tagSize', 'tagColor',
+  const KEYS = ['distance', 'repositionMs', 'tagName', 'tagSpotlight', 'tagSize', 'tagColor',
                 'explodeBefore', 'pauseBefore', 'pauseBeforeMs',
                 'trajectory', 'lineThickness', 'lineGap', 'lineColor'];
   const set = {};
@@ -594,6 +595,10 @@ export function setInsertAnimParams(nodeIds, patch = {}) {
     }
     state.markDirty?.();
     state.emit('change:treeData', state.get('treeData'));
+    // V0.3.5.61 — the tags on screen follow at once, and the steps showing these nuts get their ★ (the export
+    // cache does not key on insertion settings: a rendered clip would keep the old tags)
+    state.emit('hardware:insertAnimChanged');
+    try { starStepsWhereNodesVisible(nodeIds, 'insertion settings'); } catch { /* stars are a cue, never a blocker */ }
   };
 
   _apply();

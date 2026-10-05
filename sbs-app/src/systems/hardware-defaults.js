@@ -20,6 +20,7 @@ export const HARDWARE_FALLBACK = {
   distance:      20,
   repositionMs:  300,
   tagName:       false,
+  tagSpotlight:  false,       // 🔦 V0.3.5.61 — the tags show ONLY while the nut stands in a spotlight
   tagSize:       'medium',
   tagColor:      '#ffffff',   // tag text colour
   explodeBefore: false,       // show the nut EXPLODED on every step before insertion
@@ -58,6 +59,7 @@ export function resolveInsertAnim(node) {
     distance:      pick('distance'),
     repositionMs:  pick('repositionMs'),
     tagName:       pick('tagName'),
+    tagSpotlight:  !!pick('tagSpotlight'),
     tagSize:       pick('tagSize'),
     tagColor:      pick('tagColor'),
     explodeBefore: pick('explodeBefore'),
@@ -100,5 +102,6 @@ export function setProjectDefault(patch = {}) {
   const base = state.get('hardwareDefaults') || getEffectiveDefaults();
   state.setState({ hardwareDefaults: { ...base, ...patch } });
   state.markDirty?.();
+  state.emit('hardware:insertAnimChanged');                // V0.3.5.61 — the tags on screen follow at once
   return state.get('hardwareDefaults');
 }

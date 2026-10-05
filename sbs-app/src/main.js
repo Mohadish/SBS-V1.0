@@ -354,8 +354,11 @@ setupUndoKeyboard();
 // step:applied (final settle). The per-frame tick keeps the merged mesh
 // hidden and the tags glued.
 import('./systems/hardware-insert-anim.js').then(hw => {
-  state.on('step:activate', (id) => hw.refreshPreInstall(id));
-  state.on('step:applied',  ()   => hw.refreshPreInstall(state.get('activeStepId')));
+  // 🔦 V0.3.5.61 — { animating }: the spotlight-only name tags wait for the step to settle, and go when the next animation starts
+  hw.setInsertAnimProbe?.(() => !!steps._animRunning);
+  state.on('step:activate', (id) => hw.refreshPreInstall(id, { animating: true }));
+  state.on('step:applied',  ()   => hw.refreshPreInstall(state.get('activeStepId'), { animating: !!steps._animRunning }));
+  state.on('hardware:insertAnimChanged', () => hw.refreshPreInstall(state.get('activeStepId')));   // a tag option changed: show it now
   hw.refreshPreInstall(state.get('activeStepId'));
 }).catch(() => {});
 

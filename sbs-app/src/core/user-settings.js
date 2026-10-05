@@ -194,6 +194,7 @@ const DEFAULTS = {
     distance:      20,        // X explode spacing (mm)
     repositionMs:  300,       // pre-insertion reposition time (ms)
     tagName:       false,     // show spec-name tag
+    tagSpotlight:  false,     // 🔦 V0.3.5.61 — …only while the nut stands in a spotlight
     tagSize:       'medium',  // 'small' | 'medium' | 'large'
     tagColor:      '#ffffff', // tag text colour
     explodeBefore: false,     // show the nut exploded on every step before insertion

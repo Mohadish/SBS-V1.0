@@ -3496,7 +3496,7 @@ export function showInputDialog(title, defaultVal, onConfirm) {
 export async function showInsertAnimDialog(cur, onConfirm) {
   const c = cur || {};
   // Effective defaults to show when a row is set to "use default".
-  let def = { distance: 20, repositionMs: 300, tagName: false, tagSize: 'medium',
+  let def = { distance: 20, repositionMs: 300, tagName: false, tagSpotlight: false, tagSize: 'medium',
               tagColor: '#ffffff', explodeBefore: false, pauseBefore: true, pauseBeforeMs: 300,
               trajectory: false, lineThickness: 0.5, lineGap: 2, lineColor: '#ffaa00' };
   try { def = (await import('../systems/hardware-defaults.js')).getEffectiveDefaults(); } catch {}
@@ -3519,6 +3519,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
 
       ${_iaRow('tag', 'Name tag',
         `<label class="small"><input type="checkbox" id="_ia-tag" ${val('tagName') ? 'checked' : ''}/> show</label>
+         <label class="small" style="margin-left:8px;" title="The tags show only while the nut stands in a 🔦 Spotlight (right-click ▸ Spotlight at this step), once the step has settled — they are gone the moment the next animation starts."><input type="checkbox" id="_ia-tagspot" ${val('tagSpotlight') ? 'checked' : ''}/> only in 🔦 Spotlight</label>
          <select id="_ia-size" style="margin-left:8px;">
            <option value="small"  ${sz==='small' ?'selected':''}>Small</option>
            <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
@@ -3571,6 +3572,7 @@ export async function showInsertAnimDialog(cur, onConfirm) {
       distance:     useDef('x')   ? null : Number(dlg.querySelector('#_ia-x').value),
       repositionMs: useDef('ms')  ? null : Number(dlg.querySelector('#_ia-ms').value),
       tagName:      useDef('tag') ? null : dlg.querySelector('#_ia-tag').checked,
+      tagSpotlight: useDef('tag') ? null : dlg.querySelector('#_ia-tagspot').checked,   // 🔦 V0.3.5.61
       tagSize:      useDef('tag') ? null : dlg.querySelector('#_ia-size').value,
       tagColor:     useDef('tag')     ? null : dlg.querySelector('#_ia-tagcolor').value,
       explodeBefore:useDef('explode') ? null : dlg.querySelector('#_ia-explode').checked,

@@ -161,6 +161,37 @@ function _buildTagItems(tpl, eff, parts, elems) {
 const _preview = new Map();
 let _previewTickUnsub = null;
 
+// 🔦 V0.3.5.61 — "Name tag: only in Spotlight" (his ask). The tags of such a nut show ONLY while it stands in
+// a 🔦 spotlight (node.spotlight on the open step) and the step has SETTLED — they are gone the moment the
+// next animation starts, and never ride the insertion. Two carriers:
+//   · a nut with an exploded preview on this step: its preview entry, gated (spotOnly);
+//   · any other nut: a tags-only entry hung on the assembled nut, built the first time the tick sees it
+//     spotlighted (_spotCands = who wants it; cheap until one of them is).
+// _settled: false from 'step:activate' until 'step:applied' with no transition running. A step id can also
+// change without a transition (undo of a step delete…): then 30 quiet ticks settle it (_animProbe).
+let _spotCands = [];
+let _settled = true, _idleTicks = 0, _animProbe = null;
+/** main.js hands in "is a step transition running?" (steps.js imports this module: no import back). */
+export function setInsertAnimProbe(fn) { _animProbe = typeof fn === 'function' ? fn : null; }
+const _spotShown = (p) => _settled && !!p.node?.spotlight && p.mergedMesh?.visible !== false;
+
+/** Tags-only entries for the spotlighted candidates that have none yet. */
+function _ensureSpotTags() {
+  if (!_settled || !_spotCands.length) return;
+  const tpls = state.get('hardwareTemplates') || [];
+  for (const node of _spotCands) {
+    if (!node.spotlight || _preview.has(node.id)) continue;
+    const merged = node.object3d, tpl = tpls.find(t => t.id === node.templateId);
+    if (!merged || !tpl) continue;
+    let parts;
+    try { parts = generateScrewParts(tpl.params || {}, node.washers || null); } catch { continue; }
+    // only the parts' measures are needed: every tag hangs on the ASSEMBLED nut, at its part's own height
+    const tagItems = _buildTagItems(tpl, resolveInsertAnim(node), parts, Array(1 + parts.washers.length).fill(merged));
+    try { parts.screw?.geometry?.dispose?.(); for (const w of parts.washers) w.mesh?.geometry?.dispose?.(); } catch { /* transient */ }
+    _preview.set(node.id, { node, tagsOnly: true, spotOnly: true, group: null, elems: [], mergedMesh: merged, tagItems });
+  }
+}
+
 // The assembled mesh is hidden from RENDERING by moving it to this layer
 // (the camera + raycaster only see layer 0), NOT by setting .visible=false.
 // That keeps the visibility system's "appearing" detection honest (it reads
@@ -209,9 +240,10 @@ export function clearPreInstall() {
     for (const it of (p.tagItems || [])) {
       if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);
     }
-    if (p.mergedMesh) p.mergedMesh.layers.mask = p.prevLayerMask ?? 1;  // re-render it
+    if (p.mergedMesh && !p.tagsOnly) p.mergedMesh.layers.mask = p.prevLayerMask ?? 1;  // re-render it (a tags-only entry never hid it)
   }
   _preview.clear();
+  _spotCands = [];
   if (_previewTickUnsub) { _previewTickUnsub(); _previewTickUnsub = null; }
 }
 
@@ -232,7 +264,9 @@ export function clearPreInstall() {
  * The pieces SHARE the live material, so colour + the genuine fade follow.
  * _advancePreview owns all the per-frame upkeep.
  */
-export function refreshPreInstall(activeStepId) {
+export function refreshPreInstall(activeStepId, opts = {}) {
+  // 🔦 V0.3.5.61 — { animating } comes with the step events: true at 'step:activate', the truth at 'step:applied'
+  if ('animating' in opts) { _settled = !opts.animating; _idleTicks = 0; }
   clearPreInstall();
   if (!activeStepId) return;
   const T = window.THREE;
@@ -287,12 +321,23 @@ export function refreshPreInstall(activeStepId) {
     _preview.set(node.id, {
       group, elems, mergedMesh: merged, prevLayerMask,
       tagItems: _buildTagItems(tpl, eff, parts, elems),
+      node, spotOnly: !!(eff.tagName && eff.tagSpotlight),   // 🔦 its tags wait for the spotlight
     });
     gated++;
   }
 
+  // 🔦 V0.3.5.61 — every other nut whose tags show only in a spotlight is a candidate (see _ensureSpotTags)
+  (function walk(n) {
+    if (!n) return;
+    if (n.type === 'hardwareInstance' && !n.archived && !_preview.has(n.id)) {
+      const e = resolveInsertAnim(n);
+      if (e.tagName && e.tagSpotlight) _spotCands.push(n);
+    }
+    for (const c of (n.children || [])) walk(c);
+  })(state.get('treeData'));
+
   if (diag && seen > 0) console.log(`[preview] step=${activeStepId} actors=${seen} built=${gated} | ${why.join(' || ')}`);
-  if (_preview.size && !_previewTickUnsub) {
+  if ((_preview.size || _spotCands.length) && !_previewTickUnsub) {
     _previewTickUnsub = sceneCore.addTickHook(() => _advancePreview());
   }
   _advancePreview();
@@ -411,7 +456,8 @@ export function stageInsertActors(actors, opts = {}) {
     // shows from the start; an APPEARING screw waits for the overlay block
     // (showInsertTags) so the label doesn't float over a not-yet-faded-in
     // screw.
-    if (eff.tagName) {
+    // 🔦 V0.3.5.61 — "only in Spotlight": no tags on the insertion at all (they left when this animation began)
+    if (eff.tagName && !eff.tagSpotlight) {
       entry.tagItems = _buildTagItems(tpl, eff, parts, elems);
       entry.tagShown = needsReposition || preExploded;
     }
@@ -718,15 +764,21 @@ export function rasterizeTagsLayer({ width, height }) {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) return null;
   const T = window.THREE;
   const cam = sceneCore?.camera;
-  if (!T || !cam || !_staged.size) return null;
+  if (!T || !cam) return null;
 
-  let anyVisible = false;
+  // What is showing: the insertion's own tags — and (🔦 V0.3.5.61) the spotlight-only tags, which live on the
+  // pre-install previews. ONLY those: the plain preview tags were never part of the export and stay so.
+  const items = [];
   for (const s of _staged.values()) {
-    if (s.tagShown && s.tagItems?.some(it => it.div && it.piece?.visible && it.div.textContent)) {
-      anyVisible = true; break;
-    }
+    if (!s.tagShown || !s.tagItems) continue;
+    for (const it of s.tagItems) if (it.div && it.piece?.visible && it.div.textContent) items.push(it);
   }
-  if (!anyVisible) return null;
+  _ensureSpotTags();
+  for (const p of _preview.values()) {
+    if (!p.spotOnly || !_spotShown(p)) continue;
+    for (const it of (p.tagItems || [])) if (it.div && it.piece && it.div.textContent) items.push(it);
+  }
+  if (!items.length) return null;
 
   // Refresh matrices — export composites BEFORE the next render() (same as notes).
   cam.updateMatrixWorld(true);
@@ -748,13 +800,10 @@ export function rasterizeTagsLayer({ width, height }) {
   ctx.textBaseline = 'middle';
   let drew = false;
 
-  for (const s of _staged.values()) {
-    if (!s.tagShown || !s.tagItems) continue;
-    for (const it of s.tagItems) {
+  {
+    for (const it of items) {
       const div = it.div;
-      if (!div || !it.piece?.visible) continue;
       const text = div.textContent || '';
-      if (!text) continue;
 
       wp.set(0, it.localY || 0, 0); it.piece.localToWorld(wp);
       ndc.copy(wp).project(cam);
@@ -793,6 +842,9 @@ export function rasterizeTagsLayer({ width, height }) {
  *     show, genuine fade-in/out, and hard hide, with no per-step blink.
  */
 function _advancePreview() {
+  // 🔦 a step id that changed with no transition never gets its 'step:applied': quiet ticks settle it
+  if (!_settled) { if (_animProbe && !_animProbe()) { if (++_idleTicks >= 30) _settled = true; } else _idleTicks = 0; }
+  _ensureSpotTags();
   if (!_preview.size) return;
   const T = window.THREE;
   const root = sceneCore.rootGroup;
@@ -801,6 +853,7 @@ function _advancePreview() {
   const wp = new T.Vector3(), wq = new T.Quaternion(), ws = new T.Vector3();
 
   for (const [, p] of _preview) {
+    if (p.tagsOnly) { p.mergedMesh?.updateWorldMatrix?.(true, false); continue; }   // 🔦 nothing to pose: the tags hang on the nut itself
     if (root && p.group && p.group.parent !== root) root.add(p.group);
     const merged = p.mergedMesh;
     if (merged) {
@@ -825,7 +878,7 @@ function _advancePreview() {
   const camRight = new T.Vector3();
   cam.matrixWorld.extractBasis(camRight, new T.Vector3(), new T.Vector3());
   for (const [, p] of _preview) {
-    const show = p.group.visible;
+    const show = p.tagsOnly ? _spotShown(p) : (p.group.visible && (!p.spotOnly || _spotShown(p)));
     for (const it of (p.tagItems || [])) {
       if (!it.div) continue;
       if (!show) { it.div.style.display = 'none'; continue; }

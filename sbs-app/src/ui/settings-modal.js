@@ -369,6 +369,10 @@ function _renderNutsTab(body) {
           style="width:48px;height:28px;margin-top:3px;margin-left:6px;padding:2px;border-radius:4px;cursor:pointer;vertical-align:middle;" />
       </label>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-left:24px;cursor:pointer;" title="The tags show only while the nut stands in a 🔦 Spotlight (right-click ▸ Spotlight at this step), once the step has settled — they are gone the moment the next animation starts.">
+      <input type="checkbox" id="_nt-tagspot" ${n.tagSpotlight ? 'checked' : ''} />
+      <span class="small">…only in 🔦 Spotlight</span>
+    </label>
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
       <input type="checkbox" id="_nt-explode" ${n.explodeBefore ? 'checked' : ''} />
       <span class="small">Display exploded before insertion</span>
@@ -412,6 +416,7 @@ function _renderNutsTab(body) {
       distance:      Math.max(1, Number(body.querySelector('#_nt-x').value)    || 20),
       repositionMs:  Math.max(0, Number(body.querySelector('#_nt-ms').value)   || 300),
       tagName:       body.querySelector('#_nt-tag').checked,
+      tagSpotlight:  body.querySelector('#_nt-tagspot').checked,
       tagSize:       body.querySelector('#_nt-size').value,
       tagColor:      body.querySelector('#_nt-tagcolor').value,
       explodeBefore: body.querySelector('#_nt-explode').checked,
@@ -423,7 +428,7 @@ function _renderNutsTab(body) {
       lineColor:     body.querySelector('#_nt-color').value,
     } });
   };
-  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-pause','#_nt-pausems','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-tagspot','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-pause','#_nt-pausems','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
     body.querySelector(sel)?.addEventListener('change', save);
   }
 }

@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.5.60';
+export const APP_VERSION  = 'V0.3.5.61';
 // The oldest CORE (electron/*.js, preload, helper pages) this interface can run on.
 // BUMP THIS whenever a change under electron/ lands — the interface then tells a
 // Ctrl+R'd session that a full restart is needed, and stays quiet otherwise.
@@ -556,6 +556,7 @@ export function createHardwareInstanceNode(overrides = {}) {
     //   distance      X explode spacing (mm)
     //   repositionMs  pre-insertion reposition time (ms)
     //   tagName       show spec-name label (bool)
+    //   tagSpotlight  …only while the nut stands in a 🔦 spotlight (bool, V0.3.5.61)
     //   tagSize       'small' | 'medium' | 'large'
     //   trajectory    show dotted insertion-path line (bool)
     //   lineThickness trajectory thickness (mm); dash ratio scales with it
@@ -563,7 +564,7 @@ export function createHardwareInstanceNode(overrides = {}) {
     insertAnim: {
       enabled: false, stepId: null,
       distance: null, repositionMs: null,
-      tagName: null, tagSize: null, tagColor: null, explodeBefore: null,
+      tagName: null, tagSpotlight: null, tagSize: null, tagColor: null, explodeBefore: null,
       pauseBefore: null, pauseBeforeMs: null,
       trajectory: null, lineThickness: null, lineGap: null, lineColor: null,
     },

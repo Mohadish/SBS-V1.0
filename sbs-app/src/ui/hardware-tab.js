@@ -99,6 +99,10 @@ function _renderDefaultsEditor() {
       <input type="color" id="hd-tagcolor" value="${_esc(d.tagColor || '#ffffff')}" title="Tag text colour"
         style="width:32px;height:24px;margin-left:4px;padding:2px;border-radius:4px;cursor:pointer;" />
     </label>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:4px;margin-left:22px;cursor:pointer;" title="The tags show only while the nut stands in a 🔦 Spotlight (right-click ▸ Spotlight at this step), once the step has settled — they are gone the moment the next animation starts.">
+      <input type="checkbox" id="hd-tagspot" ${d.tagSpotlight ? 'checked' : ''}/>
+      <span class="small">…only in 🔦 Spotlight</span>
+    </label>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" id="hd-explode" ${d.explodeBefore ? 'checked' : ''}/>
       <span class="small">Display exploded before insertion</span>
@@ -136,6 +140,7 @@ function _wireDefaultsEditor(panelEl) {
     distance:      Math.max(1, Number(g('#hd-x').value)     || 20),
     repositionMs:  Math.max(0, Number(g('#hd-ms').value)    || 300),
     tagName:       g('#hd-tag').checked,
+    tagSpotlight:  g('#hd-tagspot').checked,
     tagSize:       g('#hd-size').value,
     tagColor:      g('#hd-tagcolor').value,
     explodeBefore: g('#hd-explode').checked,
@@ -146,7 +151,7 @@ function _wireDefaultsEditor(panelEl) {
     lineGap:       Math.max(0,    Number(g('#hd-gap').value)   || 2),
     lineColor:     g('#hd-color').value,
   });
-  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-size','#hd-tagcolor','#hd-explode','#hd-pause','#hd-pausems','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
+  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-tagspot','#hd-size','#hd-tagcolor','#hd-explode','#hd-pause','#hd-pausems','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
     g(id)?.addEventListener('change', push);
   }
   const st = g('#hw-file-default-state');
