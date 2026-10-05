@@ -902,6 +902,25 @@ function _setProjectMeta(pathOrName) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * 🚀 V0.3.5.60 — a .sbsproj at a known path (Electron), in the shape
+ * pickProjectFile returns: Quick start opens a RECENT project, or a project
+ * picked before the review sheet that goes with it, without a second dialog.
+ * Read RAW bytes (gzipped new files OR legacy plain JSON). loadProject()
+ * detects the gzip magic and decodes. Uses the long-standing binary
+ * fs:readFile('buffer') handler, so opening never depends on a freshly
+ * restarted main process.
+ *
+ * @returns {Promise<{file:File, path:string}>}
+ */
+export async function readProjectAtPath(filePath) {
+  const readResult = await window.sbsNative.readFile(filePath, 'buffer');
+  if (!readResult?.ok) throw new Error(readResult?.error || 'Read failed');
+  const bytes = readResult.data instanceof Uint8Array ? readResult.data : new Uint8Array(readResult.data);
+  const file = new File([bytes], filePath.split(/[\\/]/).pop(), { type: 'application/octet-stream' });
+  return { file, path: filePath };
+}
+
+/**
  * Show a file-open dialog for .sbsproj files.
  *
  * @returns {Promise<{file:File, handle?:FileSystemFileHandle, path?:string}|null>}
@@ -912,15 +931,7 @@ export async function pickProjectFile() {
   if (window.sbsNative?.openProject) {
     const filePath = await window.sbsNative.openProject();
     if (!filePath) return null;
-    // Read RAW bytes (gzipped new files OR legacy plain JSON). loadProject()
-    // detects the gzip magic and decodes. Uses the long-standing binary
-    // fs:readFile('buffer') handler, so opening never depends on a freshly
-    // restarted main process.
-    const readResult = await window.sbsNative.readFile(filePath, 'buffer');
-    if (!readResult?.ok) throw new Error(readResult?.error || 'Read failed');
-    const bytes = readResult.data instanceof Uint8Array ? readResult.data : new Uint8Array(readResult.data);
-    const file = new File([bytes], filePath.split(/[\\/]/).pop(), { type: 'application/octet-stream' });
-    return { file, path: filePath };
+    return readProjectAtPath(filePath);
   }
 
   // File System Access API

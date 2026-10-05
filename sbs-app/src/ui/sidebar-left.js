@@ -18,7 +18,7 @@ import { preparePolyAssetOnLoad, reconcilePolyAssetsOnLoad } from '../systems/po
 import { chooseFromButtons } from './prompt.js';   // ⚡ V0.3.2.250 — post-load fast-load offer
 import { showAssetVerifyDialog } from './asset-verify.js';
 import {
-  saveProject, loadProject, pickProjectFile, getSuggestedFilename,
+  saveProject, loadProject, pickProjectFile, readProjectAtPath, getSuggestedFilename,
   buildIdRemapFromSpec, applyIdRemap, applySpecFieldsToNodes,
   collectAllMeshSpecs, buildDisplacedMeshIdRemap, PROJECT_STATE_KEYS, SESSION_MODAL_KEYS,
   readProjectForImport,
@@ -491,6 +491,7 @@ function _renderFilesTab() {
         <button class="btn" id="btn-save-as">Save As…</button>
       </div>
       <button class="btn" id="btn-sheet-import" style="width:100%;margin-top:8px" title="Make one step per row of a spreadsheet — pick which columns are the step name, voiceover and titles">📊 Steps from Excel…</button>
+      <button class="btn" id="btn-quick-start" style="width:100%;margin-top:8px" title="What do you want to do? Continue a recent project, start a new one, design an object, make a document, apply a client's corrections">🚀 Quick start</button>
     </div>
 
     <div class="section">
@@ -547,6 +548,8 @@ function _renderFilesTab() {
   el.querySelector('#btn-save-project')?.addEventListener('click', () => _onSaveProject(false));
   el.querySelector('#btn-save-as')?.addEventListener('click',      () => _onSaveProject(true));
   el.querySelector('#btn-sheet-import')?.addEventListener('click', () => import('./sheet-import-dialog.js').then(m => m.openSheetImport()).catch(err => setStatus(`Steps from Excel failed: ${err.message}`, 'danger')));   // 📊 V0.3.5.53
+  // 🚀 V0.3.5.60 — dynamic: quick-start.js imports this module (it runs New / Open)
+  el.querySelector('#btn-quick-start')?.addEventListener('click', () => import('./quick-start.js').then(m => m.openQuickStart()).catch(err => setStatus(`Quick start failed: ${err.message}`, 'danger')));
   el.querySelector('#btn-fit-all')?.addEventListener('click',      _onFitAll);
   el.querySelector('#btn-toggle-grid')?.addEventListener('click',  _onToggleGrid);
   el.querySelector('#btn-toggle-theme')?.addEventListener('click', _onToggleTheme);
@@ -771,9 +774,18 @@ function _polyEditorBlocks(what) {
   return true;
 }
 
+/**
+ * 🚀 V0.3.5.60 — the New / Open flows for Quick start, which chains them: it
+ * needs to know whether they went through (a refusal or a cancelled picker
+ * stops its flow quietly). True = done; false = refused / cancelled / failed.
+ * openProjectFlow(path) opens that file without the picker.
+ */
+export function newProjectFlow() { return _onNewProject(); }
+export function openProjectFlow(path = null) { return _openProject(typeof path === 'string' ? path : null); }
+
 function _onNewProject() {
-  if (_polyEditorBlocks('start a new project')) return;
-  if (state.get('projectDirty') && !confirm('Discard unsaved changes and start a new project?')) return;
+  if (_polyEditorBlocks('start a new project')) return false;
+  if (state.get('projectDirty') && !confirm('Discard unsaved changes and start a new project?')) return false;
   // B1/H1 (V0.3.2.105): dispose GPU resources BEFORE dropping the scene —
   // remove() alone leaked every geometry/material/texture per New Project.
   if (sceneCore.rootGroup) {
@@ -856,14 +868,19 @@ function _onNewProject() {
   if (wasUntitled) undoManager.clear();   // null→null: change:projectPath never fires
   state.emit('project:fresh');            // V0.3.4.133 — main.js arms the clean-settle (a new project is saved as it is)
   setStatus('New project.');
+  return true;
 }
 
-async function _onOpenProject() {
-  if (_polyEditorBlocks('open a project')) return;
-  if (state.get('projectDirty') && !confirm('Open a project? Unsaved changes will be lost.')) return;
+// The menu / button handlers pass an event (or nothing) — never a path.
+function _onOpenProject() { return _openProject(null); }
+
+async function _openProject(atPath = null) {
+  if (_polyEditorBlocks('open a project')) return false;
+  if (state.get('projectDirty') && !confirm('Open a project? Unsaved changes will be lost.')) return false;
   try {
-    const picked = await pickProjectFile();
-    if (!picked) return;
+    // 🚀 V0.3.5.60 — a known path (Quick start's recent list) skips the picker
+    const picked = atPath ? await readProjectAtPath(atPath) : await pickProjectFile();
+    if (!picked) return false;
 
     // V0.3.2.113: capture the FSA save handle (web mode) — Open used to
     // discard it, so the PREVIOUS project's handle stayed in state and the
@@ -942,7 +959,7 @@ async function _onOpenProject() {
       try {
         userFiles = await showAssetVerifyDialog(resolvedAssets, isElectron);
       } catch (err) {
-        if (err?.message === 'cancelled') { setStatus('Project load cancelled.'); return; }
+        if (err?.message === 'cancelled') { setStatus('Project load cancelled.'); return false; }
         console.error('Asset verify error:', err);
         // Continue load — treat as no user files provided
       }
@@ -1228,10 +1245,12 @@ async function _onOpenProject() {
     // ⚡ V0.3.2.250 — LAST: after the path heals and the metadata reconcile,
     // either of which would write the .step path back over an earlier repoint.
     await _offerProjectBakes();
+    return true;
   } catch (err) {
     discardPendingProjectBakes();
     console.error('Open project failed:', err);
     setStatus('Failed to open project.', 'danger');
+    return false;
   }
 }
 

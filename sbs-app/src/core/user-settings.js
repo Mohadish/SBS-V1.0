@@ -37,6 +37,13 @@ const DEFAULTS = {
   narration: {
     lastUsedVoice: '',
   },
+  // 🚀 V0.3.5.60 — Quick start (ui/quick-start.js). A machine setting: whether the
+  // "what do you want to do?" window opens with the app, and the recent projects
+  // it offers (last 8 opened / saved: { path, name, folder, at }; see core/recent-projects.js).
+  quickStart: {
+    showAtStart: true,
+    recent:      [],
+  },
   // 🧤 V0.3.4.139 — the skinned hand (.glb) over the hand rig. A machine
   // setting like a brush: the look of every hand, not project data.
   hands: {

@@ -2004,6 +2004,9 @@ function _cloneStep(step) {
 //                   then adopted from the insertion target like paste-under
 //   step ids        regenerated (collision-proof)
 
+/** 🚀 V0.3.5.60 — Quick start's "New project ▸ start from another project": the same flow, after the active step. */
+export function importStepsFromProject(targetStepId = state.get('activeStepId')) { return _importStepsFlow(targetStepId); }
+
 async function _importStepsFlow(targetStepId) {
   let picked;
   try { picked = await pickProjectFile(); } catch (err) {

@@ -721,6 +721,9 @@ function buildMenu() {
     {
       role: 'help',
       submenu: [
+        // 🚀 V0.3.5.60 — "what do you want to do?" (renderer: ui/quick-start.js)
+        { label: 'Quick start', click: () => mainWindow?.webContents.send('menu:quickStart') },
+        { type: 'separator' },
         { label: 'SBS Manual', accelerator: 'F1', click: () => openHelpWindow() },
         { label: 'Save the manual as PDF…', click: () => saveManualPdf(mainWindow) },
         { type: 'separator' },

@@ -14,8 +14,13 @@ import { listReviewNotes } from '../systems/review-notes.js';
 let _win = null;
 let _busy = false;
 
-export function openReviewFormPanel() {
-  if (_win) { _win.style.display = ''; _render(); return; }
+/**
+ * 🚀 V0.3.5.60 — opts.importPath: open the panel and start its "📥 Import sheet"
+ * with that file (Quick start asked for it already). Returns that import's promise.
+ */
+export function openReviewFormPanel(opts = {}) {
+  const importPath = typeof opts?.importPath === 'string' ? opts.importPath : null;
+  if (_win) { _win.style.display = ''; _render(); return importPath ? _run('import', importPath) : undefined; }
   _win = document.createElement('div');
   _win.id = 'review-form-panel';
   _win.style.cssText = [
@@ -52,6 +57,7 @@ export function openReviewFormPanel() {
   state.on('change:reviewNotes', () => { if (_win && _win.style.display !== 'none') _render(); });
   state.on('change:activeStepId', () => { if (_win && _win.style.display !== 'none') _render(); });
   _render();
+  return importPath ? _run('import', importPath) : undefined;
 }
 
 export function closeReviewFormPanel() { if (_win) _win.style.display = 'none'; }
@@ -74,12 +80,12 @@ function _render() {
   renderReviewNotesTab(_win.querySelector('#rf-notes'));
 }
 
-async function _run(dir) {
+async function _run(dir, path = null) {
   if (_busy) return;
   _busy = true; _render();
   try {
     if (dir === 'export') await exportTranslationSheet();
-    else await importTranslationSheet();
+    else await importTranslationSheet(path);
   } catch (e) {
     console.error(`[review-form] ${dir} failed:`, e);
     setStatus(`Sheet ${dir} failed: ${e?.message || e} — details in the console (Ctrl+Shift+I).`, 'warn', 10000);

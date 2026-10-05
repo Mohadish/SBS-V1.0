@@ -115,6 +115,7 @@ contextBridge.exposeInMainWorld('sbsNative', {
       'menu:documentPanel',        // 📄 V0.3.4.0 — Tools ▸ Document… (2D manual from the animation)
       'menu:licensePanel',         // 🔑 V0.3.4.64 — Help ▸ Licence…
       'menu:collectProject',       // 📦 V0.3.4.101 — File ▸ Collect Project for Another Computer…
+      'menu:quickStart',           // 🚀 V0.3.5.60 — Help ▸ Quick start
       'key:altCombo',              // 🎹 V0.3.2.175 — Alt+<key> combos forwarded
                                    // from before-input-event (Windows menu-bar
                                    // pre-arming eats the first page-level
@@ -201,5 +202,8 @@ contextBridge.exposeInMainWorld('sbsNative', {
   // ── Environment ──────────────────────────────────────────────────────────
   isElectron: true,
   platform: process.platform,   // 'win32' | 'darwin' | 'linux'
+  // 🚀 V0.3.5.60 — a test harness launches with SBS_NO_QUICKSTART=1: the modal
+  // Quick start window would otherwise swallow the keys it sends.
+  noQuickStart: process.env.SBS_NO_QUICKSTART === '1',
 
 });

@@ -213,11 +213,12 @@ export async function exportTranslationSheet() {
 
 // ─── import ─────────────────────────────────────────────────────────────────
 
-export async function importTranslationSheet() {
+// 🚀 V0.3.5.60 — pathArg: the sheet Quick start already asked for ("apply the client's corrections"), so it is not asked again
+export async function importTranslationSheet(pathArg = null) {
   if (!_guard()) return null;
   // .ods too (V0.3.3.10): Apache OpenOffice cannot save .xlsx, only its own
   // .ods (or the binary .xls, which nothing here reads).
-  const path = await window.sbsNative.openFile({ title: 'Import a translation sheet', filters: [{ name: 'Spreadsheet (Excel .xlsx, OpenDocument .ods)', extensions: ['xlsx', 'ods'] }] });
+  const path = (typeof pathArg === 'string' && pathArg) || await window.sbsNative.openFile({ title: 'Import a translation sheet', filters: [{ name: 'Spreadsheet (Excel .xlsx, OpenDocument .ods)', extensions: ['xlsx', 'ods'] }] });
   if (!path) return null;
   if (/\.xls$/i.test(path)) { setStatus('That is the old binary .xls format — in OpenOffice / LibreOffice use File ▸ Save As ▸ ODF Spreadsheet (.ods), or Excel 2007+ (.xlsx).', 'warn', 10000); return null; }
   const rd = await window.sbsNative.readFile(path, 'base64');

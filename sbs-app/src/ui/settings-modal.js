@@ -38,6 +38,7 @@ export async function openSettingsModal(initialTab = 'language') {
       <div style="display:flex;flex:1;min-height:0;">
         <nav id="settings-tabs" style="width:140px;border-right:1px solid #334155;padding:8px 0;display:flex;flex-direction:column;gap:2px;">
           <button class="settings-tab" data-tab="language">Language</button>
+          <button class="settings-tab" data-tab="startup">Start-up</button>
           <button class="settings-tab" data-tab="keys">Keybindings</button>
           <button class="settings-tab" data-tab="scene">Scene</button>
           <button class="settings-tab" data-tab="import">Import</button>
@@ -114,6 +115,7 @@ function _showTab(name) {
   const body = _dlg.querySelector('#settings-body');
   body.innerHTML = '';
   if (name === 'language') _renderLanguageTab(body);
+  if (name === 'startup')  _renderStartupTab(body);
   if (name === 'keys')     _renderKeysTab(body);
   if (name === 'scene')    _renderSceneTab(body);
   if (name === 'import')   _renderImportTab(body);
@@ -760,6 +762,30 @@ function _renderSceneTab(body) {
  * the native 64-bit converter: the tree structure (assembly hierarchy with
  * real names vs a flat part list), and whether to ask per-file at load time.
  */
+// 🚀 V0.3.5.60 — the way back for "Don't show this at start" (ticked in the Quick start window itself).
+function _renderStartupTab(body) {
+  const qs = userSettings.get().quickStart || {};
+  body.innerHTML = `
+    <h3 style="margin:0 0 6px 0;font-size:14px;">When the app starts</h3>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;">
+      <input type="checkbox" id="su-qs" ${qs.showAtStart !== false ? 'checked' : ''} />
+      <span class="small">Show Quick start when the app starts</span>
+    </label>
+    <div class="small muted" style="margin:2px 0 0 24px;font-size:11px;opacity:0.8;line-height:1.5;">
+      Quick start asks what you want to do — continue a recent project, start a new one, design an object,
+      make a document, apply a client's corrections — and opens the right things for it. It is always
+      reachable from the Files tab (🚀 Quick start) and Help ▸ Quick start.
+    </div>
+    <button class="btn" id="su-qs-open" type="button" style="margin-top:14px;">🚀 Open Quick start now</button>
+  `;
+  body.querySelector('#su-qs').addEventListener('change', e =>
+    userSettings.patch({ quickStart: { showAtStart: !!e.target.checked } }));
+  body.querySelector('#su-qs-open').addEventListener('click', () => {
+    closeSettingsModal();
+    import('./quick-start.js').then(m => m.openQuickStart()).catch(err => console.warn('[quick start] open:', err));
+  });
+}
+
 function _renderImportTab(body) {
   const cur  = userSettings.get();
   const cad  = cur.cad || {};

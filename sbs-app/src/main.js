@@ -57,6 +57,7 @@ import { initHud }                from './ui/hud.js';
 import { initStepNav }            from './ui/step-nav.js';
 import { initStepsPanel }         from './ui/steps-panel.js';
 import { initSidebarLeft, showColorForNode, openCableTabForCable, clearActiveCable } from './ui/sidebar-left.js';
+import { initQuickStart, maybeShowQuickStartAtBoot } from './ui/quick-start.js';   // 🚀 V0.3.5.60 — "what do you want to do?"
 import { initContextMenu, hideContextMenu, showContextMenu, canonicalizeMenuOrder } from './ui/context-menu.js';
 import { promptString } from './ui/prompt.js';
 import { showMoveToFolderDialog, showAddToReplaceDialog, showReplaceModeDialog, showInputDialog, showInsertAnimDialog, getFilter, folderMenuItems } from './ui/tree.js';
@@ -324,6 +325,7 @@ window.addEventListener('error', (event) => {
 
 initContextMenu();
 initSidebarLeft();
+initQuickStart();   // 🚀 V0.3.5.60 — before any project can load: it records the recent list on open / save
 initStepNav();
 initStepsPanel();
 initHud();
@@ -398,6 +400,9 @@ initUserSettings()
         state.setState({ backgroundGradient: { ...sc.defaultBackgroundGradient } });
       }
     }
+    // 🚀 V0.3.5.60 — Quick start at start: needs the settings (the user may have
+    // turned it off); it skips itself for a harness / an export / a project already opening.
+    maybeShowQuickStartAtBoot();
   })
   .catch(err => console.warn('[settings] init failed:', err));
 
