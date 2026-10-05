@@ -4703,6 +4703,11 @@ canvas.addEventListener('contextmenu', e => {
         // A newly created object is visible in EVERY step until told otherwise —
         // this is the one-click "it belongs here and nowhere else".
         { label: '⦿ 👁 Show ONLY on this step',      action: () => actions.setNodeVisibilityAcrossSteps(multiIds, true,  'only') },
+        { separator: true },
+        // 🙈 V0.3.5.55 — everything EXCEPT the selection (his "hide unselected")
+        { label: `🙈 Hide unselected — ${(state.get('selectedStepIds')?.size ?? 0) >= 2 ? `${state.get('selectedStepIds').size} selected steps` : 'this step'}`, action: () => actions.hideUnselected(multiIds, 'this') },
+        { label: '◀ 🙈 Hide unselected on all previous steps',  action: () => actions.hideUnselected(multiIds, 'previous') },
+        { label: '▶ 🙈 Hide unselected on all following steps', action: () => actions.hideUnselected(multiIds, 'following') },
       ],
     });
     if (_isolated) {
@@ -4913,6 +4918,7 @@ canvas.addEventListener('contextmenu', e => {
   if (selId) {
     items.push({ label: '✖ Deselect  [Esc]', action: () => { actionClearSelection(); gizmo.hide(); } });
   }
+  items.push({ label: '⇄ Invert selection', action: () => actions.invertSelection() });   // 🙈 V0.3.5.55 — the visible things not selected
 
   // V0.3.0.96 — same canonical section order as the tree menu, so an object's
   // viewport r-click reads identically. Camera / Fit-view / Deselect sink to the

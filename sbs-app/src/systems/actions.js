@@ -3526,6 +3526,95 @@ export function setNodeVisibilityAcrossSteps(nodeIds, visible, scope) {
 }
 
 /**
+ * 🙈 V0.3.5.55 — what is NOT selected, as few nodes as possible: a folder / model with nothing selected inside
+ * is ONE node; one holding a selected node is opened up; a selected node and everything inside it are left out.
+ * Archived nodes are never part of it. (Exported for the node test.)
+ */
+export function unselectedCover(selIds, treeData, nodeById) {
+  const sel = new Set(selIds || []);
+  const holds = new Map();                                    // node id → its subtree holds a selected node
+  const has = (n) => {
+    if (holds.has(n.id)) return holds.get(n.id);
+    let h = sel.has(n.id);
+    if (!h) for (const c of n.children || []) if (has(c)) { h = true; break; }
+    holds.set(n.id, h);
+    return h;
+  };
+  const out = [];
+  (function walk(n) {
+    for (const c of n.children || []) {
+      if (sel.has(c.id)) continue;                            // selected: it and everything inside stay as they are
+      if (has(c)) { walk(c); continue; }                      // something selected inside: open it up
+      if (c.archived === true) continue;
+      if (!nodeById || nodeById.has(c.id)) out.push(c.id);    // nothing selected inside: one node for all of it
+    }
+  })(treeData || {});
+  return out;
+}
+
+/**
+ * 🙈 V0.3.5.55 — HIDE UNSELECTED (his ask: "just see them at that step" without select-all / deselect / hide):
+ * everything EXCEPT the selection is hidden — scope 'this' = this step (or the selected steps when several are
+ * selected, as Hide does), 'previous' / 'following' = every step before / after this one. ONE undo entry.
+ */
+export function hideUnselected(selIds, scope = 'this') {
+  if (isIsolateEngaged()) { setStatus('Un-isolate to change hide/show'); return; }
+  const nodeById = state.get('nodeById'), treeData = state.get('treeData');
+  const sel = [...(selIds || [])].filter(id => nodeById?.has(id));
+  if (!sel.length || !treeData) { setStatus('Select what should stay visible first.', 'info', 3000); return; }
+  const ids = unselectedCover(sel, treeData, nodeById);
+  if (!ids.length) { setStatus('Nothing else to hide — everything is selected.', 'info', 3000); return; }
+  steps.flushSync?.();                                        // the active step's stored snapshot is current first
+  const allSteps = state.get('steps') || [];
+  const activeIdx = allSteps.findIndex(s => s.id === state.get('activeStepId'));
+  if (activeIdx < 0) return;
+  const stepSel = state.get('selectedStepIds');
+  const multi = scope === 'this' && stepSel instanceof Set && stepSel.size >= 2;
+  const inScope = (s, idx) => (scope === 'previous' ? idx < activeIdx : scope === 'following' ? idx > activeIdx : multi ? stepSel.has(s.id) : idx === activeIdx);
+  const nextSteps = allSteps.map((s, idx) => {
+    if (!inScope(s, idx)) return s;
+    const snap = s.snapshot || {}, oldVis = snap.visibility || {};
+    if (ids.every(id => oldVis[id] === false)) return s;
+    const v = { ...oldVis };
+    for (const id of ids) v[id] = false;
+    return { ...s, snapshot: { ...snap, visibility: v } };
+  });
+  const touched = nextSteps.filter((s, i) => s !== allSteps[i]);
+  if (!touched.length) { setStatus('Everything else is already hidden there.', 'info', 3000); return; }
+  const touchedIds = touched.map(s => s.id);
+  const apply = (arr) => {
+    state.setState({ steps: arr });
+    state.markDirty();
+    _restageActiveVisibility(arr);
+    // a node the active step's map did not list is visible by default: an undo must show it again
+    const act = arr.find(s => s.id === state.get('activeStepId')), vis = act?.snapshot?.visibility || {};
+    let fixed = false;
+    for (const id of ids) if (!(id in vis)) { const n = state.get('nodeById')?.get(id); if (n && n.localVisible === false) { n.localVisible = true; fixed = true; } }
+    if (fixed) { const td = state.get('treeData'); applyAllVisibility(td, steps.object3dById); state.emit('change:treeData', td); }
+    state.emit('steps:bulkApplied', { stepIds: touchedIds });
+  };
+  apply(nextSteps);
+  const where = scope === 'previous' ? `${touched.length} previous step(s)` : scope === 'following' ? `${touched.length} following step(s)` : multi ? `${touched.length} selected step(s)` : 'this step';
+  setStatus(`Only the selection is shown on ${where} — ${ids.length} other item(s) hidden. Ctrl+Z brings them back.`, 'success', 5000);
+  undoManager.push(`Hide unselected (${where})`, () => apply(allSteps), () => apply(nextSteps));
+}
+
+/**
+ * ⇄ V0.3.5.55 — INVERT SELECTION: the VISIBLE things that are not selected become the selection (the same smallest
+ * cover — an untouched folder / model is taken whole). Hidden and archived ones are left out.
+ */
+export function invertSelection() {
+  const nodeById = state.get('nodeById'), treeData = state.get('treeData');
+  if (!treeData || !nodeById) return;
+  const cur = new Set(state.get('multiSelectedIds') || []);
+  const p = state.get('selectedId'); if (p) cur.add(p);
+  const cover = unselectedCover([...cur], treeData, nodeById).filter(id => nodeById.get(id)?.localVisible !== false);
+  if (!cover.length) { setStatus('Nothing visible is left unselected.', 'info', 3000); return; }
+  setSelection(cover[0], new Set(cover));
+  setStatus(`Selection inverted — ${cover.length} item(s) selected.`, 'info', 3000);
+}
+
+/**
  * Given a current visibility map and a set of ids being SHOWN, return
  * the minimal {id: bool} delta that:
  *   1. Sets each target id visible.

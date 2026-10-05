@@ -956,6 +956,13 @@ function _buildContextMenuItems(node) {
       // A newly created object is visible in EVERY step until told otherwise —
       // this is the one-click "it belongs here and nowhere else".
       { label: `⦿ 👁 Show ONLY on this step`,      action: () => actions.setNodeVisibilityAcrossSteps(targetIds, true,  'only') },
+      { separator: true },
+      // 🙈 V0.3.5.55 — everything EXCEPT the selection (his "hide unselected")
+      { label: `🙈 Hide unselected — ${(state.get('selectedStepIds')?.size ?? 0) >= 2 ? `${state.get('selectedStepIds').size} selected steps` : 'this step'}`, action: () => actions.hideUnselected(targetIds, 'this') },
+      { label: '◀ 🙈 Hide unselected on all previous steps',  action: () => actions.hideUnselected(targetIds, 'previous') },
+      { label: '▶ 🙈 Hide unselected on all following steps', action: () => actions.hideUnselected(targetIds, 'following') },
+      { separator: true },
+      { label: '⇄ Invert selection', action: () => actions.invertSelection() },
     ],
   });
 

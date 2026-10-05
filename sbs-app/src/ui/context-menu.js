@@ -269,7 +269,7 @@ const _MENU_SECTIONS = [
   [l => l.startsWith('🧹 Clean') || l.startsWith('🔒 Lock') || l.startsWith('🔓 Unlock')
         || l.startsWith('📁＋ New Folder') || l.startsWith('⤵') || l.startsWith('⊟ Collapse'), 9], // tree-only utilities
   [l => l.startsWith('🗑') || l.startsWith('🚫🔄 Remove'),           10], // delete
-  [l => l.startsWith('📷') || l.startsWith('🎯 Fit') || l.startsWith('✖ Deselect')
+  [l => l.startsWith('📷') || l.startsWith('🎯 Fit') || l.startsWith('✖ Deselect') || l.startsWith('⇄ Invert selection')
         || l.includes('orbit centre') || l.startsWith('🎯 Pull-out'), 11], // cameras + view
   [l => l.startsWith('🗃') || l.startsWith('📤 Unarchive'),          12], // archive (bottom)
   [l => l.includes('Copy tree') || l.includes('Paste tree'),         13], // scene tree clipboard
@@ -306,6 +306,7 @@ const _MENU_SUBORDER = [
   [l => l.startsWith('🎯 Fit to selection') || l.startsWith('🎯 Fit To'), 30],
   [l => l.startsWith('🎯 Fit view'),                                 31],
   [l => l.startsWith('✖ Deselect'),                                  40],
+  [l => l.startsWith('⇄ Invert selection'),                          41],
 ];
 
 function _menuGroup(label) {
