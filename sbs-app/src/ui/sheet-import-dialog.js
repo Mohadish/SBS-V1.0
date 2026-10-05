@@ -15,6 +15,11 @@
  * numbers in the order wanted, C01(Name) codes make new chapters. The table
  * marks the chosen rows as they are typed.
  *
+ * V0.3.5.56 — the table is pickable: click / Shift+click / Ctrl+click rows,
+ * right-click → add them to the line, to a chapter, to a new chapter, or copy
+ * their numbers. Every edit rewrites the line through formatRowSelection.
+ * A "Skip rows with nothing in the marked columns" tick for the all-rows case.
+ *
  * The planning (roles → rows) is pure and exported so a node test can drive
  * it; the reader and the importer load on demand, so this module carries no
  * app state of its own.
@@ -22,7 +27,7 @@
 
 import { setStatus }         from './status.js';
 import { chooseFromButtons } from './prompt.js';
-import { parseRowSelection } from '../systems/sheet-range.js';
+import { parseRowSelection, formatRowSelection, compressRows, addRowsToGroups, nextChapterCode } from '../systems/sheet-range.js';
 
 const PREVIEW_ROWS = 300;   // the table is a preview — the import uses every row
 
@@ -88,10 +93,15 @@ export function defaultLook(n, positions) {
  * row of each imported step), `stepGroup` (its index in `groupInfo`),
  * `selection` (the parse), `warnings`, `chapters`, `blocked` (line has errors).
  *
+ * V0.3.5.56 — `skipEmpty` (the "Skip rows with nothing in the marked
+ * columns" tick, ON by default) only governs the empty line = every row.
+ * Rows the user CHOSE in the line always come in, even empty — an empty one
+ * becomes an empty "Step N", said in `notes` (info, not a warning).
+ *
  * @param {string[][]} rows    the whole sheet
- * @param {{ headerRow:boolean, roles:string[], looks:object[], range?:string }} opts
+ * @param {{ headerRow:boolean, roles:string[], looks:object[], range?:string, skipEmpty?:boolean }} opts
  */
-export function buildPlan(rows, { headerRow, roles, looks, range = '' }) {
+export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty = true }) {
   const width = rows.reduce((m, r) => Math.max(m, r.length), 0);
   const names = columnNames(rows, headerRow, width);
   const data = headerRow ? rows.slice(1) : rows;
@@ -118,32 +128,40 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '' }) {
   };
 
   const selection = parseRowSelection(range, { firstRow, lastRow: rows.length });
-  const warnings = [];
+  const warnings = [], notes = [];
   const groupInfo = [];   // [{ code, name, count }] — only groups that kept steps
-  let skipped = 0, groups, chapters = 0;
-  if (selection.empty) {
-    data.forEach((row, k) => { if (isEmpty(row)) skipped++; else take(row, k + firstRow, -1); });
+  let skipped = 0, emptyTaken = 0, groups, chapters = 0;
+  if (!mapped.length) {
+    // nothing marked = nothing to make steps from (the summary says so)
+  } else if (selection.empty) {
+    data.forEach((row, k) => {
+      const empty = isEmpty(row);
+      if (empty && skipEmpty) { skipped++; return; }
+      if (empty) emptyTaken++;
+      take(row, k + firstRow, -1);
+    });
   } else {
     // Marks follow the typed line even while it still has errors (the user
     // sees what he has so far); `blocked` keeps Import off until it is clean.
-    const dropped = [];
+    const emptyRows = [];
     for (const g of selection.groups) {
       const gi = groupInfo.length;
       const before = out.length;
       for (const r of g.rows) {
         const row = rows[r - 1] || [];
-        if (isEmpty(row)) { dropped.push(r); continue; }
+        if (isEmpty(row)) emptyRows.push(r);   // V0.3.5.56 — chosen = imported, even empty
         take(row, r, gi);
       }
       const count = out.length - before;
       if (count) groupInfo.push({ code: g.code, name: g.code ? (g.name || g.code) : null, count });
-      else if (g.code && mapped.length && selection.ok) warnings.push(`${g.code} (${g.name}): its rows are all empty in the chosen columns — no chapter made`);
     }
-    skipped = dropped.length;
-    if (dropped.length && mapped.length) {
-      const u = [...new Set(dropped)];
+    emptyTaken = emptyRows.length;
+    if (emptyRows.length) {
+      const u = [...new Set(emptyRows)];
       const list = u.slice(0, 8).join(', ') + (u.length > 8 ? ', …' : '');
-      warnings.push(u.length === 1 ? `Row ${list} is empty in the chosen columns — skipped` : `Rows ${list} are empty in the chosen columns — skipped`);
+      notes.push(u.length === 1
+        ? `Row ${list} is empty in the chosen columns — it comes in as an empty step`
+        : `Rows ${list} are empty in the chosen columns — they come in as empty steps`);
     }
     chapters = groupInfo.filter(g => g.code).length;
     // no codes → no groups: the importer places the steps exactly as before
@@ -156,8 +174,8 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '' }) {
     look:  looks?.[i] || defaultLook(n),
   }));
   return {
-    rows: out, titleColumns, skipped, nameCol, voiceCol, titleCols, dataCount: data.length, width, names,
-    groups, order, stepGroup, groupInfo, chapters, selection, warnings, firstRow,
+    rows: out, titleColumns, skipped, emptyTaken, nameCol, voiceCol, titleCols, dataCount: data.length, width, names,
+    groups, order, stepGroup, groupInfo, chapters, selection, warnings, notes, firstRow,
     blocked: !selection.ok,
   };
 }
@@ -179,6 +197,7 @@ export function summaryText(plan) {
   const t = plan.titleCols.length;
   if (t) bits.push(t === 1 ? '1 title' : `${t} titles`);
   if (plan.skipped) bits.push(plan.skipped === 1 ? '1 empty row skipped' : `${plan.skipped} empty rows skipped`);
+  if (plan.emptyTaken) bits.push(plan.emptyTaken === 1 ? '1 of them empty' : `${plan.emptyTaken} of them empty`);
   if (ranged && plan.chapters && plan.groupInfo?.[0] && !plan.groupInfo[0].code) {
     const pre = plan.groupInfo[0].count;
     bits.push(`${pre === 1 ? '1 step' : `${pre} steps`} before the chapters`);
@@ -226,9 +245,11 @@ export async function openSheetImport() {
 
 // ─── file pick ───────────────────────────────────────────────────────────────
 
+// V0.3.5.56 — .ods (LibreOffice / OpenOffice) was readable but not pickable.
 const _FILTERS = [
-  { name: 'Spreadsheet', extensions: ['xlsx', 'xlsm', 'csv', 'tsv', 'txt', 'xls'] },
+  { name: 'Spreadsheet', extensions: ['xlsx', 'xlsm', 'ods', 'csv', 'tsv', 'txt', 'xls'] },
   { name: 'Excel',       extensions: ['xlsx', 'xlsm', 'xls'] },
+  { name: 'OpenDocument (LibreOffice)', extensions: ['ods'] },
   { name: 'Text table',  extensions: ['csv', 'tsv', 'txt'] },
 ];
 
@@ -248,7 +269,7 @@ async function _pickFile() {
   const f = await new Promise(resolve => {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.xlsx,.xlsm,.xls,.csv,.tsv,.txt';
+    input.accept = '.xlsx,.xlsm,.xls,.ods,.csv,.tsv,.txt';
     input.onchange = () => resolve(input.files?.[0] || null);
     input.click();
   });
@@ -278,32 +299,53 @@ function _showViewer(fileName, sheets, choices, importer) {
     // first non-empty sheet
     let cur = Math.max(0, sheets.findIndex(s => s.rows.length));
     let busy = false;
+    // V0.3.5.56 — one tick for the whole viewer: skip empty rows when the
+    // line is empty (all rows). Rows chosen in the line ignore it.
+    let skipEmpty = true;
+    // picked table rows (Excel row numbers) + the Shift+click anchor; reset
+    // whenever the rows under them change meaning (sheet tab, header switch)
+    let picked = new Set(), anchor = null;
 
     const dlg = document.createElement('dialog');
     dlg.className = 'sbs-dialog';
     dlg.style.cssText = 'width:min(1120px,96vw);max-width:96vw;';
     dlg.innerHTML = `
+      <style>
+        #sxi-wrap tbody tr { cursor:default; }
+        #sxi-wrap tbody tr.sxi-pick > td { background-image:linear-gradient(rgba(129,140,248,.34),rgba(129,140,248,.34)) !important; }
+        #sxi-wrap tbody tr.sxi-pick { opacity:1 !important; }
+        #sxi-wrap tbody tr.sxi-pick > td:first-child { outline:1px solid rgba(165,180,252,.7); outline-offset:-1px; }
+        #sxi-wrap:focus { outline:none; }
+      </style>
       <div class="sbs-dialog__body" style="display:flex;flex-direction:column;gap:10px;">
         <div>
           <div class="sbs-dialog__title">📊 Steps from Excel</div>
           <div class="small muted" style="word-break:break-all;">${_esc(fileName)} — mark the columns, then Import. One step per row, added to this project; Ctrl+Z takes the whole import back.</div>
         </div>
         <div id="sxi-tabs" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
-        <label style="display:flex;align-items:center;gap:6px;width:fit-content;cursor:pointer;">
-          <input type="checkbox" id="sxi-header" />
-          <span>First row is column names</span>
-        </label>
+        <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;">
+          <label style="display:flex;align-items:center;gap:6px;width:fit-content;cursor:pointer;">
+            <input type="checkbox" id="sxi-header" />
+            <span>First row is column names</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;width:fit-content;cursor:pointer;" title="Untick to bring every row in — an empty one becomes an empty step. Rows you list in &quot;Rows to import&quot; always come in.">
+            <input type="checkbox" id="sxi-skip" />
+            <span>Skip rows with nothing in the marked columns</span>
+          </label>
+        </div>
         <div style="display:flex;flex-direction:column;gap:4px;">
           <label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span style="white-space:nowrap;">Rows to import</span>
             <input type="text" id="sxi-range" spellcheck="false" autocomplete="off" dir="ltr"
               placeholder="empty = all rows" style="flex:1;min-width:260px;height:28px;font-family:monospace;" />
           </label>
-          <div class="small muted">e.g. 1-8, 56, 23-38 · chapters: C01(Name)5-15,54-56 · empty = all — the # numbers below, in the order typed. New chapters go right after the chapter of the selected step.</div>
+          <div class="small muted">e.g. 1-8, 56, 23-38 · chapters: C01(Name)5-15,54-56 · empty = all — the # numbers below, in the order typed. New chapters go right after the chapter of the selected step. Or pick rows below (click, Shift+click, Ctrl+click) and right-click them.</div>
           <div id="sxi-range-err" class="small" style="color:#f87171;display:none;"></div>
           <div id="sxi-range-warn" class="small" style="color:#fbbf24;display:none;"></div>
+          <div id="sxi-range-note" class="small" style="color:#7dd3fc;display:none;"></div>
+          <div id="sxi-flash" class="small" style="color:#a5b4fc;display:none;"></div>
         </div>
-        <div id="sxi-wrap" style="overflow:auto;max-height:46vh;border:1px solid var(--line);border-radius:8px;"></div>
+        <div id="sxi-wrap" tabindex="-1" style="overflow:auto;max-height:46vh;border:1px solid var(--line);border-radius:8px;"></div>
         <div id="sxi-more" class="small muted"></div>
         <div id="sxi-titles" style="display:flex;flex-direction:column;gap:6px;"></div>
         <div id="sxi-summary" style="font-size:13px;"></div>
@@ -321,10 +363,11 @@ function _showViewer(fileName, sheets, choices, importer) {
     const moreEl = $('#sxi-more'), titlesEl = $('#sxi-titles'), sumEl = $('#sxi-summary');
     const errEl = $('#sxi-error'), okBtn = $('#sxi-ok');
     const rangeIn = $('#sxi-range'), rangeErr = $('#sxi-range-err'), rangeWarn = $('#sxi-range-warn');
+    const rangeNote = $('#sxi-range-note'), flashEl = $('#sxi-flash'), skipCb = $('#sxi-skip');
     const ac = new AbortController();
     const on = (t, ev, fn) => t.addEventListener(ev, fn, { signal: ac.signal });
 
-    const plan = () => buildPlan(sheets[cur].rows, per[cur]);
+    const plan = () => buildPlan(sheets[cur].rows, { ...per[cur], skipEmpty });
     const showError = (msg) => { errEl.textContent = msg || ''; errEl.style.display = msg ? '' : 'none'; };
 
     const renderTabs = () => {
@@ -371,7 +414,7 @@ function _showViewer(fileName, sheets, choices, importer) {
         // a row the import will skip is dimmed, so "N empty rows skipped" is visible
         const skip = !mapped.length || mapped.every(i => String(row[i] ?? '').trim() === '');
         const mk = marks.get(xr);
-        const dim = ranged ? (mapped.length && !mk) : (skip && mapped.length);
+        const dim = ranged ? (mapped.length && !mk) : (skip && mapped.length && skipEmpty);
         let numCell = String(xr), bar = '', tip = '';
         if (mk) {
           const g = p.groupInfo[p.stepGroup[mk[0]]];
@@ -382,7 +425,7 @@ function _showViewer(fileName, sheets, choices, importer) {
           tip = ` title="${_esc(`Row ${xr} → step ${nums.join(', ')}${g?.code ? ` · ${g.code} ${g.name}` : ''}`)}"`;
           numCell = `<span style="color:${col};font-weight:600;margin-inline-end:6px;">→${shownNums}</span>${xr}`;
         }
-        html += `<tr style="${dim ? 'opacity:.35;' : ''}">`;
+        html += `<tr data-xr="${xr}"${picked.has(xr) ? ' class="sxi-pick"' : ''} style="${dim ? 'opacity:.35;' : ''}">`;
         html += `<td${tip} style="position:sticky;left:0;background:var(--panel);${bar}color:var(--muted);padding:3px 6px;border-bottom:1px solid var(--line);text-align:end;white-space:nowrap;">${numCell}</td>`;
         for (let c = 0; c < p.width; c++) {
           const v = String(row[c] ?? '');
@@ -407,6 +450,8 @@ function _showViewer(fileName, sheets, choices, importer) {
       rangeErr.style.display = errs.length ? '' : 'none';
       rangeWarn.textContent = p.warnings.join(' · ');
       rangeWarn.style.display = p.warnings.length ? '' : 'none';
+      rangeNote.textContent = p.notes.join(' · ');
+      rangeNote.style.display = p.notes.length ? '' : 'none';
       rangeIn.style.borderColor = errs.length ? '#f87171' : '';
     };
 
@@ -454,6 +499,7 @@ function _showViewer(fileName, sheets, choices, importer) {
     const renderAll = () => {
       renderTabs();
       headerCb.checked = per[cur].headerRow;
+      skipCb.checked = skipEmpty;
       rangeIn.value = per[cur].range || '';
       renderTable(); renderTitles(); renderRange(); renderSummary();
     };
@@ -475,10 +521,16 @@ function _showViewer(fileName, sheets, choices, importer) {
       cur = Number(b.dataset.sheet);
       wrap.scrollLeft = 0; wrap.scrollTop = 0;
       showError('');
+      clearPicks(); hideMenu(); flash('');
       renderAll();
     });
     // the typed line stays; it is simply re-read against the new first row
-    on(headerCb, 'change', () => { per[cur].headerRow = headerCb.checked; renderTable(); renderTitles(); renderRange(); renderSummary(); });
+    on(headerCb, 'change', () => {
+      per[cur].headerRow = headerCb.checked;
+      clearPicks(); hideMenu();   // row 1 may have just become the column names
+      renderTable(); renderTitles(); renderRange(); renderSummary();
+    });
+    on(skipCb, 'change', () => { skipEmpty = skipCb.checked; renderTable(); renderRange(); renderSummary(); });
     on(rangeIn, 'input', () => { per[cur].range = rangeIn.value; showError(''); renderTable(); renderRange(); renderSummary(); });
     on(wrap, 'change', (e) => {
       const sel = e.target.closest('select[data-col]');
@@ -507,6 +559,254 @@ function _showViewer(fileName, sheets, choices, importer) {
       }
     });
 
+    // ─── V0.3.5.56 — picking rows + the right-click menu ─────────────────────
+    // The menu and its questions live INSIDE the dialog: showModal() puts the
+    // dialog in the top layer, so the app's #context-menu would open behind it.
+    let menuEl = null, subEl = null, askClose = null;
+    const flash = (msg) => { flashEl.textContent = msg || ''; flashEl.style.display = msg ? '' : 'none'; };
+    const clearPicks = () => { picked = new Set(); anchor = null; };
+    const pickedRows = () => [...picked].sort((a, b) => a - b);   // table order
+    const paintPicks = () => wrap.querySelectorAll('tbody tr[data-xr]')
+      .forEach(tr => tr.classList.toggle('sxi-pick', picked.has(Number(tr.dataset.xr))));
+    const rowsText = (rows) => rows.length === 1 ? `Row ${rows[0]}` : `Rows ${compressRows(rows)}`;
+    const short = (s, n = 140) => (s.length > n ? s.slice(0, n) + '…' : s);
+    const hideMenu = () => { menuEl?.remove(); subEl?.remove(); menuEl = subEl = null; };
+
+    const place = (el, x, y) => {
+      const r = el.getBoundingClientRect();
+      const cx = x + r.width > window.innerWidth ? window.innerWidth - r.width - 4 : x;
+      const cy = y + r.height > window.innerHeight ? window.innerHeight - r.height - 4 : y;
+      el.style.left = `${Math.max(4, cx)}px`;
+      el.style.top = `${Math.max(4, cy)}px`;
+    };
+    const openSub = (btn, items) => {
+      subEl?.remove();
+      subEl = buildMenu(items, true);
+      const r = btn.getBoundingClientRect(), fr = subEl.getBoundingClientRect();
+      place(subEl, r.right + fr.width > window.innerWidth ? r.left - fr.width + 2 : r.right - 2, r.top - 6);
+    };
+    // same look as the app's context menu (its CSS classes), built here
+    function buildMenu(items, isSub) {
+      const m = document.createElement('div');
+      m.className = 'context-menu show';
+      m.style.cssText = 'position:fixed;left:0;top:0;z-index:10;max-height:70vh;overflow:auto;';
+      for (const it of items) {
+        if (it.separator) { const hr = document.createElement('div'); hr.className = 'context-menu__separator'; m.appendChild(hr); continue; }
+        const b = document.createElement('button');
+        b.className = 'context-menu__item';
+        b.textContent = it.submenu ? `${it.label}  ▸` : it.label;
+        b.disabled = !!it.disabled;
+        if (it.title) b.title = it.title;
+        if (it.submenu) {
+          const open = () => { if (!b.disabled) openSub(b, it.submenu); };
+          on(b, 'mouseenter', open);
+          on(b, 'click', open);
+        } else {
+          if (!isSub) on(b, 'mouseenter', () => { subEl?.remove(); subEl = null; });
+          on(b, 'click', () => { hideMenu(); it.action?.(); });
+        }
+        m.appendChild(b);
+      }
+      // clicks in the menu are the menu's — not the table's, not the app's
+      for (const ev of ['pointerdown', 'mousedown', 'click', 'contextmenu']) {
+        on(m, ev, (e) => { e.stopPropagation(); if (ev === 'contextmenu') e.preventDefault(); });
+      }
+      dlg.appendChild(m);
+      return m;
+    }
+
+    /** A question inside the dialog → { id, value } or null (Esc / Cancel). */
+    const ask = ({ title, message, buttons, input }) => new Promise((res) => {
+      askClose?.(null);
+      const layer = document.createElement('div');
+      layer.style.cssText = 'position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.4);';
+      layer.innerHTML = `<div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;width:min(480px,90vw);display:flex;flex-direction:column;gap:10px;box-shadow:0 18px 36px rgba(0,0,0,.5);">
+        <div style="font-weight:700;">${_esc(title)}</div>
+        ${message ? `<div class="small" style="white-space:pre-wrap;">${_esc(message)}</div>` : ''}
+        ${input ? `<input type="text" data-ask-in dir="auto" spellcheck="false" autocomplete="off" placeholder="${_esc(input.placeholder || '')}" style="height:28px;" />` : ''}
+        <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">${buttons.map(b =>
+          `<button class="btn" data-ask="${_esc(b.id)}"${b.primary ? ' style="color:#22d3ee;font-weight:600;"' : ''}>${_esc(b.label)}</button>`).join('')}</div>
+      </div>`;
+      dlg.appendChild(layer);
+      const inp = layer.querySelector('[data-ask-in]');
+      const done = (id) => {
+        if (askClose !== done) return;
+        askClose = null;
+        const value = inp ? inp.value : '';
+        layer.remove();
+        wrap.focus({ preventScroll: true });
+        res(id == null || id === 'cancel' ? null : { id, value });
+      };
+      askClose = done;
+      for (const ev of ['pointerdown', 'mousedown', 'contextmenu']) on(layer, ev, (e) => e.stopPropagation());
+      on(layer, 'click', (e) => { e.stopPropagation(); const b = e.target.closest('[data-ask]'); if (b) done(b.dataset.ask); });
+      const primary = buttons.find(b => b.primary) || buttons[0];
+      if (inp) {
+        inp.value = input.value || '';
+        on(inp, 'keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); done(primary.id); } });
+        inp.focus(); inp.select();
+      } else {
+        layer.querySelector(`[data-ask="${CSS.escape(primary.id)}"]`)?.focus();
+      }
+    });
+
+    // Every edit: change the parsed groups, write the WHOLE line back
+    // (formatRowSelection), then re-read it exactly as if it had been typed.
+    const setLine = (groups, msg) => {
+      const text = formatRowSelection(groups);
+      per[cur].range = text;
+      rangeIn.value = text;
+      showError('');
+      renderTable(); renderRange(); renderSummary();
+      flash(msg);
+    };
+    const lineUsable = (p) => p.selection.empty || p.selection.ok;
+
+    const addToList = (rows) => {
+      const p = plan();
+      if (!lineUsable(p)) return;
+      setLine(addRowsToGroups(p.selection.groups, rows, 'plain'), `➕ ${rowsText(rows)} added to the import list`);
+    };
+
+    const addToChapter = async (gi, rows) => {
+      const p = plan();
+      const g = p.selection.groups[gi];
+      if (!lineUsable(p) || !g?.code) return;
+      let add = rows;
+      // Repeats are fine anywhere (a row may be a step twice) — but adding a
+      // row to the chapter that already holds it is more likely a slip: ask.
+      const have = new Set(g.rows);
+      const dup = rows.filter(r => have.has(r));
+      if (dup.length) {
+        const fresh = rows.filter(r => !have.has(r));
+        const label = `${g.code} (${g.name || g.code})`;
+        const ans = await ask({
+          title: '📁 Already in this chapter',
+          message: `${rowsText(dup)} ${dup.length === 1 ? 'is' : 'are'} already in ${label}.\n` +
+            (fresh.length
+              ? 'Add them again (each time becomes its own step), or leave those out and add only the new ones?'
+              : 'Adding again makes each of them a second step in this chapter.'),
+          buttons: [
+            { id: 'again', label: 'Add them again', primary: !fresh.length },
+            ...(fresh.length ? [{ id: 'new', label: `Add only the new ones (${fresh.length})`, primary: true }] : []),
+            { id: 'cancel', label: 'Cancel' },
+          ],
+        });
+        if (!ans) return;
+        if (ans.id === 'new') add = fresh;
+      }
+      setLine(addRowsToGroups(plan().selection.groups, add, gi), `📁 ${rowsText(add)} added to the end of ${g.code} (${g.name || g.code})`);
+    };
+
+    const newChapter = async (rows) => {
+      const p = plan();
+      if (!lineUsable(p)) return;
+      const code = nextChapterCode(p.selection.groups);
+      const ans = await ask({
+        title: `＋ New chapter ${code}`,
+        message: `It goes at the end of the line and holds ${rowsText(rows).toLowerCase()}, in this order.`,
+        input: { value: '', placeholder: 'Chapter name, e.g. Clean parts' },
+        buttons: [{ id: 'ok', label: 'Make chapter', primary: true }, { id: 'cancel', label: 'Cancel' }],
+      });
+      if (!ans) return;
+      const name = ans.value.replace(/\s+/g, ' ').trim() || `Chapter ${Number(code.slice(1))}`;
+      setLine(addRowsToGroups(plan().selection.groups, rows, 'new', name), `＋ ${code} (${name}) made from ${rowsText(rows).toLowerCase()}`);
+    };
+
+    const copyRows = async (rows) => {
+      const text = compressRows(rows);
+      let done = false;
+      try { await navigator.clipboard.writeText(text); done = true; } catch { /* fall back below */ }
+      if (!done) {
+        // a textarea INSIDE the dialog — one in the page body can't take focus under the modal
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        dlg.appendChild(ta);
+        ta.select();
+        try { done = document.execCommand('copy'); } catch { /* reported below */ }
+        ta.remove();
+        wrap.focus({ preventScroll: true });
+      }
+      flash(done ? `📋 Copied: ${short(text)}` : `Could not reach the clipboard — the rows are: ${short(text, 400)}`);
+    };
+
+    const openMenu = (x, y) => {
+      hideMenu();
+      const rows = pickedRows();
+      if (!rows.length) return;
+      const p = plan();
+      const usable = lineUsable(p);
+      const fix = usable ? '' : 'Fix the "Rows to import" line first';
+      const chapters = p.selection.groups.map((g, gi) => ({ g, gi })).filter(o => o.g.code);
+      const what = rows.length === 1 ? `row ${rows[0]}` : `${rows.length} rows`;
+      menuEl = buildMenu([
+        { label: `➕ Add ${what} to the import list`, disabled: !usable, title: fix, action: () => addToList(rows) },
+        { label: chapters.length ? '📁 Add to chapter' : '📁 Add to chapter (no chapters in the line yet)',
+          disabled: !usable || !chapters.length, title: fix,
+          submenu: chapters.map(({ g, gi }) => ({ label: `${g.code} ${g.name || ''}`.trim(), action: () => addToChapter(gi, rows) })) },
+        { label: '＋ New chapter from these rows…', disabled: !usable, title: fix, action: () => newChapter(rows) },
+        { separator: true },
+        { label: '📋 Copy row numbers   Ctrl+C', action: () => copyRows(rows) },
+      ]);
+      place(menuEl, x, y);
+    };
+
+    const rowOf = (e) => e.target.closest('tbody tr[data-xr]');
+    // Shift / Ctrl clicks on the rows are the table's: no text selection, and
+    // never seen by the app's own click handlers behind the dialog.
+    for (const ev of ['pointerdown', 'mousedown']) {
+      on(wrap, ev, (e) => {
+        if (!rowOf(e)) return;
+        e.stopPropagation();
+        if (ev === 'mousedown' && (e.shiftKey || e.ctrlKey || e.metaKey)) e.preventDefault();
+      });
+    }
+    on(wrap, 'click', (e) => {
+      const tr = rowOf(e);
+      if (!tr) return;
+      e.stopPropagation();
+      hideMenu();
+      const xr = Number(tr.dataset.xr);
+      const add = e.ctrlKey || e.metaKey;
+      if (e.shiftKey && anchor != null) {
+        // the shown rows are consecutive Excel rows, so the range is a–b
+        const [a, b] = anchor <= xr ? [anchor, xr] : [xr, anchor];
+        const span = new Set(add ? picked : []);
+        for (let n = a; n <= b; n++) span.add(n);
+        picked = span;
+      } else if (add) {
+        if (picked.has(xr)) picked.delete(xr); else picked.add(xr);
+        anchor = xr;
+      } else {
+        picked = new Set([xr]);
+        anchor = xr;
+      }
+      paintPicks();
+      wrap.focus({ preventScroll: true });   // so Ctrl+C lands here, inside the dialog
+    });
+    on(wrap, 'contextmenu', (e) => {
+      const tr = rowOf(e);
+      if (!tr) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const xr = Number(tr.dataset.xr);
+      if (!picked.has(xr)) { picked = new Set([xr]); anchor = xr; paintPicks(); }
+      wrap.focus({ preventScroll: true });
+      openMenu(e.clientX, e.clientY);
+    });
+    on(wrap, 'keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'c' || e.key === 'C') && picked.size) {
+        e.preventDefault();
+        copyRows(pickedRows());
+      }
+    });
+    on(wrap, 'scroll', hideMenu);
+    // a press anywhere else in the dialog closes the menu
+    dlg.addEventListener('pointerdown', (e) => {
+      if (menuEl && !menuEl.contains(e.target) && !subEl?.contains(e.target)) hideMenu();
+    }, { capture: true, signal: ac.signal });
+
     // keys typed here are the dialog's — never the app's shortcuts behind it
     // (Ctrl+Z, Delete, step keys). Esc still reaches the native 'cancel'.
     const stopKey = (e) => e.stopPropagation();
@@ -517,12 +817,20 @@ function _showViewer(fileName, sheets, choices, importer) {
     const close = (result) => {
       if (closed) return;
       closed = true;
+      askClose?.(null);
+      hideMenu();
       ac.abort();
       try { dlg.close(); } catch { /* fine */ }
       dlg.remove();
       resolve(result);
     };
-    on(dlg, 'cancel', (e) => { e.preventDefault(); if (!busy) close(null); });
+    on(dlg, 'cancel', (e) => {
+      e.preventDefault();
+      // V0.3.5.56 — Esc closes the innermost thing first: a question, the menu, then the viewer
+      if (askClose) { askClose(null); return; }
+      if (menuEl) { hideMenu(); return; }
+      if (!busy) close(null);
+    });
     on($('#sxi-cancel'), 'click', () => { if (!busy) close(null); });
 
     on(okBtn, 'click', async () => {

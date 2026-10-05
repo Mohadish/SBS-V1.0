@@ -195,3 +195,85 @@ export function parseRowSelection(text, { firstRow = 1, lastRow = Infinity } = {
   out.ok = out.errors.length === 0;
   return out;
 }
+
+// ─── writing the line back (V0.3.5.56) ──────────────────────────────────────
+// The viewer's right-click edits (add rows, add to a chapter, new chapter)
+// never patch the text: they change the parsed groups and write the WHOLE
+// line again through formatRowSelection, so it always re-parses cleanly.
+
+/**
+ * Rows → the shortest text that reads back as the SAME list in the SAME order:
+ * a run a,a+1,…,b → "a-b", a falling run → "b-a" written high-first, singles
+ * as is. [5,6,7,8,12,20,21,22,23] → "5-8, 12, 20-23".
+ */
+export function compressRows(rows, sep = ', ') {
+  const list = (rows || []).map(Number).filter(Number.isFinite);
+  const out = [];
+  for (let i = 0; i < list.length;) {
+    const a = list[i];
+    const step = list[i + 1] - a;
+    let j = i;
+    if (step === 1 || step === -1) while (j + 1 < list.length && list[j + 1] - list[j] === step) j++;
+    out.push(j > i ? `${a}-${list[j]}` : String(a));
+    i = j + 1;
+  }
+  return out.join(sep);
+}
+
+// A name whose brackets don't pair up would swallow the rows after it on the
+// way back in — square ones read the same to a person and never confuse the parser.
+function _safeName(name) {
+  const s = String(name ?? '').replace(/\s+/g, ' ').trim();
+  let depth = 0;
+  for (const ch of s) {
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth < 0) break;
+  }
+  return depth === 0 ? s : s.replace(/\(/g, '[').replace(/\)/g, ']');
+}
+
+/**
+ * The groups parseRowSelection returns → the line. Plain block first (as
+ * given), then each chapter as Cnn(name)runs; his own style — "," inside a
+ * chapter, ", " between blocks. parse(format(g)).groups equals g.
+ */
+export function formatRowSelection(groups) {
+  const parts = [];
+  for (const g of groups || []) {
+    if (!g) continue;
+    if (!g.code) { if (g.rows?.length) parts.push(compressRows(g.rows, ', ')); continue; }
+    parts.push(`${g.code}(${_safeName(g.name) || g.code})${compressRows(g.rows, ',')}`);
+  }
+  return parts.join(', ');
+}
+
+/** The next chapter code after the highest one in the line: C01, C02 … C10. */
+export function nextChapterCode(groups) {
+  let max = 0;
+  for (const g of groups || []) {
+    const n = parseInt(String(g?.code || '').slice(1), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `C${String(max + 1).padStart(2, '0')}`;
+}
+
+/**
+ * Append `rows` (in the order given) to a copy of `groups`:
+ *   target 'plain' → the plain block (made at the start when there is none);
+ *   target <index> → the END of that chapter;
+ *   target 'new'   → a new chapter Cnn(name) at the end.
+ * Duplicates are kept — a row may be a step twice; the caller asks first.
+ */
+export function addRowsToGroups(groups, rows, target, name) {
+  const next = (groups || []).map(g => ({ code: g.code, name: g.name, rows: g.rows.slice() }));
+  const add = (rows || []).slice();
+  if (target === 'new') {
+    next.push({ code: nextChapterCode(next), name: String(name ?? '').replace(/\s+/g, ' ').trim() || 'Chapter', rows: add });
+  } else if (target === 'plain') {
+    if (next[0] && !next[0].code) next[0].rows.push(...add);
+    else next.unshift({ code: null, name: null, rows: add });
+  } else if (next[target]) {
+    next[target].rows.push(...add);
+  }
+  return next;
+}

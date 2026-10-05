@@ -9,7 +9,9 @@
  *
  * .xlsx / .xlsm  zip of XML (fflate unzip). Regex over the well-known OOXML
  *                parts, NO DOMParser — so it runs in node tests too.
- * .ods           delegated to io/xlsx.js parseOds (already there).
+ * .ods           read here (V0.3.5.56) — io/xlsx.js parseOds folds repeated
+ *                blank rows into one, which shifts every row number below a
+ *                gap; "Rows to import" needs LibreOffice's own numbers.
  * .csv/.tsv/.txt RFC 4180, delimiter sniffed among , ; tab (Hebrew/European
  *                Excel writes ;), UTF-8 / UTF-16 by BOM, else windows-1255.
  * .xls (binary)  refused with "save it as .xlsx" — not worth a BIFF parser.
@@ -22,7 +24,6 @@
  */
 
 import { unzipSync } from '../../vendor/fflate.module.js';
-import { parseOds }  from './xlsx.js';
 
 /** 0 → A, 25 → Z, 26 → AA (what the user sees in Excel's header). */
 export function columnLetter(i) {
@@ -67,10 +68,7 @@ async function _readZipSheet(bytes, ext) {
   const part = (p) => { const k = files[p] ? p : lower.get(String(p).replace(/^\//, '').toLowerCase()); return k ? files[k] : null; };
   const text = (p) => { const b = part(p); return b ? _xmlNorm(_utf8(b)) : null; };
 
-  if (part('content.xml') && !part('xl/workbook.xml')) {
-    const ods = await parseOds(bytes);
-    return { sheets: ods.sheets.map(s => ({ name: s.name, rows: _finish(s.rows.map(r => r.map(_cellText))) })) };
-  }
+  if (part('content.xml') && !part('xl/workbook.xml')) return { sheets: _readOds(_utf8(part('content.xml'))) };
   // The workbook part is named by the package's root rels (almost always xl/workbook.xml).
   const rootRels = _rels('_rels/.rels', text('_rels/.rels'), '');
   const wbPath = [...rootRels.values()].find(r => /\/officeDocument$/.test(r.type))?.target || 'xl/workbook.xml';
@@ -154,6 +152,73 @@ function _parseWorksheet(xml, shared, fmt, date1904) {
   for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
   for (const [r, cells] of found) for (const [c, v] of cells) rows[r][c] = v;
   return rows;
+}
+
+// ─── .ods (V0.3.5.56) ───────────────────────────────────────────────────────
+// Same sparse idea as _parseWorksheet: repeated rows / cells ADVANCE the
+// row / column counter (so row numbers match LibreOffice's), but only cells
+// with text are stored — the 1,048,000-row blank tail costs nothing.
+
+const _ODS_MAX_REPEAT = 1000;   // a non-empty row / cell repeated more is a styling accident
+
+function _readOds(xml) {
+  xml = xml.replace(/\r\n?/g, '\n');
+  const sheets = [];
+  for (const tm of xml.matchAll(/<table:table(?=[\s>\/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table>)/g)) {
+    const name = _attr(tm[1], 'table:name') || `Sheet${sheets.length + 1}`;
+    const found = [];   // [rowIndex, [[colIndex, text]]]
+    let r = 0, lastRow = -1, lastCol = -1;
+    for (const rm of (tm[2] || '').matchAll(/<table:table-row(?=[\s>\/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-row>)/g)) {
+      const rep = _odsRepeat(rm[1], 'table:number-rows-repeated');
+      const cells = [];
+      let c = 0;
+      for (const cm of (rm[2] || '').matchAll(/<table:(table-cell|covered-table-cell)(?=[\s>\/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:\1>)/g)) {
+        const crep = _odsRepeat(cm[2], 'table:number-columns-repeated');
+        // a merged cell's hidden part (covered-table-cell) still takes its column
+        const v = cm[1] === 'table-cell' ? _odsCell(cm[2], cm[3] || '') : '';
+        if (v.trim() !== '') {
+          const n = Math.min(crep, _ODS_MAX_REPEAT);
+          for (let k = 0; k < n; k++) cells.push([c + k, v]);
+          lastCol = Math.max(lastCol, c + n - 1);
+        }
+        c += crep;
+      }
+      if (cells.length) {
+        const n = Math.min(rep, _ODS_MAX_REPEAT);
+        for (let k = 0; k < n; k++) found.push([r + k, cells]);
+        lastRow = Math.max(lastRow, r + n - 1);
+      }
+      r += rep;
+    }
+    const rows = [];
+    for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
+    for (const [ri, cells] of found) for (const [ci, v] of cells) rows[ri][ci] = v;
+    sheets.push({ name, rows });
+  }
+  if (!sheets.length) throw new Error('This spreadsheet has no sheets with cells in it.');
+  return sheets;
+}
+
+function _odsRepeat(tag, attr) {
+  const n = parseInt(_attr(tag, attr) || '1', 10);
+  return Number.isFinite(n) && n > 1 ? n : 1;
+}
+
+/** The text LibreOffice shows: its paragraphs, one per line; a comment
+ *  (office:annotation) is not cell content. */
+function _odsCell(tag, inner) {
+  const body = inner.replace(/<office:annotation\b[\s\S]*?<\/office:annotation>/g, '');
+  const paras = [...body.matchAll(/<text:(p|h)\b[^>]*?(?:\/>|>([\s\S]*?)<\/text:\1>)/g)].map(m => _odsText(m[2] || ''));
+  if (paras.length) return _cellText(paras.join('\n'));
+  return _attr(tag, 'office:string-value') ?? _attr(tag, 'office:value') ?? '';
+}
+
+function _odsText(p) {
+  return _unesc(String(p)
+    .replace(/<text:line-break\s*\/>/g, '\n')
+    .replace(/<text:tab\s*\/>/g, '\t')
+    .replace(/<text:s\b([^>]*?)\/>/g, (m, a) => ' '.repeat(Math.max(1, parseInt(_attr(a, 'text:c') || '1', 10) || 1)))
+    .replace(/<[^>]+>/g, ''));
 }
 
 function _cellValue(t, inner, dateKind, date1904, shared) {
