@@ -95,7 +95,9 @@ function _renderDefaultsEditor() {
         <option value="small"  ${sz==='small' ?'selected':''}>Small</option>
         <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
         <option value="large"  ${sz==='large' ?'selected':''}>Large</option>
+        <option value="custom" ${sz==='custom'?'selected':''}>Custom…</option>
       </select>
+      <input type="number" id="hd-tagpx" value="${_esc(String(d.tagPx ?? 36))}" min="6" max="400" step="1" title="A text size of your own (px) — typing here switches the size to Custom." style="width:54px;" />
       <input type="color" id="hd-tagcolor" value="${_esc(d.tagColor || '#ffffff')}" title="Tag text colour"
         style="width:32px;height:24px;margin-left:4px;padding:2px;border-radius:4px;cursor:pointer;" />
     </label>
@@ -103,6 +105,14 @@ function _renderDefaultsEditor() {
       <input type="checkbox" id="hd-tagspot" ${d.tagSpotlight ? 'checked' : ''}/>
       <span class="small">…only in 🔦 Spotlight</span>
     </label>
+    <div style="display:flex;align-items:center;gap:6px;margin-top:4px;margin-left:22px;">
+      <select id="hd-tagside" title="Which side of the screw the text sits on: left of it (the text ends at the screw) or right of it (the text starts at the screw).">
+        <option value="left"  ${d.tagSide === 'right' ? '' : 'selected'}>Left of the screw</option>
+        <option value="right" ${d.tagSide === 'right' ? 'selected' : ''}>Right of the screw</option>
+      </select>
+      <span class="small muted" title="Space between the screw and the text, in pixels.">space</span>
+      <input type="number" id="hd-taggap" value="${_esc(String(d.tagGap ?? 10))}" min="0" max="1000" step="1" title="Space between the screw and the text, in pixels." style="width:54px;" /> <span class="small muted">px</span>
+    </div>
     <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer;">
       <input type="checkbox" id="hd-explode" ${d.explodeBefore ? 'checked' : ''}/>
       <span class="small">Display exploded before insertion</span>
@@ -142,6 +152,9 @@ function _wireDefaultsEditor(panelEl) {
     tagName:       g('#hd-tag').checked,
     tagSpotlight:  g('#hd-tagspot').checked,
     tagSize:       g('#hd-size').value,
+    tagPx:         Math.max(6, Math.min(400, Number(g('#hd-tagpx').value) || 36)),   // V0.3.5.64
+    tagSide:       g('#hd-tagside').value,
+    tagGap:        Math.max(0, Number(g('#hd-taggap').value) || 0),
     tagColor:      g('#hd-tagcolor').value,
     explodeBefore: g('#hd-explode').checked,
     pauseBefore:   g('#hd-pause').checked,
@@ -151,7 +164,8 @@ function _wireDefaultsEditor(panelEl) {
     lineGap:       Math.max(0,    Number(g('#hd-gap').value)   || 2),
     lineColor:     g('#hd-color').value,
   });
-  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-tagspot','#hd-size','#hd-tagcolor','#hd-explode','#hd-pause','#hd-pausems','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
+  g('#hd-tagpx')?.addEventListener('input', () => { g('#hd-size').value = 'custom'; });   // V0.3.5.64 — typing a size means Custom
+  for (const id of ['#hd-x','#hd-ms','#hd-tag','#hd-tagspot','#hd-tagpx','#hd-tagside','#hd-taggap','#hd-size','#hd-tagcolor','#hd-explode','#hd-pause','#hd-pausems','#hd-traj','#hd-thick','#hd-gap','#hd-color']) {
     g(id)?.addEventListener('change', push);
   }
   const st = g('#hw-file-default-state');

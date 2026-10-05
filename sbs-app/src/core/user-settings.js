@@ -195,7 +195,10 @@ const DEFAULTS = {
     repositionMs:  300,       // pre-insertion reposition time (ms)
     tagName:       false,     // show spec-name tag
     tagSpotlight:  false,     // 🔦 V0.3.5.61 — …only while the nut stands in a spotlight
-    tagSize:       'medium',  // 'small' | 'medium' | 'large'
+    tagSize:       'medium',  // 'small' | 'medium' | 'large' | 'custom'
+    tagPx:         36,        // V0.3.5.64 — text size for 'custom'
+    tagSide:       'left',    // V0.3.5.64 — which side of the screw the text sits on
+    tagGap:        10,        // V0.3.5.64 — space between the screw and the text (px)
     tagColor:      '#ffffff', // tag text colour
     explodeBefore: false,     // show the nut exploded on every step before insertion
     pauseBefore:   true,      // hold before the insertion (so tags are readable)

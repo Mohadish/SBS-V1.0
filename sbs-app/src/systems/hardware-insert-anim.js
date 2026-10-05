@@ -79,9 +79,12 @@ export function findActorsForStep(stepId) {
 }
 
 /** Build a screen-space tag <div> (hidden). Font px from note presets. */
-function _makeTagDiv(text, tagSize, colorHex) {
+function _makeTagDiv(text, eff) {
   const presets = state.get('notePresets') || { small: 18, medium: 36, large: 48 };
-  const px = presets[tagSize] || presets.medium || 36;
+  // V0.3.5.64 — 'custom' = the size he typed (tagPx); else the note size presets
+  const custom = Number(eff?.tagPx);
+  const px = (eff?.tagSize === 'custom' && custom > 0) ? Math.max(6, Math.min(400, custom)) : (presets[eff?.tagSize] || presets.medium || 36);
+  const colorHex = eff?.tagColor;
   const div = document.createElement('div');
   div.className = 'sbs-insert-tag';
   div.textContent = text;
@@ -131,18 +134,21 @@ function _explodeOffsets(tpl, eff, elemCount) {
 function _buildTagItems(tpl, eff, parts, elems) {
   if (!eff.tagName) return [];
   const D = Math.max(0.5, Number(tpl.params?.diameter) || 4);
+  // V0.3.5.64 — which side of the screw the text sits on, and how far from its rim (his ask)
+  const side = eff.tagSide === 'right' ? 'right' : 'left';
+  const gap  = Number.isFinite(Number(eff.tagGap)) ? Math.max(0, Number(eff.tagGap)) : 10;
   const items = [{
-    div: _makeTagDiv(tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`, eff.tagSize, eff.tagColor),
+    div: _makeTagDiv(tpl.name || `M${tpl.params?.diameter}×${tpl.params?.length}`, eff),
     piece: elems[0], localY: 0,
-    outerRLocal: _headOuterRadius(tpl.params?.headType, D),
+    outerRLocal: _headOuterRadius(tpl.params?.headType, D), side, gap,
   }];
   parts.washers.forEach((w, i) => {
     const piece = elems[i + 1];   // elems = [screw, ...washer meshes]
     if (!piece) return;
     items.push({
-      div: _makeTagDiv(_washerLabel(w.kind, i, tpl.washerNames), eff.tagSize, eff.tagColor),
+      div: _makeTagDiv(_washerLabel(w.kind, i, tpl.washerNames), eff),
       piece, localY: w.yTop - w.height / 2,
-      outerRLocal: w.outerR,
+      outerRLocal: w.outerR, side, gap,
     });
   });
   return items;
@@ -204,7 +210,7 @@ function _ghostFrom(nodeId, items) {
     if (!it.div || !it.piece || !((it.alpha ?? 0) > 0.01)) return;
     const wp = new T.Vector3(0, it.localY || 0, 0), sc = new T.Vector3();
     try { it.piece.localToWorld(wp); it.piece.getWorldScale(sc); } catch { return; }
-    _ghosts.push({ key: `${nodeId}#${i}`, div: it.div, wp, rimR: (it.outerRLocal || 0) * (sc.x || 1), alpha: it.alpha });
+    _ghosts.push({ key: `${nodeId}#${i}`, div: it.div, wp, rimR: (it.outerRLocal || 0) * (sc.x || 1), alpha: it.alpha, side: it.side, gap: it.gap });
     it.div = null;                                           // the ghost owns the element now
   });
 }
@@ -229,7 +235,7 @@ function _tickGhosts(k) {
     g.alpha = Math.max(0, g.alpha - k);
     if (g.alpha <= 0 || !g.div) { if (g.div?.parentNode) g.div.parentNode.removeChild(g.div); _ghosts.splice(i, 1); continue; }
     _showTagDiv(g.div, g.alpha);
-    if (rect && cam) _anchorTag(g.div, g.wp, g.rimR, rect, cam, camRight);
+    if (rect && cam) _anchorTag(g.div, g.wp, g.rimR, rect, cam, camRight, g);
     sceneCore.requestRender?.(120);
   }
 }
@@ -770,12 +776,15 @@ function _projectAnchor(worldPos, outerR, rect, cam, camRight) {
  * Anchor one tag <div> 10px to the camera-left of a WORLD POINT's rim,
  * vertically centred. `outerR` is in world units.
  */
-function _anchorTag(div, worldPos, outerR, rect, cam, camRight) {
+function _anchorTag(div, worldPos, outerR, rect, cam, camRight, o = null) {
   const a = _projectAnchor(worldPos, outerR, rect, cam, camRight);
   if (!a) { div.style.visibility = 'hidden'; return; }
   div.style.visibility = 'visible';
-  div.style.left = `${a.cx - a.rimPx - 10}px`;  // 10px left of the rim
-  div.style.top  = `${a.cy}px`;                 // translate(-100%,-50%) centres it
+  // V0.3.5.64 — `o` = the tag item: side 'left' (default: the text ENDS `gap` px left of the rim) | 'right' (it STARTS `gap` px right of it)
+  const right = o?.side === 'right', gap = Number.isFinite(o?.gap) ? o.gap : 10;
+  div.style.transform = right ? 'translate(0,-50%)' : 'translate(-100%,-50%)';
+  div.style.left = right ? `${a.cx + a.rimPx + gap}px` : `${a.cx - a.rimPx - gap}px`;
+  div.style.top  = `${a.cy}px`;                 // the translate centres it on that height
 }
 
 /**
@@ -784,14 +793,14 @@ function _anchorTag(div, worldPos, outerR, rect, cam, camRight) {
  * scale (so it tracks a scaled parent folder). Shared by animated +
  * static tags — washers anchor at their own height, like the head.
  */
-function _anchorPieceTag(div, piece, localY, outerRLocal, rect, cam, camRight) {
+function _anchorPieceTag(div, piece, localY, outerRLocal, rect, cam, camRight, o = null) {
   const T = window.THREE;
   _vWp    = _vWp    || new T.Vector3();
   _vScale = _vScale || new T.Vector3();
   _vWp.set(0, localY || 0, 0);
   piece.localToWorld(_vWp);
   piece.getWorldScale(_vScale);
-  _anchorTag(div, _vWp, (outerRLocal || 0) * (_vScale.x || 1), rect, cam, camRight);
+  _anchorTag(div, _vWp, (outerRLocal || 0) * (_vScale.x || 1), rect, cam, camRight, o);
 }
 
 function _positionTags() {
@@ -811,7 +820,7 @@ function _positionTags() {
       // follows camera/object every frame (note-like). V0.3.5.63: fades in and out.
       const a = _fadeItem(it, !!s.tagShown && !!it.piece?.visible, k);
       _showTagDiv(it.div, a);
-      if (a > 0) _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+      if (a > 0) _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight, it);
     }
   }
 }
@@ -902,7 +911,10 @@ export function rasterizeTagsLayer({ width, height, still = false }) {
       ctx.shadowOffsetY = 1 * scale;
       ctx.fillStyle = div.style.color || '#ffffff';
       ctx.globalAlpha = a;
-      ctx.fillText(text, cx - rimPx - 10 * scale, cy);   // 10px left of rim (matches live)
+      // V0.3.5.64 — the tag's own side and gap (matches the live _anchorTag)
+      const tRight = it.side === 'right', tGap = (Number.isFinite(it.gap) ? it.gap : 10) * scale;
+      ctx.textAlign = tRight ? 'left' : 'right';
+      ctx.fillText(text, tRight ? cx + rimPx + tGap : cx - rimPx - tGap, cy);
       drew = true;
     }
   }
@@ -965,12 +977,12 @@ function _advancePreview() {
       if (p.spotOnly) {                                        // 🔦 these fade in and out (V0.3.5.63)
         const a = _fadeItem(it, show, k);
         _showTagDiv(it.div, a);
-        if (a > 0) _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+        if (a > 0) _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight, it);
         continue;
       }
       if (!show) { it.div.style.display = 'none'; continue; }
       it.div.style.display = 'block';
-      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight);
+      _anchorPieceTag(it.div, it.piece, it.localY, it.outerRLocal, rect, cam, camRight, it);
     }
   }
 }

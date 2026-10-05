@@ -3496,7 +3496,7 @@ export function showInputDialog(title, defaultVal, onConfirm) {
 export async function showInsertAnimDialog(cur, onConfirm) {
   const c = cur || {};
   // Effective defaults to show when a row is set to "use default".
-  let def = { distance: 20, repositionMs: 300, tagName: false, tagSpotlight: false, tagSize: 'medium',
+  let def = { distance: 20, repositionMs: 300, tagName: false, tagSpotlight: false, tagSize: 'medium', tagPx: 36, tagSide: 'left', tagGap: 10,
               tagColor: '#ffffff', explodeBefore: false, pauseBefore: true, pauseBeforeMs: 300,
               trajectory: false, lineThickness: 0.5, lineGap: 2, lineColor: '#ffaa00' };
   try { def = (await import('../systems/hardware-defaults.js')).getEffectiveDefaults(); } catch {}
@@ -3524,8 +3524,17 @@ export async function showInsertAnimDialog(cur, onConfirm) {
            <option value="small"  ${sz==='small' ?'selected':''}>Small</option>
            <option value="medium" ${sz==='medium'?'selected':''}>Medium</option>
            <option value="large"  ${sz==='large' ?'selected':''}>Large</option>
+           <option value="custom" ${sz==='custom'?'selected':''}>Custom…</option>
          </select>
-         <input type="color" id="_ia-tagcolor" value="${_esc(val('tagColor') || '#ffffff')}" title="text colour" style="width:34px;height:24px;margin-left:6px;padding:1px;vertical-align:middle;" />`,
+         <input type="number" id="_ia-tagpx" value="${_esc(String(val('tagPx') ?? 36))}" min="6" max="400" step="1" title="A text size of your own (px) — typing here switches the size to Custom." style="width:58px;margin-left:4px;" />
+         <input type="color" id="_ia-tagcolor" value="${_esc(val('tagColor') || '#ffffff')}" title="text colour" style="width:34px;height:24px;margin-left:6px;padding:1px;vertical-align:middle;" />
+         <div style="margin-top:5px;">
+           <select id="_ia-tagside" title="Which side of the screw the text sits on: left of it (the text ends at the screw) or right of it (the text starts at the screw).">
+             <option value="left"  ${val('tagSide') === 'right' ? '' : 'selected'}>Left of the screw</option>
+             <option value="right" ${val('tagSide') === 'right' ? 'selected' : ''}>Right of the screw</option>
+           </select>
+           <label class="small muted" style="margin-left:8px;" title="Space between the screw and the text, in pixels.">space <input type="number" id="_ia-taggap" value="${_esc(String(val('tagGap') ?? 10))}" min="0" max="1000" step="1" style="width:58px;" /> px</label>
+         </div>`,
         ud('tagName'))}
       <div class="small muted" style="margin:2px 0 0 26px;font-size:10px;opacity:0.7;">Sizes use your Note size settings.</div>
 
@@ -3565,6 +3574,8 @@ export async function showInsertAnimDialog(cur, onConfirm) {
     dlg.querySelector(`#_ia-def-${key}`).addEventListener('change', sync);
   }
   sync();
+  // V0.3.5.64 — typing a text size means Custom
+  dlg.querySelector('#_ia-tagpx')?.addEventListener('input', () => { dlg.querySelector('#_ia-size').value = 'custom'; });
 
   const done = () => {
     const useDef = (k) => dlg.querySelector(`#_ia-def-${k}`).checked;
@@ -3574,6 +3585,9 @@ export async function showInsertAnimDialog(cur, onConfirm) {
       tagName:      useDef('tag') ? null : dlg.querySelector('#_ia-tag').checked,
       tagSpotlight: useDef('tag') ? null : dlg.querySelector('#_ia-tagspot').checked,   // 🔦 V0.3.5.61
       tagSize:      useDef('tag') ? null : dlg.querySelector('#_ia-size').value,
+      tagPx:        useDef('tag') ? null : (Math.max(6, Math.min(400, Number(dlg.querySelector('#_ia-tagpx').value) || 36))),   // V0.3.5.64
+      tagSide:      useDef('tag') ? null : dlg.querySelector('#_ia-tagside').value,
+      tagGap:       useDef('tag') ? null : (Math.max(0, Number(dlg.querySelector('#_ia-taggap').value) || 0)),
       tagColor:     useDef('tag')     ? null : dlg.querySelector('#_ia-tagcolor').value,
       explodeBefore:useDef('explode') ? null : dlg.querySelector('#_ia-explode').checked,
       pauseBefore:  useDef('pause')   ? null : dlg.querySelector('#_ia-pause').checked,

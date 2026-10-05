@@ -21,7 +21,10 @@ export const HARDWARE_FALLBACK = {
   repositionMs:  300,
   tagName:       false,
   tagSpotlight:  false,       // 🔦 V0.3.5.61 — the tags show ONLY while the nut stands in a spotlight
-  tagSize:       'medium',
+  tagSize:       'medium',    // 'small' | 'medium' | 'large' | 'custom' (V0.3.5.64: tagPx)
+  tagPx:         36,          // V0.3.5.64 — the text size when tagSize is 'custom' (px, like the note sizes)
+  tagSide:       'left',      // V0.3.5.64 — 'left' = left of the screw (text ends at it) | 'right' = right of it (text starts at it)
+  tagGap:        10,          // V0.3.5.64 — space between the screw's rim and the text (px)
   tagColor:      '#ffffff',   // tag text colour
   explodeBefore: false,       // show the nut EXPLODED on every step before insertion
   pauseBefore:   true,        // hold before the insertion (so the tags are readable)
@@ -61,6 +64,9 @@ export function resolveInsertAnim(node) {
     tagName:       pick('tagName'),
     tagSpotlight:  !!pick('tagSpotlight'),
     tagSize:       pick('tagSize'),
+    tagPx:         pick('tagPx'),
+    tagSide:       pick('tagSide'),
+    tagGap:        pick('tagGap'),
     tagColor:      pick('tagColor'),
     explodeBefore: pick('explodeBefore'),
     pauseBefore:   pick('pauseBefore'),

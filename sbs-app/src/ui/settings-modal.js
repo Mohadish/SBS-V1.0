@@ -362,7 +362,9 @@ function _renderNutsTab(body) {
           <option value="small"  ${sz === 'small'  ? 'selected' : ''}>Small</option>
           <option value="medium" ${sz === 'medium' ? 'selected' : ''}>Medium</option>
           <option value="large"  ${sz === 'large'  ? 'selected' : ''}>Large</option>
+          <option value="custom" ${sz === 'custom' ? 'selected' : ''}>Custom…</option>
         </select>
+        <input type="number" id="_nt-tagpx" value="${_esc(String(n.tagPx ?? 36))}" min="6" max="400" step="1" title="A text size of your own (px) — typing here switches the size to Custom." style="width:58px;margin-left:4px;" />
       </label>
       <label class="small muted">Text colour
         <input type="color" id="_nt-tagcolor" value="${_esc(n.tagColor || '#ffffff')}"
@@ -373,6 +375,14 @@ function _renderNutsTab(body) {
       <input type="checkbox" id="_nt-tagspot" ${n.tagSpotlight ? 'checked' : ''} />
       <span class="small">…only in 🔦 Spotlight</span>
     </label>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-left:24px;">
+      <select id="_nt-tagside" title="Which side of the screw the text sits on: left of it (the text ends at the screw) or right of it (the text starts at the screw).">
+        <option value="left"  ${n.tagSide === 'right' ? '' : 'selected'}>Left of the screw</option>
+        <option value="right" ${n.tagSide === 'right' ? 'selected' : ''}>Right of the screw</option>
+      </select>
+      <span class="small muted" title="Space between the screw and the text, in pixels.">space</span>
+      <input type="number" id="_nt-taggap" value="${_esc(String(n.tagGap ?? 10))}" min="0" max="1000" step="1" title="Space between the screw and the text, in pixels." style="width:58px;" /> <span class="small muted">px</span>
+    </div>
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;cursor:pointer;">
       <input type="checkbox" id="_nt-explode" ${n.explodeBefore ? 'checked' : ''} />
       <span class="small">Display exploded before insertion</span>
@@ -418,6 +428,9 @@ function _renderNutsTab(body) {
       tagName:       body.querySelector('#_nt-tag').checked,
       tagSpotlight:  body.querySelector('#_nt-tagspot').checked,
       tagSize:       body.querySelector('#_nt-size').value,
+      tagPx:         Math.max(6, Math.min(400, Number(body.querySelector('#_nt-tagpx').value) || 36)),   // V0.3.5.64
+      tagSide:       body.querySelector('#_nt-tagside').value,
+      tagGap:        Math.max(0, Number(body.querySelector('#_nt-taggap').value) || 0),
       tagColor:      body.querySelector('#_nt-tagcolor').value,
       explodeBefore: body.querySelector('#_nt-explode').checked,
       pauseBefore:   body.querySelector('#_nt-pause').checked,
@@ -428,7 +441,8 @@ function _renderNutsTab(body) {
       lineColor:     body.querySelector('#_nt-color').value,
     } });
   };
-  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-tagspot','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-pause','#_nt-pausems','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
+  body.querySelector('#_nt-tagpx')?.addEventListener('input', () => { body.querySelector('#_nt-size').value = 'custom'; });   // V0.3.5.64 — typing a size means Custom
+  for (const sel of ['#_nt-x','#_nt-ms','#_nt-tag','#_nt-tagspot','#_nt-tagpx','#_nt-tagside','#_nt-taggap','#_nt-size','#_nt-tagcolor','#_nt-explode','#_nt-pause','#_nt-pausems','#_nt-traj','#_nt-thick','#_nt-gap','#_nt-color']) {
     body.querySelector(sel)?.addEventListener('change', save);
   }
 }

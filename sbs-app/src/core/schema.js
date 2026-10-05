@@ -27,7 +27,7 @@ export const SCHEMA_VERSIONS = {
   screen:     1,
 };
 
-export const APP_VERSION  = 'V0.3.5.63';
+export const APP_VERSION  = 'V0.3.5.64';
 // The oldest CORE (electron/*.js, preload, helper pages) this interface can run on.
 // BUMP THIS whenever a change under electron/ lands — the interface then tells a
 // Ctrl+R'd session that a full restart is needed, and stays quiet otherwise.
@@ -565,6 +565,7 @@ export function createHardwareInstanceNode(overrides = {}) {
       enabled: false, stepId: null,
       distance: null, repositionMs: null,
       tagName: null, tagSpotlight: null, tagSize: null, tagColor: null, explodeBefore: null,
+      tagPx: null, tagSide: null, tagGap: null,   // V0.3.5.64 — custom text size · left / right of the screw · space from it
       pauseBefore: null, pauseBeforeMs: null,
       trajectory: null, lineThickness: null, lineGap: null, lineColor: null,
     },
