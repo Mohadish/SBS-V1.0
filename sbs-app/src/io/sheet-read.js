@@ -4,8 +4,18 @@
  * V0.3.5.53 "Steps from Excel": no template — the client's own sheet, so
  * this reader must take whatever Excel / LibreOffice / a web export wrote.
  *
- *   readSheetFile(name, bytes) → { sheets: [{ name, rows: string[][] }] }
+ *   readSheetFile(name, bytes) → { sheets: [{ name, rows: string[][],
+ *                                    images: { "<row>,<col>": [{ name, mime, bytes }] },
+ *                                    imagesSkipped: number }] }
  *   columnLetter(i)            → 'A' … 'Z', 'AA' …
+ *
+ * Pictures (V0.3.5.59): row / col are 0-based exactly like rows[row][col]; a
+ * picture belongs to the cell under its top-left corner. xlsx floating
+ * pictures (drawing anchors, groups too) AND Excel 365 "Place in cell"
+ * pictures (vm → metadata → richData chain); .ods <draw:frame> in a cell.
+ * emf / wmf / unknown formats, sheet-anchored pictures and chains that don't
+ * resolve are counted in imagesSkipped, never thrown. Raw bytes only — the
+ * dialog scales them down; nothing here decodes pixels.
  *
  * .xlsx / .xlsm  zip of XML (fflate unzip). Regex over the well-known OOXML
  *                parts, NO DOMParser — so it runs in node tests too.
@@ -68,7 +78,7 @@ async function _readZipSheet(bytes, ext) {
   const part = (p) => { const k = files[p] ? p : lower.get(String(p).replace(/^\//, '').toLowerCase()); return k ? files[k] : null; };
   const text = (p) => { const b = part(p); return b ? _xmlNorm(_utf8(b)) : null; };
 
-  if (part('content.xml') && !part('xl/workbook.xml')) return { sheets: _readOds(_utf8(part('content.xml'))) };
+  if (part('content.xml') && !part('xl/workbook.xml')) return { sheets: _readOds(_utf8(part('content.xml')), part) };
   // The workbook part is named by the package's root rels (almost always xl/workbook.xml).
   const rootRels = _rels('_rels/.rels', text('_rels/.rels'), '');
   const wbPath = [...rootRels.values()].find(r => /\/officeDocument$/.test(r.type))?.target || 'xl/workbook.xml';
@@ -85,6 +95,7 @@ async function _readZipSheet(bytes, ext) {
   const fmt = _dateStyles(text(relOfType(/\/styles$/, `${wbDir}/styles.xml`)));
   const date1904 = /<workbookPr\b[^>]*\bdate1904="(1|true)"/.test(wb);
 
+  let richImage = null;   // V0.3.5.59: in-cell picture resolver, built on first vm cell
   const sheets = [];
   for (const m of wb.matchAll(/<sheet\b([^>]*?)\/?>/g)) {
     const tag = m[1];
@@ -93,7 +104,29 @@ async function _readZipSheet(bytes, ext) {
     // Chart sheets / dialog sheets have no cells — not offered.
     if (rel && !/\/worksheet$/.test(rel.type)) continue;
     const xml = rel ? text(rel.target) : null;
-    sheets.push({ name, rows: xml ? _parseWorksheet(xml, shared, fmt, date1904) : [] });
+    const vmCells = [];
+    const rows = xml ? _parseWorksheet(xml, shared, fmt, date1904, vmCells) : [];
+    const pics = { images: {}, imagesSkipped: 0 };
+    // V0.3.5.59: a broken picture part must never cost the user the TEXT of the sheet.
+    try {
+      if (xml) {
+        _xlsxFloatingImages(rel.target, xml, text, part, pics);
+        if (vmCells.length) {
+          if (!richImage) richImage = _richImageResolver(text, wbDir, wbRels);
+          for (const [r, c, vm] of vmCells) {
+            const res = richImage(vm);
+            if (res === 'not-image') continue;          // a stock / geography data type — not a picture
+            const img = res && _imageEntry(res, part);
+            if (!img) { pics.imagesSkipped++; continue; }
+            _addImage(pics, r, c, img);
+            // Excel stores "#VALUE!" as the cached text of an in-cell picture
+            // and never shows it — don't let it reach a title / voiceover.
+            if (rows[r] && rows[r][c] === '#VALUE!') rows[r][c] = '';
+          }
+        }
+      }
+    } catch (e) { console.warn('[sheet-read] pictures skipped:', e); }
+    sheets.push({ name, rows: _coverImages(rows, pics.images), images: pics.images, imagesSkipped: pics.imagesSkipped });
   }
   if (!sheets.length) throw new Error('This workbook has no sheets with cells in it.');
   return { sheets };
@@ -121,7 +154,172 @@ function _resolve(baseDir, target) {
   return dir.join('/');
 }
 
-function _parseWorksheet(xml, shared, fmt, date1904) {
+// ─── pictures (V0.3.5.59) ───────────────────────────────────────────────────
+// "If it works, it works": every step of every chain is optional; a link that
+// doesn't resolve skips THAT picture (counted), never the sheet.
+
+const _join = (dir, name) => (dir ? `${dir}/${name}` : name);
+const _dirOf = (p) => String(p).split('/').slice(0, -1).join('/');
+const _relsOf = (p) => _join(_join(_dirOf(p), '_rels'), `${String(p).split('/').pop()}.rels`);
+
+function _addImage(pics, r, c, img) {
+  const key = `${r},${c}`;
+  (pics.images[key] || (pics.images[key] = [])).push(img);
+}
+
+/** A zip entry as { name, mime, bytes }, or null (missing / emf / wmf / unknown). */
+function _imageEntry(path, part) {
+  const bytes = part(path);
+  const mime = bytes ? _imageMime(bytes) : null;
+  return mime ? { name: String(path).split('/').pop(), mime, bytes } : null;
+}
+
+/** By the bytes, not the file name — Office names media freely. Only what a
+ *  browser <img> can show; emf / wmf / tiff → null (skipped). */
+function _imageMime(b) {
+  if (!b || b.length < 4) return null;
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image/jpeg';
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image/gif';
+  if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+      && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
+  if (b[0] === 0x42 && b[1] === 0x4D) return 'image/bmp';
+  const head = _utf8(b.subarray(0, 4096));
+  if (/^\s*</.test(head) && /<svg[\s>]/i.test(head)) return 'image/svg+xml';
+  return null;
+}
+
+// The grid must reach a picture's cell, or the dialog has no column to mark
+// "Image" (a picture column usually has no text). Capped: one picture parked
+// at row 900,000 must not allocate the empty rows above it.
+const _COVER_MAX_ROW = 20000, _COVER_MAX_COL = 1024;
+
+function _coverImages(rows, images) {
+  const width = rows[0]?.length ?? 0;
+  let maxR = rows.length - 1, maxC = width - 1;
+  for (const key of Object.keys(images)) {
+    const [r, c] = key.split(',').map(Number);
+    if (!(r <= _COVER_MAX_ROW && c <= _COVER_MAX_COL)) continue;
+    if (r > maxR) maxR = r;
+    if (c > maxC) maxC = c;
+  }
+  if (maxR < rows.length && maxC < width) return rows;
+  const out = [];
+  for (let i = 0; i <= maxR; i++) {
+    const o = new Array(maxC + 1).fill('');
+    const src = rows[i];
+    if (src) for (let c = 0; c < src.length; c++) o[c] = src[c];
+    out.push(o);
+  }
+  return out;
+}
+
+/** Floating pictures: sheet rels → drawing → anchors → <pic><blipFill><blip r:embed> → media. */
+function _xlsxFloatingImages(sheetPath, sheetXml, text, part, pics) {
+  const sheetRels = _rels(null, text(_relsOf(sheetPath)), _dirOf(sheetPath));
+  if (!sheetRels.size) return;
+  const ids = [...sheetXml.matchAll(/<drawing\b([^>]*?)\/?>/g)].map(m => _attr(m[1], 'r:id')).filter(Boolean);
+  const drawings = ids.length
+    ? ids.map(id => sheetRels.get(id)).filter(Boolean)
+    : [...sheetRels.values()].filter(r => /\/drawing$/.test(r.type));
+  for (const d of drawings) {
+    let dxml = text(d.target);
+    if (!dxml) continue;
+    const drels = _rels(null, text(_relsOf(d.target)), _dirOf(d.target));
+    // mc:AlternateContent repeats an object in its Fallback — count it once.
+    dxml = dxml.replace(/<Fallback\b[\s\S]*?<\/Fallback>/g, '');
+    for (const am of dxml.matchAll(/<(twoCellAnchor|oneCellAnchor|absoluteAnchor)\b[^>]*>([\s\S]*?)<\/\1>/g)) {
+      // <pic> never nests, so this also finds the pictures inside <grpSp> groups.
+      const picsIn = [...am[2].matchAll(/<pic\b[^>]*>([\s\S]*?)<\/pic>/g)].map(m => m[1]);
+      if (!picsIn.length) continue;   // a chart / shape / text box
+      const from = /<from\b[^>]*>([\s\S]*?)<\/from>/.exec(am[2])?.[1] || '';
+      const col = parseInt(/<col\b[^>]*>\s*(\d+)\s*<\/col>/.exec(from)?.[1] ?? '', 10);
+      const row = parseInt(/<row\b[^>]*>\s*(\d+)\s*<\/row>/.exec(from)?.[1] ?? '', 10);
+      if (am[1] === 'absoluteAnchor' || !Number.isFinite(col) || !Number.isFinite(row)) {
+        pics.imagesSkipped += picsIn.length;   // no cell to belong to
+        continue;
+      }
+      for (const p of picsIn) {
+        const blip = /<blip\b([^>]*?)\/?>/.exec(p)?.[1];
+        const target = blip ? drels.get(_attr(blip, 'r:embed') || '')?.target : null;   // r:link (external) → no bytes
+        const img = target ? _imageEntry(target, part) : null;
+        if (img) _addImage(pics, row, col, img); else pics.imagesSkipped++;
+      }
+    }
+  }
+}
+
+/** Excel 365 "Place in cell" pictures:
+ *  cell vm (1-based) → metadata.xml valueMetadata bk → rc t (metadataType, 1-based) / v
+ *  → futureMetadata[name] bk[v] → rvb i → rdrichvalue.xml rv[i] → its structure's
+ *  _rvRel:LocalImageIdentifier value → richValueRel.xml rel[n] r:id → rels → media.
+ *  Returns vm → package path | 'not-image' (a data type such as Stocks) | null (broken chain). */
+function _richImageResolver(text, wbDir, wbRels) {
+  const relOf = (re, name) => [...wbRels.values()].find(r => re.test(r.type))?.target || _join(wbDir, name);
+  const bks = (xml) => [...String(xml || '').matchAll(/<bk\b[^>]*?(?:\/>|>([\s\S]*?)<\/bk>)/g)].map(m => m[1] || '');
+  const int = (s) => { const n = parseInt(s ?? '', 10); return Number.isFinite(n) ? n : null; };
+
+  const meta = text(relOf(/\/sheetMetadata$/i, 'metadata.xml')) || '';
+  const types = [...meta.matchAll(/<metadataType\b([^>]*?)\/?>/g)].map(m => _attr(m[1], 'name') || '');
+  const future = new Map();   // futureMetadata name → [rich value index | null]
+  for (const fm of meta.matchAll(/<futureMetadata\b([^>]*?)(?:\/>|>([\s\S]*?)<\/futureMetadata>)/g)) {
+    future.set(_attr(fm[1], 'name') || '', bks(fm[2]).map(bk => {
+      const rvb = /<rvb\b([^>]*?)\/?>/.exec(bk)?.[1];
+      return rvb ? int(_attr(rvb, 'i')) : null;
+    }));
+  }
+  const valueMeta = bks(/<valueMetadata\b[^>]*>([\s\S]*?)<\/valueMetadata>/.exec(meta)?.[1]);
+
+  const rvXml = text(relOf(/\/rdRichValue$/i, 'richData/rdrichvalue.xml')) || '';
+  const rvs = [...rvXml.matchAll(/<rv\b([^>]*?)(?:\/>|>([\s\S]*?)<\/rv>)/g)].map(m => ({
+    s: int(_attr(m[1], 's')) ?? 0,
+    vs: [...(m[2] || '').matchAll(/<v\b[^>]*?(?:\/>|>([\s\S]*?)<\/v>)/g)].map(x => _unesc(x[1] || '').trim()),
+  }));
+  const stXml = text(relOf(/\/rdRichValueStructure$/i, 'richData/rdrichvaluestructure.xml')) || '';
+  const structs = [...stXml.matchAll(/<s\b([^>]*?)(?:\/>|>([\s\S]*?)<\/s>)/g)].map(m =>
+    [...(m[2] || '').matchAll(/<k\b([^>]*?)\/?>/g)].map(k => _attr(k[1], 'n') || ''));
+  const relPath = relOf(/\/richValueRel$/i, 'richData/richValueRel.xml');
+  const relIds = [...(text(relPath) || '').matchAll(/<rel\b([^>]*?)\/?>/g)].map(m => _attr(m[1], 'r:id') || _attr(m[1], 'id'));
+  const relMap = _rels(null, text(_relsOf(relPath)), _dirOf(relPath));
+
+  return (vm) => {
+    const rc = /<rc\b([^>]*?)\/?>/.exec(valueMeta[vm - 1] ?? '')?.[1];
+    if (!rc) return null;
+    const tName = types[(int(_attr(rc, 't')) ?? 0) - 1];
+    if (tName && tName !== 'XLRICHVALUE') return 'not-image';
+    const list = future.get(tName || 'XLRICHVALUE') || future.get('XLRICHVALUE');
+    const rv = rvs[list?.[int(_attr(rc, 'v')) ?? -1] ?? -1];
+    if (!rv) return null;
+    let k = 0;   // no structures part at all → assume the classic _localImage layout (id first)
+    if (structs.length) {
+      const keys = structs[rv.s];
+      if (!keys) return null;
+      k = keys.indexOf('_rvRel:LocalImageIdentifier');
+      if (k < 0) return 'not-image';
+    }
+    const rid = relIds[int(rv.vs[k]) ?? -1];
+    return (rid && relMap.get(rid)?.target) || null;
+  };
+}
+
+/** .ods: <draw:frame> inside the cell (groups too); a frame may carry an SVG
+ *  plus a PNG fallback — the first one a browser shows wins. */
+function _odsCellImages(inner, part, pics, r, c) {
+  for (const fm of inner.matchAll(/<draw:frame\b[^>]*>([\s\S]*?)<\/draw:frame>/g)) {
+    const imgs = [...fm[1].matchAll(/<draw:image\b([^>]*?)\/?>/g)];
+    if (!imgs.length) continue;   // a text box / chart, not a picture
+    let img = null;
+    for (const m of imgs) {
+      const href = _attr(m[1], 'xlink:href');
+      if (!href || /^[a-z][\w+.-]*:/i.test(href)) continue;   // embedded binary-data / external link
+      img = _imageEntry(_resolve('', href), part);
+      if (img) break;
+    }
+    if (img) _addImage(pics, r, c, img); else pics.imagesSkipped++;
+  }
+}
+
+function _parseWorksheet(xml, shared, fmt, date1904, vmOut) {
   const data = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/.exec(xml)?.[1] || '';
   // Sparse first: a styled-but-empty row 1048576 must not allocate a million rows.
   const found = [];   // [rowIndex, [[colIndex, text]]]
@@ -141,6 +339,9 @@ function _parseWorksheet(xml, shared, fmt, date1904) {
       const col = ref ? _colIndex(ref) : autoCol;
       if (col < 0) continue;
       autoCol = col + 1;
+      // V0.3.5.59: vm = value metadata → maybe an Excel 365 in-cell picture.
+      const vm = vmOut ? parseInt(_attr(tag, 'vm') || '', 10) : NaN;
+      if (vm > 0) vmOut.push([r, col, vm]);
       const v = _cellValue(_attr(tag, 't'), inner, fmt[parseInt(_attr(tag, 's') || '0', 10)], date1904, shared);
       if (v.trim() === '') continue;
       cells.push([col, v]);
@@ -161,11 +362,17 @@ function _parseWorksheet(xml, shared, fmt, date1904) {
 
 const _ODS_MAX_REPEAT = 1000;   // a non-empty row / cell repeated more is a styling accident
 
-function _readOds(xml) {
+function _readOds(xml, part) {
   xml = xml.replace(/\r\n?/g, '\n');
   const sheets = [];
   for (const tm of xml.matchAll(/<table:table(?=[\s>\/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table>)/g)) {
     const name = _attr(tm[1], 'table:name') || `Sheet${sheets.length + 1}`;
+    const pics = { images: {}, imagesSkipped: 0 };
+    // V0.3.5.59: pictures anchored to the PAGE (not a cell) live in <table:shapes> — no row to give them.
+    const shapes = /<table:shapes\b[^>]*>([\s\S]*?)<\/table:shapes>/.exec(tm[2] || '')?.[1] || '';
+    for (const fm of shapes.matchAll(/<draw:frame\b[^>]*>([\s\S]*?)<\/draw:frame>/g)) {
+      if (/<draw:image\b/.test(fm[1])) pics.imagesSkipped++;
+    }
     const found = [];   // [rowIndex, [[colIndex, text]]]
     let r = 0, lastRow = -1, lastCol = -1;
     for (const rm of (tm[2] || '').matchAll(/<table:table-row(?=[\s>\/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-row>)/g)) {
@@ -174,6 +381,10 @@ function _readOds(xml) {
       let c = 0;
       for (const cm of (rm[2] || '').matchAll(/<table:(table-cell|covered-table-cell)(?=[\s>\/])([^>]*?)(?:\/>|>([\s\S]*?)<\/table:\1>)/g)) {
         const crep = _odsRepeat(cm[2], 'table:number-columns-repeated');
+        if (cm[3] && cm[3].includes('<draw:')) {
+          try { _odsCellImages(cm[3], part, pics, r, c); }
+          catch (e) { console.warn('[sheet-read] ods picture skipped:', e); pics.imagesSkipped++; }
+        }
         // a merged cell's hidden part (covered-table-cell) still takes its column
         const v = cm[1] === 'table-cell' ? _odsCell(cm[2], cm[3] || '') : '';
         if (v.trim() !== '') {
@@ -193,7 +404,7 @@ function _readOds(xml) {
     const rows = [];
     for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
     for (const [ri, cells] of found) for (const [ci, v] of cells) rows[ri][ci] = v;
-    sheets.push({ name, rows });
+    sheets.push({ name, rows: _coverImages(rows, pics.images), images: pics.images, imagesSkipped: pics.imagesSkipped });
   }
   if (!sheets.length) throw new Error('This spreadsheet has no sheets with cells in it.');
   return sheets;
@@ -207,7 +418,11 @@ function _odsRepeat(tag, attr) {
 /** The text LibreOffice shows: its paragraphs, one per line; a comment
  *  (office:annotation) is not cell content. */
 function _odsCell(tag, inner) {
-  const body = inner.replace(/<office:annotation\b[\s\S]*?<\/office:annotation>/g, '');
+  const body = inner.replace(/<office:annotation\b[\s\S]*?<\/office:annotation>/g, '')
+    // V0.3.5.59: a picture / shape in the cell carries its own (empty) <text:p/> —
+    // it isn't cell text and would add stray line breaks.
+    .replace(/<draw:frame\b[\s\S]*?<\/draw:frame>/g, '')
+    .replace(/<draw:g\b[\s\S]*?<\/draw:g>/g, '');
   const paras = [...body.matchAll(/<text:(p|h)\b[^>]*?(?:\/>|>([\s\S]*?)<\/text:\1>)/g)].map(m => _odsText(m[2] || ''));
   if (paras.length) return _cellText(paras.join('\n'));
   return _attr(tag, 'office:string-value') ?? _attr(tag, 'office:value') ?? '';
@@ -392,7 +607,7 @@ function _readTextSheet(bytes, ext, fileName) {
   const rows = _parseDelimited(body, delim).map(r => r.map(_cellText));
   // A text table has one sheet; name it after the file, like Excel's tab does.
   const base = String(fileName || '').split(/[\\/]/).pop().replace(/\.[^.]*$/, '').trim();
-  return { sheets: [{ name: base || 'Sheet1', rows: _finish(rows) }] };
+  return { sheets: [{ name: base || 'Sheet1', rows: _finish(rows), images: {}, imagesSkipped: 0 }] };
 }
 
 function _decodeText(bytes) {

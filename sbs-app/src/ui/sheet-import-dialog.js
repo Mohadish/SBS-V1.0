@@ -25,6 +25,15 @@
  * (textarea over a coloured mirror), right-click → Remove from chapter / from
  * the import list, and a "Result" view listing the import as it comes out.
  *
+ * V0.3.5.59 — pictures: a column marked "Image" gives every step its row's
+ * picture (sheet.images from io/sheet-read.js), all at ONE pinned position
+ * under ONE mask — the project's / brand's, or a new unified look (position
+ * + size + rectangle mask aspect) made once as shared definitions. Thumbnails
+ * in the table and the Result view; on Import each picture is scaled down
+ * (longest side ≤ 1920 px) to a data URL here, so the importer never holds the
+ * workbook's full-size bytes. Titles gain "＋ New basic style" (the default
+ * when the project has no text styles) — one shared style per title column.
+ *
  * The planning (roles → rows) is pure and exported so a node test can drive
  * it; the reader and the importer load on demand, so this module carries no
  * app state of its own.
@@ -101,8 +110,6 @@ export function lineRuns(text, selection, light) {
  *     total, notIn (sheet rows the line leaves out), skipped (empty rows the tick skipped) }
  */
 export function resultModel(plan, rows) {
-  const mapped = [plan.nameCol, plan.voiceCol, ...plan.titleCols].filter(i => i >= 0);
-  const cell = (row, i) => String(row?.[i] ?? '').trim();
   const sections = [];
   let cur = null;
   plan.rows.forEach((st, k) => {
@@ -115,9 +122,10 @@ export function resultModel(plan, rows) {
     const src = rows[plan.order[k] - 1] || [];
     cur.steps.push({
       n: k + 1, row: plan.order[k], name: st.name,
-      named: plan.nameCol >= 0 && cell(src, plan.nameCol) !== '',
+      named: plan.nameCol >= 0 && String(src[plan.nameCol] ?? '').trim() !== '',
       voice: st.voice, titles: st.titles,
-      empty: !mapped.length || mapped.every(i => cell(src, i) === ''),
+      pics: st.pics || [],   // V0.3.5.59 — "row,col" keys into sheet.images (null = no picture)
+      empty: planRowEmpty(plan, rows, plan.order[k]),
     });
   });
   for (const s of sections) delete s.gi;
@@ -126,7 +134,36 @@ export function resultModel(plan, rows) {
   return { sections, total: plan.rows.length, notIn, skipped: ranged ? 0 : plan.skipped };
 }
 
-export const ROLE_LABELS = { ignore: 'Ignore', name: 'Step name', voice: 'Voiceover', title: 'Title' };
+export const ROLE_LABELS = { ignore: 'Ignore', name: 'Step name', voice: 'Voiceover', title: 'Title', image: 'Image' };
+
+/** V0.3.5.59 — does the sheet hold a picture in cell (sheetRow, col)? 0-based, as rows[sheetRow][col]. */
+export function hasPicture(images, sheetRow, col) {
+  const a = images?.[`${sheetRow},${col}`];
+  return Array.isArray(a) && a.length > 0;
+}
+
+/** V0.3.5.59 — pictures per column in the DATA rows (header row left out) → { col: count }. */
+export function pictureCounts(images, headerRow) {
+  const out = {};
+  for (const key of Object.keys(images || {})) {
+    const [r, c] = key.split(',').map(Number);
+    if (!Number.isFinite(r) || !Number.isFinite(c) || (headerRow && r === 0) || !hasPicture(images, r, c)) continue;
+    out[c] = (out[c] || 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * V0.3.5.59 — is this Excel row empty for the import? Text columns blank AND
+ * no picture in any Image column — a row holding only a picture is a step.
+ */
+export function planRowEmpty(plan, rows, excelRow) {
+  const row = rows[excelRow - 1] || [];
+  const text = [plan.nameCol, plan.voiceCol, ...plan.titleCols].filter(i => i >= 0);
+  const pics = plan.imageCols || [];
+  if (!text.length && !pics.length) return true;
+  return text.every(i => String(row[i] ?? '').trim() === '') && pics.every(c => !hasPicture(plan.images, excelRow - 1, c));
+}
 
 // The roles a sheet can only have ONE of — a step has one name, one voice-over.
 const _SINGLE = new Set(['name', 'voice']);
@@ -139,7 +176,13 @@ const _ROLE_TINT = {
   name:  'rgba(56,189,248,0.14)',
   voice: 'rgba(34,197,94,0.14)',
   title: 'rgba(245,158,11,0.16)',
+  image: 'rgba(168,85,247,0.16)',   // V0.3.5.59
 };
+
+// V0.3.5.59 — a new picture look starts away from the first titles (top-left / top-right)
+const _IMG_POS_ORDER = ['bottom-right', 'bottom-left', 'center', 'bottom-center', 'top-center', 'top-right', 'top-left'];
+export const IMAGE_SIZES = [0.2, 0.3, 0.4, 0.5];
+export const IMAGE_ASPECTS = ['4:3', '1:1', '16:9'];
 
 /** Fallback when io/sheet-read.js is not loaded (node tests): A … Z, AA … */
 function _letterLocal(i) {
@@ -167,12 +210,34 @@ export function columnNames(rows, headerRow, width) {
   return Array.from({ length: width }, (_, i) => String(head[i] ?? '').trim());
 }
 
-/** The default look for the n-th Title column: a fresh unified look, spread out. */
-export function defaultLook(n, positions) {
+/**
+ * The default look for the n-th Title column: a fresh unified look, spread out.
+ * V0.3.5.59 — `noStyles` (the project has no text styles): start on "＋ New
+ * basic style" ('__new__'), so the imported titles share a style the user can
+ * restyle in bulk; Default stays one click away.
+ */
+export function defaultLook(n, positions, noStyles = false) {
   const keys = (positions || []).map(p => p.key);
   const order = _POS_ORDER.filter(k => keys.includes(k));
   const pool = order.length ? order : (keys.length ? keys : _POS_ORDER);
-  return { kind: 'new', styleId: null, position: pool[n % pool.length] };
+  return { kind: 'new', styleId: noStyles ? '__new__' : null, position: pool[n % pool.length] };
+}
+
+/**
+ * V0.3.5.59 — the default look for the n-th Image column: the project's first
+ * pinned position (+ its first mask) when it has one — the brand already says
+ * where pictures go — else a new unified look: a corner, 30 % of the width, 4:3.
+ */
+export function defaultImageLook(n, choices = {}) {
+  const pins = choices.pinnedPositions || [];
+  if (pins.length) {
+    const masks = choices.masks || [];
+    return { kind: 'brand', posId: pins[n % pins.length].id, maskId: masks.length ? masks[n % masks.length].id : null };
+  }
+  const keys = (choices.positions || []).map(p => p.key);
+  const order = _IMG_POS_ORDER.filter(k => keys.includes(k));
+  const pool = order.length ? order : (keys.length ? keys : _IMG_POS_ORDER);
+  return { kind: 'new', position: pool[n % pool.length], size: 0.3, aspect: '4:3' };
 }
 
 /**
@@ -194,30 +259,46 @@ export function defaultLook(n, positions) {
  * numbers close up). Unticked, an empty row becomes an empty "Step N", said in
  * `notes`. `skippedRows` = the Excel rows the tick left out (for the marks).
  *
+ * V0.3.5.59 — Image columns: `images` = the sheet's pictures ("row,col" →
+ * [{ name, mime, bytes }]); each step carries `pics` (one "row,col" key or
+ * null per Image column — the bytes stay in the sheet until Import scales
+ * them); a row with only a picture is NOT empty. `imageLooks` per column,
+ * `choices` (sheetTitleChoices) for the defaults.
+ *
  * @param {string[][]} rows    the whole sheet
- * @param {{ headerRow:boolean, roles:string[], looks:object[], range?:string, skipEmpty?:boolean }} opts
+ * @param {{ headerRow:boolean, roles:string[], looks:object[], range?:string, skipEmpty?:boolean,
+ *           images?:object, imageLooks?:object[], choices?:object }} opts
  */
-export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty = true }) {
+export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty = true, images = null, imageLooks = null, choices = null }) {
   const width = rows.reduce((m, r) => Math.max(m, r.length), 0);
   const names = columnNames(rows, headerRow, width);
   const data = headerRow ? rows.slice(1) : rows;
   const firstRow = headerRow ? 2 : 1;
   const nameCol = roles.indexOf('name');
   const voiceCol = roles.indexOf('voice');
-  const titleCols = [];
-  roles.forEach((r, i) => { if (r === 'title') titleCols.push(i); });
-  const mapped = [nameCol, voiceCol, ...titleCols].filter(i => i >= 0);
+  const titleCols = [], imageCols = [];
+  roles.forEach((r, i) => { if (r === 'title') titleCols.push(i); else if (r === 'image') imageCols.push(i); });
+  const mapped = [nameCol, voiceCol, ...titleCols, ...imageCols].filter(i => i >= 0);
+  const pics = images || {};
 
   const cell = (row, i) => String(row[i] ?? '').trim();
-  const isEmpty = (row) => !mapped.length || mapped.every(i => cell(row, i) === '');
+  const shape = { nameCol, voiceCol, titleCols, imageCols, images: pics };
+  const isEmpty = (excelRow) => planRowEmpty(shape, rows, excelRow);
   const out = [];
   const order = [], stepGroup = [];
+  const picSteps = imageCols.map(() => 0);   // steps that get a picture, per Image column
   const take = (row, excelRow, g) => {
     const nm = nameCol >= 0 ? cell(row, nameCol) : '';
+    const keys = imageCols.map((c, n) => {
+      if (!hasPicture(pics, excelRow - 1, c)) return null;
+      picSteps[n]++;
+      return `${excelRow - 1},${c}`;
+    });
     out.push({
       name:   nm || `Step ${out.length + 1}`,   // N = place in the IMPORTED order
       voice:  voiceCol >= 0 ? cell(row, voiceCol) : '',
       titles: titleCols.map(i => cell(row, i)),
+      ...(imageCols.length ? { pics: keys } : {}),
     });
     order.push(excelRow);
     stepGroup.push(g);
@@ -232,7 +313,7 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
     // nothing marked = nothing to make steps from (the summary says so)
   } else if (selection.empty) {
     data.forEach((row, k) => {
-      const empty = isEmpty(row);
+      const empty = isEmpty(k + firstRow);
       if (empty && skipEmpty) { skipped++; return; }
       if (empty) emptyTaken++;
       take(row, k + firstRow, -1);
@@ -246,7 +327,7 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
       const before = out.length;
       for (const r of g.rows) {
         const row = rows[r - 1] || [];
-        if (isEmpty(row)) {
+        if (isEmpty(r)) {
           if (skipEmpty) { skipped++; skippedRows.add(r); continue; }   // V0.3.5.58 — the tick filters the line too
           emptyRows.push(r);
         }
@@ -270,12 +351,18 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
   }
   warnings.unshift(...selection.warnings);
 
+  const noStyles = !!choices && !(choices.styles || []).length;
   const titleColumns = titleCols.map((i, n) => ({
     label: names[i] || `Column ${_letter(i)}`,
-    look:  looks?.[i] || defaultLook(n),
+    look:  looks?.[i] || defaultLook(n, choices?.positions, noStyles),
+  }));
+  const imageColumns = imageCols.map((i, n) => ({
+    label: names[i] || `Column ${_letter(i)}`,
+    look:  imageLooks?.[i] || defaultImageLook(n, choices || {}),
   }));
   return {
     rows: out, titleColumns, skipped, emptyTaken, nameCol, voiceCol, titleCols, dataCount: data.length, width, names,
+    imageCols, imageColumns, picSteps, images: pics,
     groups, order, stepGroup, groupInfo, chapters, selection, warnings, notes, firstRow, skippedRows,
     blocked: !selection.ok,
   };
@@ -283,8 +370,8 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
 
 /** The one-line summary under the table. */
 export function summaryText(plan) {
-  if (plan.nameCol < 0 && plan.voiceCol < 0 && !plan.titleCols.length) {
-    return 'Choose a role above at least one column — Step name, Voiceover or Title.';
+  if (plan.nameCol < 0 && plan.voiceCol < 0 && !plan.titleCols.length && !plan.imageCols?.length) {
+    return 'Choose a role above at least one column — Step name, Voiceover, Title or Image.';
   }
   const n = plan.rows.length;
   const steps = n === 1 ? '1 step' : `${n} steps`;
@@ -297,6 +384,11 @@ export function summaryText(plan) {
   if (plan.voiceCol >= 0) bits.push(`voiceover from ${_letter(plan.voiceCol)}`);
   const t = plan.titleCols.length;
   if (t) bits.push(t === 1 ? '1 title' : `${t} titles`);
+  // V0.3.5.59 — how many steps each Image column actually gives a picture
+  (plan.imageCols || []).forEach((c, n) => {
+    const k = plan.picSteps?.[n] || 0;
+    bits.push(k ? `pictures from ${_letter(c)}: ${k} of ${steps}` : `no pictures in ${_letter(c)}`);
+  });
   if (plan.skipped) bits.push(plan.skipped === 1 ? '1 empty row skipped' : `${plan.skipped} empty rows skipped`);
   if (plan.emptyTaken) bits.push(plan.emptyTaken === 1 ? '1 of them empty' : `${plan.emptyTaken} of them empty`);
   if (ranged && plan.chapters && plan.groupInfo?.[0] && !plan.groupInfo[0].code) {
@@ -337,7 +429,7 @@ export async function openSheetImport() {
     return;
   }
 
-  let choices = { styles: [], brandTitles: [], positions: [] };
+  let choices = { styles: [], brandTitles: [], positions: [], pinnedPositions: [], masks: [] };
   try { choices = importer.sheetTitleChoices() || choices; }
   catch (err) { console.warn('[sheet-import] title choices failed', err); }
 
@@ -391,12 +483,41 @@ function _showViewer(fileName, sheets, choices, importer) {
     const positions = (choices.positions && choices.positions.length)
       ? choices.positions
       : _POS_ORDER.map(k => ({ key: k, label: k }));
+    // V0.3.5.59 — the project's / brand's shared picture places + masks
+    const pinnedPositions = (choices.pinnedPositions || []).filter(o => o?.id);
+    const masks = (choices.masks || []).filter(o => o?.id);
+    const noStyles = !styles.length;
+    const lookChoices = { styles, positions, pinnedPositions, masks };
 
     // per-sheet choices survive flipping between tabs
     const per = sheets.map(s => {
       const width = s.rows.reduce((m, r) => Math.max(m, r.length), 0);
-      return { headerRow: true, roles: Array(width).fill('ignore'), looks: [], range: '' };
+      return { headerRow: true, roles: Array(width).fill('ignore'), looks: [], imgLooks: [], range: '' };
     });
+    // V0.3.5.59 — thumbnails: one object URL per picture of the CURRENT sheet,
+    // made on first sight, all revoked on sheet switch / close
+    let thumbUrls = new Map();
+    const thumbOf = (key) => {
+      if (thumbUrls.has(key)) return thumbUrls.get(key);
+      const pic = sheets[cur].images?.[key]?.[0];
+      let url = null;
+      try { if (pic?.bytes?.length) url = URL.createObjectURL(new Blob([pic.bytes], { type: pic.mime || '' })); }
+      catch { url = null; }
+      thumbUrls.set(key, url);
+      return url;
+    };
+    const dropThumbs = () => {
+      for (const u of thumbUrls.values()) if (u) { try { URL.revokeObjectURL(u); } catch { /* fine */ } }
+      thumbUrls = new Map();
+    };
+    const thumbHtml = (key, maxH = 48) => {
+      const url = thumbOf(key);
+      const more = (sheets[cur].images?.[key]?.length || 0) - 1;
+      const tip = more > 0 ? ` title="${more + 1} pictures in this cell — the first one is used"` : '';
+      return url
+        ? `<img src="${url}" alt="" draggable="false"${tip} style="display:block;max-height:${maxH}px;max-width:${maxH * 2}px;object-fit:contain;border-radius:3px;margin:1px 0;">`
+        : `<span${tip || ' title="A picture the preview cannot show"'}>🖼</span>`;
+    };
     // first non-empty sheet
     let cur = Math.max(0, sheets.findIndex(s => s.rows.length));
     let busy = false;
@@ -473,6 +594,7 @@ function _showViewer(fileName, sheets, choices, importer) {
         <div id="sxi-wrap" tabindex="-1" style="overflow:auto;max-height:46vh;border:1px solid var(--line);border-radius:8px;"></div>
         <div id="sxi-more" class="small muted"></div>
         <div id="sxi-titles" style="display:flex;flex-direction:column;gap:6px;"></div>
+        <div id="sxi-images" style="display:flex;flex-direction:column;gap:6px;"></div>
         <div id="sxi-summary" style="font-size:13px;"></div>
         <div id="sxi-error" class="small" style="color:#f87171;display:none;"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
@@ -486,6 +608,7 @@ function _showViewer(fileName, sheets, choices, importer) {
     const $ = (sel) => dlg.querySelector(sel);
     const tabsEl = $('#sxi-tabs'), headerCb = $('#sxi-header'), wrap = $('#sxi-wrap');
     const moreEl = $('#sxi-more'), titlesEl = $('#sxi-titles'), sumEl = $('#sxi-summary');
+    const imagesEl = $('#sxi-images');
     const errEl = $('#sxi-error'), okBtn = $('#sxi-ok');
     const rangeIn = $('#sxi-range'), rangeErr = $('#sxi-range-err'), rangeWarn = $('#sxi-range-warn');
     const rangeNote = $('#sxi-range-note'), flashEl = $('#sxi-flash'), skipCb = $('#sxi-skip');
@@ -498,7 +621,10 @@ function _showViewer(fileName, sheets, choices, importer) {
     const ac = new AbortController();
     const on = (t, ev, fn) => t.addEventListener(ev, fn, { signal: ac.signal });
 
-    const plan = () => buildPlan(sheets[cur].rows, { ...per[cur], skipEmpty });
+    const plan = () => buildPlan(sheets[cur].rows, {
+      ...per[cur], skipEmpty,
+      images: sheets[cur].images || null, imageLooks: per[cur].imgLooks, choices: lookChoices,
+    });
     const showError = (msg) => { errEl.textContent = msg || ''; errEl.style.display = msg ? '' : 'none'; };
 
     const renderTabs = () => {
@@ -522,7 +648,9 @@ function _showViewer(fileName, sheets, choices, importer) {
       const keepX = wrap.scrollLeft, keepY = wrap.scrollTop;
       const data = st.headerRow ? rows.slice(1) : rows;
       const firstExcelRow = st.headerRow ? 2 : 1;
-      const mapped = [p.nameCol, p.voiceCol, ...p.titleCols].filter(i => i >= 0);
+      const mapped = [p.nameCol, p.voiceCol, ...p.titleCols, ...p.imageCols].filter(i => i >= 0);
+      const imgs = sheets[cur].images || {};
+      const picCount = pictureCounts(imgs, st.headerRow);   // V0.3.5.59 — which columns hold pictures
       const thBase = 'position:sticky;top:0;z-index:1;background:var(--panel);border-bottom:1px solid var(--line);padding:4px 6px;text-align:start;vertical-align:top;font-weight:400;';
       const opt = (v, sel) => `<option value="${v}"${v === sel ? ' selected' : ''}>${ROLE_LABELS[v]}</option>`;
       let html = '<table style="border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;"><thead><tr>';
@@ -530,9 +658,16 @@ function _showViewer(fileName, sheets, choices, importer) {
       for (let c = 0; c < p.width; c++) {
         const role = st.roles[c] || 'ignore';
         const tint = _ROLE_TINT[role] ? `box-shadow:inset 0 0 0 999px ${_ROLE_TINT[role]};` : '';
-        html += `<th style="${thBase}${tint}min-width:110px;">
-          <select data-col="${c}" style="height:26px;font-size:12px;padding:0 4px;">${['ignore', 'name', 'voice', 'title'].map(v => opt(v, role)).join('')}</select>
-          <div style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"><b>${_letter(c)}</b>${p.names[c] ? ` <span dir="auto" title="${_esc(p.names[c])}">${_esc(p.names[c])}</span>` : ''}</div>
+        const nPic = picCount[c] || 0;
+        // V0.3.5.59 — an Image column with no pictures says so on its header
+        const noPic = role === 'image' && !nPic;
+        const thTip = noPic ? ` title="Column ${_letter(c)} holds no pictures — no step will get one from it. Mark the column the pictures sit in."` : '';
+        const badge = nPic
+          ? ` <span class="small" title="${nPic} picture${nPic === 1 ? '' : 's'} in this column" style="color:#c4b5fd;">🖼 ${nPic}</span>`
+          : (noPic ? ' <span style="color:#fbbf24;">⚠ no pictures</span>' : '');
+        html += `<th${thTip} style="${thBase}${tint}min-width:110px;">
+          <select data-col="${c}" style="height:26px;font-size:12px;padding:0 4px;">${['ignore', 'name', 'voice', 'title', 'image'].map(v => opt(v, role)).join('')}</select>
+          <div style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"><b>${_letter(c)}</b>${p.names[c] ? ` <span dir="auto" title="${_esc(p.names[c])}">${_esc(p.names[c])}</span>` : ''}${badge}</div>
         </th>`;
       }
       html += '</tr></thead><tbody>';
@@ -546,7 +681,7 @@ function _showViewer(fileName, sheets, choices, importer) {
         const row = data[r];
         const xr = r + firstExcelRow;
         // a row the import will skip is dimmed, so "N empty rows skipped" is visible
-        const skip = !mapped.length || mapped.every(i => String(row[i] ?? '').trim() === '');
+        const skip = planRowEmpty(p, rows, xr);   // V0.3.5.59 — a picture keeps the row
         const mk = marks.get(xr);
         const dim = ranged ? (mapped.length && !mk) : (skip && mapped.length && skipEmpty);
         let numCell = String(xr), bar = '', tip = '';
@@ -575,7 +710,8 @@ function _showViewer(fileName, sheets, choices, importer) {
           const v = String(row[c] ?? '');
           const role = st.roles[c] || 'ignore';
           const tint = _ROLE_TINT[role] ? `background:${_ROLE_TINT[role]};` : '';
-          html += `<td dir="auto" title="${_esc(v.length > 600 ? v.slice(0, 600) + '…' : v)}" style="${tint}padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;text-align:start;">${_esc(v)}</td>`;
+          const thumb = hasPicture(imgs, xr - 1, c) ? thumbHtml(`${xr - 1},${c}`) : '';   // V0.3.5.59
+          html += `<td dir="auto" title="${_esc(v.length > 600 ? v.slice(0, 600) + '…' : v)}" style="${tint}padding:3px 6px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;text-align:start;">${thumb}${_esc(v)}</td>`;
         }
         html += '</tr>';
       }
@@ -637,8 +773,8 @@ function _showViewer(fileName, sheets, choices, importer) {
         viewNote.textContent = '';
         return;
       }
-      if (p.nameCol < 0 && p.voiceCol < 0 && !p.titleCols.length) {
-        wrap.innerHTML = '<div class="small muted" style="padding:14px;">Nothing to show yet — in the Sheet view, choose a role above at least one column (Step name, Voiceover or Title).</div>';
+      if (p.nameCol < 0 && p.voiceCol < 0 && !p.titleCols.length && !p.imageCols.length) {
+        wrap.innerHTML = '<div class="small muted" style="padding:14px;">Nothing to show yet — in the Sheet view, choose a role above at least one column (Step name, Voiceover, Title or Image).</div>';
         viewNote.textContent = '';
         return;
       }
@@ -651,11 +787,12 @@ function _showViewer(fileName, sheets, choices, importer) {
       const th = 'position:sticky;top:0;z-index:1;background:var(--panel);border-bottom:1px solid var(--line);padding:4px 6px;text-align:start;font-weight:600;white-space:nowrap;';
       const td = 'padding:3px 6px;border-bottom:1px solid var(--line);vertical-align:top;text-align:start;';
       const showVoice = p.voiceCol >= 0;
-      const ncols = 3 + (showVoice ? 1 : 0) + p.titleCols.length;
+      const ncols = 3 + (showVoice ? 1 : 0) + p.titleCols.length + p.imageCols.length;
       let html = '<table style="border-collapse:separate;border-spacing:0;font-size:12px;min-width:100%;"><thead><tr>';
       html += `<th style="${th}">Step</th><th style="${th}">Row</th><th style="${th}">Step name</th>`;
       if (showVoice) html += `<th style="${th}">Voiceover</th>`;
       p.titleColumns.forEach(t => { html += `<th style="${th}" dir="auto">${_esc(t.label)}</th>`; });
+      p.imageColumns.forEach(t => { html += `<th style="${th}" dir="auto">🖼 ${_esc(t.label)}</th>`; });   // V0.3.5.59
       html += '</tr></thead><tbody>';
       if (p.blocked) {
         html += `<tr><td colspan="${ncols}" style="${td}color:#f87171;">The "Rows to import" line still has errors — this is what it reads so far. Import stays off until it reads cleanly.</td></tr>`;
@@ -681,6 +818,7 @@ function _showViewer(fileName, sheets, choices, importer) {
           html += `<td dir="auto" title="${_esc(cut(st.name, 600))}" style="${td}min-width:140px;max-width:280px;">${nm}${empty}</td>`;
           if (showVoice) html += `<td dir="auto" title="${_esc(cut(st.voice, 600))}" style="${td}min-width:180px;max-width:420px;">${st.voice ? _esc(cut(st.voice, 160)) : '<span class="muted">—</span>'}</td>`;
           st.titles.forEach(t => { html += `<td dir="auto" title="${_esc(cut(t, 600))}" style="${td}max-width:220px;">${t ? _esc(cut(t, 80)) : '<span class="muted">—</span>'}</td>`; });
+          p.imageCols.forEach((_, n) => { const k = st.pics[n]; html += `<td style="${td}">${k ? thumbHtml(k) : '<span class="muted">—</span>'}</td>`; });
           html += '</tr>';
         }
       }
@@ -704,12 +842,15 @@ function _showViewer(fileName, sheets, choices, importer) {
       const st = per[cur];
       if (!p.titleCols.length) { titlesEl.innerHTML = ''; return; }
       const brandOpts = brandTitles.map(b => `<option value="brand:${_esc(b.id)}">${_esc(b.name || 'Title')} (brand title)</option>`).join('');
+      // V0.3.5.59 — "＋ New basic style": one shared style per title column, so
+      // all its titles restyle in one place later (the default with no styles)
       const styleOpts = '<option value="">Default style</option>' +
-        styles.map(s => `<option value="${_esc(s.id)}">${_esc(s.name || s.id)}</option>`).join('');
+        styles.map(s => `<option value="${_esc(s.id)}">${_esc(s.name || s.id)}</option>`).join('') +
+        '<option value="__new__" title="One new shared text style for this column — change it later and every title of the column follows">＋ New basic style</option>';
       const posOpts = positions.map(o => `<option value="${_esc(o.key)}">${_esc(o.label || o.key)}</option>`).join('');
       titlesEl.innerHTML = `<div class="small muted">Every step gets the same title box per Title column — same style, same place. You can change them later.</div>` +
         p.titleCols.map((c, n) => {
-          const look = st.looks[c] || defaultLook(n, positions);
+          const look = st.looks[c] || defaultLook(n, positions, noStyles);
           const isBrand = look.kind === 'brand';
           return `<div data-tcol="${c}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid var(--line);border-radius:8px;box-shadow:inset 3px 0 0 #f59e0b;">
             <span style="min-width:140px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><b>Title · ${_letter(c)}</b>${p.names[c] ? ` <span dir="auto">${_esc(p.names[c])}</span>` : ''}</span>
@@ -727,10 +868,57 @@ function _showViewer(fileName, sheets, choices, importer) {
       // set the selects' values after the markup exists (ids may carry any text)
       titlesEl.querySelectorAll('[data-tcol]').forEach((rowEl, n) => {
         const c = Number(rowEl.dataset.tcol);
-        const look = st.looks[c] || defaultLook(n, positions);
+        const look = st.looks[c] || defaultLook(n, positions, noStyles);
         rowEl.querySelector('[data-look]').value = look.kind === 'brand' ? `brand:${look.constId}` : 'new';
         rowEl.querySelector('[data-style]').value = look.styleId || '';
         rowEl.querySelector('[data-pos]').value = look.position || positions[0].key;
+      });
+    };
+
+    // V0.3.5.59 — one look row per Image column: the project's pinned position
+    // + mask, or a new unified look (position, size, rectangle mask aspect)
+    // the importer makes ONCE as shared definitions. Plus a note when the
+    // sheet held pictures the app cannot use (EMF / WMF).
+    const renderImages = () => {
+      const p = plan();
+      const st = per[cur];
+      const lost = Number(sheets[cur].imagesSkipped) || 0;
+      const lostNote = lost
+        ? `<div class="small" style="color:#fbbf24;">${lost === 1 ? '1 picture' : `${lost} pictures`} in this sheet ${lost === 1 ? 'is' : 'are'} in a format the app cannot use (EMF / WMF drawings) — ${lost === 1 ? 'it is' : 'they are'} left out. Save them as PNG / JPEG in the sheet to bring them in.</div>`
+        : '';
+      if (!p.imageCols.length) { imagesEl.innerHTML = lostNote; return; }
+      const pctOpts = IMAGE_SIZES.map(s => `<option value="${s}">${Math.round(s * 100)} % of the width</option>`).join('');
+      const aspOpts = IMAGE_ASPECTS.map(a => `<option value="${a}">${a}</option>`).join('');
+      const posOpts = positions.map(o => `<option value="${_esc(o.key)}">${_esc(o.label || o.key)}</option>`).join('');
+      const pinOpts = pinnedPositions.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Pinned position')}</option>`).join('');
+      const maskOpts = '<option value="">No mask</option>' + masks.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Mask')}</option>`).join('');
+      const sel = (attr, opts, w = 120) => `<select ${attr} style="height:28px;width:auto;min-width:${w}px;">${opts}</select>`;
+      imagesEl.innerHTML = lostNote +
+        `<div class="small muted">Every step gets its row's picture per Image column — all in the same place, under the same mask, so they line up. Each picture fills its mask, centred; fix any one by hand later.</div>` +
+        p.imageCols.map((c, n) => {
+          const look = st.imgLooks[c] || defaultImageLook(n, lookChoices);
+          const isBrand = look.kind === 'brand';
+          return `<div data-icol="${c}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid var(--line);border-radius:8px;box-shadow:inset 3px 0 0 #a855f7;">
+            <span style="min-width:140px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><b>Image · ${_letter(c)}</b>${p.names[c] ? ` <span dir="auto">${_esc(p.names[c])}</span>` : ''}</span>
+            <label class="small muted" style="display:flex;align-items:center;gap:4px;">Look
+              ${sel('data-ilook', `${pinnedPositions.length ? '<option value="brand">Project position + mask</option>' : ''}<option value="new">New unified look</option>`, 170)}</label>
+            <label class="small muted" style="display:${isBrand ? 'flex' : 'none'};align-items:center;gap:4px;">Position ${sel('data-ipin', pinOpts, 140)}</label>
+            <label class="small muted" style="display:${isBrand ? 'flex' : 'none'};align-items:center;gap:4px;">Mask ${sel('data-imask', maskOpts, 110)}</label>
+            <label class="small muted" style="display:${isBrand ? 'none' : 'flex'};align-items:center;gap:4px;">Position ${sel('data-ipos', posOpts)}</label>
+            <label class="small muted" style="display:${isBrand ? 'none' : 'flex'};align-items:center;gap:4px;">Size ${sel('data-isize', pctOpts, 130)}</label>
+            <label class="small muted" style="display:${isBrand ? 'none' : 'flex'};align-items:center;gap:4px;" title="The shape of the rectangle mask every picture of this column is cut to">Mask ${sel('data-iaspect', aspOpts, 70)}</label>
+            ${isBrand ? '' : '<span class="small muted">made once as a shared position + mask</span>'}
+          </div>`;
+        }).join('');
+      imagesEl.querySelectorAll('[data-icol]').forEach((rowEl, n) => {
+        const c = Number(rowEl.dataset.icol);
+        const look = st.imgLooks[c] || defaultImageLook(n, lookChoices);
+        rowEl.querySelector('[data-ilook]').value = look.kind === 'brand' ? 'brand' : 'new';
+        if (pinnedPositions.length) rowEl.querySelector('[data-ipin]').value = look.posId || pinnedPositions[0].id;
+        rowEl.querySelector('[data-imask]').value = look.maskId || '';
+        rowEl.querySelector('[data-ipos]').value = look.position || positions[0].key;
+        rowEl.querySelector('[data-isize]').value = String(look.size ?? 0.3);
+        rowEl.querySelector('[data-iaspect]').value = look.aspect || '4:3';
       });
     };
 
@@ -745,7 +933,7 @@ function _showViewer(fileName, sheets, choices, importer) {
       headerCb.checked = per[cur].headerRow;
       skipCb.checked = skipEmpty;
       rangeIn.value = per[cur].range || '';
-      renderTable(); renderTitles(); renderRange(); renderSummary();
+      renderTable(); renderTitles(); renderImages(); renderRange(); renderSummary();
     };
 
     // Pin the defaults the user saw into st.looks, so changing one field of a
@@ -754,14 +942,24 @@ function _showViewer(fileName, sheets, choices, importer) {
       const st = per[cur];
       if (!st.looks[c]) {
         const n = plan().titleCols.indexOf(c);
-        st.looks[c] = defaultLook(Math.max(0, n), positions);
+        st.looks[c] = defaultLook(Math.max(0, n), positions, noStyles);
       }
       return st.looks[c];
+    };
+    // V0.3.5.59 — the same pinning for an Image column's look
+    const imgLookOf = (c) => {
+      const st = per[cur];
+      if (!st.imgLooks[c]) {
+        const n = plan().imageCols.indexOf(c);
+        st.imgLooks[c] = defaultImageLook(Math.max(0, n), lookChoices);
+      }
+      return st.imgLooks[c];
     };
 
     on(tabsEl, 'click', (e) => {
       const b = e.target.closest('[data-sheet]');
       if (!b || busy) return;
+      if (Number(b.dataset.sheet) !== cur) dropThumbs();   // V0.3.5.59 — the old sheet's thumbnails go
       cur = Number(b.dataset.sheet);
       wrap.scrollLeft = 0; wrap.scrollTop = 0;
       showError('');
@@ -772,7 +970,7 @@ function _showViewer(fileName, sheets, choices, importer) {
     on(headerCb, 'change', () => {
       per[cur].headerRow = headerCb.checked;
       clearPicks(); hideMenu();   // row 1 may have just become the column names
-      renderTable(); renderTitles(); renderRange(); renderSummary();
+      renderTable(); renderTitles(); renderImages(); renderRange(); renderSummary();
     });
     on(skipCb, 'change', () => { skipEmpty = skipCb.checked; renderTable(); renderRange(); renderSummary(); });
     on(rangeIn, 'input', () => { per[cur].range = rangeIn.value; showError(''); renderTable(); renderRange(); renderSummary(); });
@@ -798,8 +996,30 @@ function _showViewer(fileName, sheets, choices, importer) {
       const st = per[cur];
       st.roles = assignRole(st.roles, c, sel.value);
       if (sel.value === 'title') lookOf(c);
+      if (sel.value === 'image') imgLookOf(c);
       showError('');
-      renderTable(); renderTitles(); renderRange(); renderSummary();
+      renderTable(); renderTitles(); renderImages(); renderRange(); renderSummary();
+    });
+    // V0.3.5.59 — an Image column's look: switching kind keeps the other
+    // kind's fields, so flipping back shows what was set before
+    on(imagesEl, 'change', (e) => {
+      const rowEl = e.target.closest('[data-icol]');
+      if (!rowEl) return;
+      const c = Number(rowEl.dataset.icol);
+      const look = imgLookOf(c);
+      const t = e.target;
+      if (t.matches('[data-ilook]')) {
+        const n = Math.max(0, plan().imageCols.indexOf(c));
+        const fresh = defaultImageLook(n, { positions });   // a 'new' look's defaults
+        look.kind = t.value === 'brand' && pinnedPositions.length ? 'brand' : 'new';
+        if (look.kind === 'brand' && !look.posId) { look.posId = pinnedPositions[0].id; look.maskId = masks[0]?.id ?? null; }
+        if (look.kind === 'new') { look.position ??= fresh.position; look.size ??= fresh.size; look.aspect ??= fresh.aspect; }
+        renderImages();
+      } else if (t.matches('[data-ipin]')) look.posId = t.value;
+      else if (t.matches('[data-imask]')) look.maskId = t.value || null;
+      else if (t.matches('[data-ipos]')) look.position = t.value;
+      else if (t.matches('[data-isize]')) look.size = Number(t.value) || 0.3;
+      else if (t.matches('[data-iaspect]')) look.aspect = t.value;
     });
     on(titlesEl, 'change', (e) => {
       const rowEl = e.target.closest('[data-tcol]');
@@ -1113,6 +1333,7 @@ function _showViewer(fileName, sheets, choices, importer) {
       askClose?.(null);
       hideMenu();
       ac.abort();
+      dropThumbs();   // V0.3.5.59
       try { dlg.close(); } catch { /* fine */ }
       dlg.remove();
       resolve(result);
@@ -1137,14 +1358,46 @@ function _showViewer(fileName, sheets, choices, importer) {
           ? { kind: 'brand', constId: t.look.constId }
           : { kind: 'new', styleId: t.look.styleId ?? null, position: t.look.position },
       }));
+      // V0.3.5.59 — Image looks, cleaned to the importer's contract
+      const imageColumns = p.imageColumns.map(t => ({
+        label: t.label,
+        look: t.look.kind === 'brand'
+          ? { kind: 'brand', posId: t.look.posId, maskId: t.look.maskId || null }
+          : { kind: 'new', position: t.look.position, size: Number(t.look.size) || 0.3, aspect: t.look.aspect || '4:3' },
+      }));
       busy = true;
       okBtn.textContent = 'Importing…';
       renderSummary();
       showError('');
-      let res;
+      let res, badPics = 0;
       try {
+        // V0.3.5.59 — the rows as the importer takes them; pictures scaled
+        // here, one at a time (one Excel cell used twice = one decode)
+        const rowsOut = p.rows.map(r => ({ name: r.name, voice: r.voice, titles: r.titles }));
+        if (p.imageCols.length) {
+          const keys = [...new Set(p.rows.flatMap(r => r.pics || []).filter(Boolean))];
+          const made = new Map();
+          for (let i = 0; i < keys.length; i++) {
+            if (keys.length > 3) {
+              okBtn.textContent = `Pictures ${i + 1} / ${keys.length}…`;
+              setStatus(`📊 Preparing pictures — ${i + 1} of ${keys.length}…`, 'info', 0);
+            }
+            const pic = sheets[cur].images?.[keys[i]]?.[0];
+            try { made.set(keys[i], await scalePicture(pic)); }
+            catch (err) {
+              badPics++;
+              console.warn(`[sheet-import] picture at sheet cell ${keys[i]} skipped`, err);
+              made.set(keys[i], null);
+            }
+          }
+          rowsOut.forEach((r, k) => { r.images = (p.rows[k].pics || []).map(key => (key ? made.get(key) ?? null : null)); });
+          okBtn.textContent = 'Importing…';
+        }
+        const args = { rows: rowsOut, titleColumns };
+        if (imageColumns.length) args.imageColumns = imageColumns;
         // groups only when the line has chapter codes — otherwise today's call exactly
-        res = await importer.importStepsFromSheet(p.groups ? { rows: p.rows, titleColumns, groups: p.groups } : { rows: p.rows, titleColumns });
+        if (p.groups) args.groups = p.groups;
+        res = await importer.importStepsFromSheet(args);
       } catch (err) {
         console.error('[sheet-import] import failed', err);
         res = { ok: false, reason: err?.message || 'unknown error' };
@@ -1155,9 +1408,11 @@ function _showViewer(fileName, sheets, choices, importer) {
         const n = res.created ?? p.rows.length;
         close(res);
         const chap = p.chapters ? ` in ${p.chapters} new chapter${p.chapters === 1 ? '' : 's'}` : '';
-        setStatus(`📊 ${n} step${n === 1 ? '' : 's'} created${chap} from ${fileName}${sheets.length > 1 ? ` (${sheets[cur].name})` : ''} — Ctrl+Z undoes the import.`, 'ok', 6000);
+        const bad = badPics ? ` ${badPics === 1 ? '1 picture' : `${badPics} pictures`} could not be read and ${badPics === 1 ? 'was' : 'were'} left out.` : '';
+        setStatus(`📊 ${n} step${n === 1 ? '' : 's'} created${chap} from ${fileName}${sheets.length > 1 ? ` (${sheets[cur].name})` : ''} — Ctrl+Z undoes the import.${bad}`, badPics ? 'warn' : 'ok', badPics ? 10000 : 6000);
       } else {
         // stay open: the user's column choices are worth keeping for a retry
+        if (p.imageCols.length) setStatus('', 'info', 1);   // V0.3.5.59 — drop the "Preparing pictures" line
         showError(`Nothing was imported: ${res?.reason || 'unknown reason'}`);
         renderSummary();
       }
@@ -1167,6 +1422,73 @@ function _showViewer(fileName, sheets, choices, importer) {
     try { dlg.showModal(); } catch { close(null); }
     if (!closed) fitLine();   // V0.3.5.57 — the box can only measure itself once shown
   });
+}
+
+// ─── V0.3.5.59 — a sheet picture → a data URL the overlay can hold ──────────
+
+export const PICTURE_MAX_SIDE = 1920;
+
+/** Scale (w, h) so the longest side is ≤ max, never up. → [W, H] whole pixels ≥ 1. */
+export function scaledSize(w, h, max = PICTURE_MAX_SIDE) {
+  const k = Math.min(1, max / Math.max(w, h));
+  return [Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k))];
+}
+
+/** Decode the bytes: createImageBitmap first, an <img> from a blob URL when that fails. */
+async function _decodePicture(pic) {
+  const blob = new Blob([pic.bytes], { type: pic.mime || '' });
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(blob);
+      return { src: bmp, w: bmp.width, h: bmp.height, done: () => bmp.close?.() };
+    } catch { /* the <img> path below knows a few more formats */ }
+  }
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.decoding = 'async';
+  img.src = url;
+  try { await img.decode(); }
+  catch (err) { URL.revokeObjectURL(url); throw err; }
+  // the URL lives until the picture is drawn
+  return { src: img, w: img.naturalWidth, h: img.naturalHeight, done: () => URL.revokeObjectURL(url) };
+}
+
+/**
+ * One picture → { dataUrl, width, height }: longest side ≤ 1920 px (the
+ * workbook's full-size bytes are never handed on), JPEG 0.9 when it has no
+ * transparency, PNG when it does (alpha read off a small downscaled copy;
+ * a .jpg cannot have any, so it skips the check). Throws when undecodable.
+ */
+export async function scalePicture(pic) {
+  if (!pic?.bytes?.length) throw new Error('no picture bytes');
+  const d = await _decodePicture(pic);
+  try {
+    if (!d.w || !d.h) throw new Error('picture has no size');
+    const [W, H] = scaledSize(d.w, d.h);
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(d.src, 0, 0, W, H);
+    let alpha = false;
+    if (!/jpe?g/i.test(pic.mime || '')) {
+      const [sw, sh] = scaledSize(W, H, 64);
+      const sc = document.createElement('canvas');
+      sc.width = sw; sc.height = sh;
+      const sctx = sc.getContext('2d', { willReadFrequently: true });
+      sctx.drawImage(cv, 0, 0, sw, sh);
+      const px = sctx.getImageData(0, 0, sw, sh).data;
+      for (let i = 3; i < px.length; i += 4) if (px[i] < 255) { alpha = true; break; }
+      sc.width = sc.height = 0;
+    }
+    const dataUrl = alpha ? cv.toDataURL('image/png') : cv.toDataURL('image/jpeg', 0.9);
+    cv.width = cv.height = 0;   // free the backing store now, not at GC
+    if (!/^data:image\//.test(dataUrl) || dataUrl.length < 32) throw new Error('canvas export failed');
+    return { dataUrl, width: W, height: H };
+  } finally {
+    d.done();
+  }
 }
 
 function _esc(s) {

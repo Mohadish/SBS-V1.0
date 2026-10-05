@@ -16,6 +16,12 @@
  *   • V0.3.5.54: optional groups (the dialog's "C01(name)5-15" line) — each
  *     named group becomes a NEW chapter, inserted right after the active
  *     step's chapter (else after all chapters), holding its rows in order.
+ *   • V0.3.5.59: per Image column, one overlay picture per step, all bound to
+ *     the SAME pinned position (constShapes def) and the SAME shared crop
+ *     mask (cropMasks def) — brand ones, or ONE new pair per column (a preset
+ *     position + size + a plain rectangle mask). A Title column's 'new' look
+ *     may also mint ONE basic text style (styleId '__new__') so the titles
+ *     restyle in bulk later. Every new def rides the import's ONE undo entry.
  *
  * The overlay text boxes are written straight into step.overlay as the same
  * compact Konva JSON the overlay saves (className 'Image', name
@@ -31,6 +37,7 @@ import state            from '../core/state.js';
 import { undoManager }  from './undo.js';
 import { createStep, createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings }      from '../core/clone.js';
+import { makeStyleTemplate }      from './style-templates.js';
 
 /** Position presets for a NEW unified title look. */
 export const TITLE_POSITIONS = [
@@ -52,8 +59,17 @@ export const MAX_IMPORT_ROWS = 2000;
 export function sheetTitleChoices() {
   const styles      = (state.get('styleTemplates') || []).filter(t => t?.id).map(t => ({ id: t.id, name: t.name || 'Style' }));
   const brandTitles = (state.get('constTextBoxes') || []).filter(d => d?.id).map(d => ({ id: d.id, name: d.name || 'Title', styleId: d.styleId || null }));
-  return { styles, brandTitles, positions: TITLE_POSITIONS.map(p => ({ ...p })) };
+  // V0.3.5.59 — the project's / brand's pinned positions + shared masks, for an Image column's look
+  const pinnedPositions = (state.get('constShapes') || []).filter(d => d?.id).map(d => ({ id: d.id, name: d.name || 'Position' }));
+  const masks           = (state.get('cropMasks')   || []).filter(d => d?.id).map(d => ({ id: d.id, name: d.name || 'Mask' }));
+  return { styles, brandTitles, positions: TITLE_POSITIONS.map(p => ({ ...p })), pinnedPositions, masks };
 }
+
+/** V0.3.5.59 — the mask shapes a NEW picture look offers (width : height). */
+export const PICTURE_ASPECTS = { '4:3': 4 / 3, '1:1': 1, '16:9': 16 / 9 };
+
+/** The styleId a 'new' title look sends to ask for a fresh basic style. */
+export const NEW_STYLE_ID = '__new__';
 
 // ─── Pure helpers (node-tested: E:/claude-temp/xl-action-test.mjs) ──────────
 
@@ -155,6 +171,72 @@ export function textBoxSpec({ text, def, width, align, fontSize, styleId }) {
   return { attrs, className: 'Image' };
 }
 
+/**
+ * V0.3.5.59 — the box a NEW picture look fills: a preset position (same 7 as
+ * titles, 5% margin), `size` = share of the frame width (0.1–0.9), height
+ * from the aspect; a box taller than 90% of the frame shrinks to fit. Whole
+ * pixels, so the mask fractions describe exactly the same rectangle. The
+ * pinned-position def anchors right presets at their right edge (tr), like
+ * the titles — a later resize keeps them against that edge.
+ */
+export function planNewPictureBox(position, { cw, ch, size = 0.35, aspect = '4:3' }) {
+  const pos = _POS_KEYS.has(position) ? position : 'top-right';
+  const ar = PICTURE_ASPECTS[aspect] || PICTURE_ASPECTS['4:3'];
+  const share = Math.min(0.9, Math.max(0.1, Number(size) || 0.35));
+  let w = cw * share, h = w / ar;
+  if (h > ch * 0.9) { h = ch * 0.9; w = h * ar; }
+  w = Math.round(w); h = Math.round(h);
+  const mx = Math.round(cw * 0.05), my = Math.round(ch * 0.05);
+  const [v, hRaw] = pos === 'center' ? ['center', 'center'] : pos.split('-');
+  const hz = hRaw || 'center';
+  const left = hz === 'left' ? mx : (hz === 'right' ? cw - mx - w : Math.round((cw - w) / 2));
+  const top  = v === 'top' ? my : (v === 'bottom' ? ch - my - h : Math.round((ch - h) / 2));
+  const x = Math.max(0, left), y = Math.max(0, top);
+  return { x, y, w, h, anchor: hz === 'right' ? 'tr' : 'tl', defX: hz === 'right' ? x + w : x };
+}
+
+/**
+ * V0.3.5.59 — "cover": the part of a W×H picture that fills a bw×bh box at
+ * one scale, centred, as Konva crop attrs (source pixels). WHY a crop and not
+ * a centred oversize node: a pinned position snaps the node's bounding-box
+ * corner to the def on every step load (_applyConstShapeToNode), so an
+ * oversize picture centred under the mask would be dragged back to its own
+ * corner — off centre — the moment the step opened. Cropped, the node IS the
+ * box: pin and mask both line up exactly, for every picture shape.
+ * null when the picture's size is unknown (it then stretches to the box).
+ */
+export function coverCrop(W, H, bw, bh) {
+  if (!(W > 0 && H > 0 && bw > 0 && bh > 0)) return null;
+  const s = Math.max(bw / W, bh / H);
+  const cwid = Math.min(W, bw / s), chgt = Math.min(H, bh / s);
+  const r = v => Math.round(v * 100) / 100;
+  return { cropX: r((W - cwid) / 2), cropY: r((H - chgt) / 2), cropWidth: r(cwid), cropHeight: r(chgt) };
+}
+
+/** V0.3.5.59 — one overlay picture node, the way addImage + the 📌 / 🎭 menus
+ *  leave it: name 'userImage', the data URL in src, natural size, bound by
+ *  constShapeId / cropMaskId (ids, never copies — moving a def moves them all). */
+export function pictureSpec({ pic, box, posId = null, maskId = null }) {
+  const attrs = {
+    x: box.x, y: box.y, width: box.w, height: box.h,
+    draggable: true,
+    name: 'userImage',
+    src: pic.dataUrl,
+  };
+  const W = Number(pic.width) || 0, H = Number(pic.height) || 0;
+  if (W > 0 && H > 0) { attrs.naturalW = W; attrs.naturalH = H; }
+  const crop = coverCrop(W, H, box.w, box.h);
+  if (crop) Object.assign(attrs, crop);
+  if (posId)  attrs.constShapeId = posId;
+  if (maskId) attrs.cropMaskId   = maskId;
+  return { attrs, className: 'Image' };
+}
+
+/** V0.3.5.59 — a usable picture from the dialog: a data URL of an image. */
+function _picOk(p) {
+  return !!(p && typeof p.dataUrl === 'string' && /^data:image\//i.test(p.dataUrl));
+}
+
 /** A step's overlay string holding these nodes; null when there are none
  *  (a step without an overlay is how the app stores "nothing on screen"). */
 export function overlayJson(nodes, cw, ch) {
@@ -245,17 +327,57 @@ const _EMPTY_SCENE_TREE = () => ({ id: 'scene_root', name: 'Scene', type: 'scene
  * Build the steps + defs from the dialog's rows. Pure apart from id minting.
  * @returns {{ steps: object[], newDefs: object[] } | { error: string }}
  */
-export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styles, defs, chapterId = null, firstNumber = 1 }) {
+export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSnapshot, cw, ch, styles, defs, shapeDefs = [], maskDefs = [], chapterId = null, firstNumber = 1 }) {
   const styleById = new Map((styles || []).map(t => [t.id, t]));
   const defById   = new Map((defs || []).map(d => [d.id, d]));
   const usedNames = new Set((defs || []).map(d => d.name));
   const cols = (titleColumns || []).map(c => ({ label: String(c?.label || '').trim() || 'Title', look: c?.look || { kind: 'new' } }));
   const textAt = (r, i) => cleanCellText(r?.titles?.[i]);
+  const uniqueName = (used, base) => { let n = base, k = 2; while (used.has(n)) n = `${base} (${k++})`; used.add(n); return n; };
+
+  // ── V0.3.5.59 — Image columns: one shared position + mask per column ──
+  const picAt = (r, i) => (_picOk(r?.images?.[i]) ? r.images[i] : null);
+  const posById  = new Map((shapeDefs || []).map(d => [d.id, d]));
+  const maskById = new Map((maskDefs || []).map(d => [d.id, d]));
+  const usedPos  = new Set((shapeDefs || []).map(d => d.name));
+  const usedMask = new Set((maskDefs || []).map(d => d.name));
+  const newPins = [], newMasks = [];
+  const picPlans = [];
+  (imageColumns || []).forEach((c, i) => {
+    if (picPlans.error) return;
+    const label = String(c?.label || '').trim() || 'Picture';
+    const look = c?.look || { kind: 'new' };
+    if (!rows.some(r => picAt(r, i))) { picPlans.push(null); return; }   // no picture anywhere → no defs
+    if (look.kind === 'brand') {
+      const pos  = look.posId  ? posById.get(look.posId)   : null;
+      const mask = look.maskId ? maskById.get(look.maskId) : null;
+      if (look.posId && !pos)   { picPlans.error = `The pinned position for "${label}" is no longer in this project — pick it again.`; return; }
+      if (look.maskId && !mask) { picPlans.error = `The mask for "${label}" is no longer in this project — pick it again.`; return; }
+      if (!pos && !mask)        { picPlans.error = `Pick a pinned position for "${label}".`; return; }
+      // the box takes the MASK's size (what shows); without a mask, the look's size / aspect
+      const fallback = planNewPictureBox('center', { cw, ch, size: look.size, aspect: look.aspect });
+      const w = mask ? Math.max(1, Math.round(mask.w * cw)) : fallback.w;
+      const h = mask ? Math.max(1, Math.round(mask.h * ch)) : fallback.h;
+      const x = pos ? Math.round(pos.anchor === 'tr' ? (pos.x || 0) - w : (pos.x || 0)) : Math.round(mask.x * cw);
+      const y = pos ? Math.round(pos.y || 0) : Math.round(mask.y * ch);
+      picPlans.push({ box: { x, y, w, h }, posId: pos?.id || null, maskId: mask?.id || null });
+      return;
+    }
+    const b = planNewPictureBox(look.position, { cw, ch, size: look.size, aspect: look.aspect });
+    // same shapes the 📌 "Make pinned position…" / 🎭 promote menus write
+    const pin  = { id: generateId('csp'), name: uniqueName(usedPos, label), anchor: b.anchor, x: b.defX, y: b.y };
+    const mask = { id: generateId('cmk'), name: uniqueName(usedMask, label), kind: 'rect', x: b.x / cw, y: b.y / ch, w: b.w / cw, h: b.h / ch, rot: 0 };
+    newPins.push(pin); newMasks.push(mask);
+    picPlans.push({ box: { x: b.x, y: b.y, w: b.w, h: b.h }, posId: pin.id, maskId: mask.id });
+  });
+  if (picPlans.error) return { error: picPlans.error };
 
   // One def + instance geometry per title column. Columns with no text in
   // any row make no def (an empty constant would only clutter the 📌 list).
   const plans = [];
   const newDefs = [];
+  const newStyles = [];
+  const usedStyleNames = new Set((styles || []).map(t => t.name));
   const stackAt = new Map();   // position key → room taken by earlier columns
   for (let i = 0; i < cols.length; i++) {
     const { label, look } = cols[i];
@@ -268,7 +390,13 @@ export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styl
       plans.push({ def, styleId: def.styleId || null, fontSize, ...brandInstanceGeometry(def, cw) });
       continue;
     }
-    const tpl = look.styleId ? styleById.get(look.styleId) : null;
+    let tpl = look.styleId ? styleById.get(look.styleId) : null;
+    if (look.styleId === NEW_STYLE_ID) {
+      // V0.3.5.59 — "＋ New basic style": the app's default text look at the size an unstyled imported
+      // title already gets (the stock 16 px would shrink every title once bound) — one per column
+      tpl = makeStyleTemplate({ name: uniqueName(usedStyleNames, `${label} style`), fontSize: Math.round(ch * 0.044) });
+      newStyles.push(tpl);
+    }
     const styleId = tpl ? tpl.id : null;   // a style deleted meanwhile → plain look
     const fontSize = tpl?.fontSize || Math.round(ch * 0.044);
     const position = _POS_KEYS.has(look.position) ? look.position : 'bottom-center';
@@ -277,15 +405,14 @@ export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styl
     const stack = stackAt.get(position) || 0;
     const g = planNewTitleGeometry(position, { cw, ch, maxH, stack });
     stackAt.set(position, stack + maxH + Math.round(fontSize * 0.3));
-    let name = label, n = 2;
-    while (usedNames.has(name)) name = `${label} (${n++})`;
-    usedNames.add(name);
+    const name = uniqueName(usedNames, label);
     const def = { id: generateId('ctb'), name, anchor: g.anchor, x: g.x, y: g.y, styleId };
     newDefs.push(def);
     plans.push({ def, styleId, fontSize, width: g.width, align: g.align });
   }
 
   const tree = baseSnapshot?.tree || null;
+  let pictures = 0;
   const steps = rows.map((r, idx) => {
     const name = cleanCellText(r?.name).replace(/\s*\n\s*/g, ' ') || `Step ${firstNumber + idx}`;
     const step = createStep({ name, chapterId });
@@ -303,6 +430,11 @@ export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styl
     step.voiceEnabled = true;
     step.altered = true;   // ★ new step — never rendered
     const nodes = [];
+    // V0.3.5.59 — pictures first, so the step's titles draw on top of them
+    picPlans.forEach((p, i) => {
+      const pic = p && picAt(r, i);
+      if (pic) { nodes.push(pictureSpec({ pic, box: p.box, posId: p.posId, maskId: p.maskId })); pictures++; }
+    });
     plans.forEach((p, i) => {
       const text = p && textAt(r, i);
       if (text) nodes.push(textBoxSpec({ text, def: p.def, width: p.width, align: p.align, fontSize: p.fontSize, styleId: p.styleId }));
@@ -311,7 +443,7 @@ export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styl
     if (ov) step.overlay = ov;
     return step;
   });
-  return { steps, newDefs };
+  return { steps, newDefs, newStyles, newPins, newMasks, pictures };
 }
 
 // ─── The import ──────────────────────────────────────────────────────────────
@@ -319,12 +451,15 @@ export function buildSheetSteps({ rows, titleColumns, baseSnapshot, cw, ch, styl
 /**
  * @param {{ rows: {name:string, voice:string, titles:string[]}[],
  *           titleColumns: {label:string, look:{kind:'brand',constId:string}|{kind:'new',styleId:string|null,position:string}}[],
+ *           imageColumns?: {label:string, look:{kind:'brand',posId:string,maskId:string|null}|{kind:'new',position:string,size:number,aspect:string}}[],
  *           groups?: {name:string|null, count:number}[] }} p
  *   groups (V0.3.5.54): cover `rows` in order; name null = a plain block
  *   (today's placement), a name = a NEW chapter holding those rows' steps.
- * @returns {Promise<{ok:true, created:number, chapters:number}|{ok:false, reason:string}>}
+ *   imageColumns (V0.3.5.59): rows[i].images[k] = { dataUrl, width, height } | null for column k.
+ *   A 'new' title look with styleId '__new__' mints one basic text style for that column.
+ * @returns {Promise<{ok:true, created:number, chapters:number, pictures:number}|{ok:false, reason:string}>}
  */
-export async function importStepsFromSheet({ rows, titleColumns = [], groups = null } = {}) {
+export async function importStepsFromSheet({ rows, titleColumns = [], imageColumns = [], groups = null } = {}) {
   if (!Array.isArray(rows) || !rows.length) return { ok: false, reason: 'No rows to import.' };
   if (rows.length > MAX_IMPORT_ROWS) return { ok: false, reason: `${rows.length} rows is more than ${MAX_IMPORT_ROWS} steps — split the sheet or filter the rows first.` };
   const grouping = planSheetGroups(groups, rows.length);
@@ -344,9 +479,11 @@ export async function importStepsFromSheet({ rows, titleColumns = [], groups = n
   const baseSnapshot = steps.captureSnapshot();
 
   const built = buildSheetSteps({
-    rows, titleColumns, baseSnapshot, cw, ch,
+    rows, titleColumns, imageColumns, baseSnapshot, cw, ch,
     styles: state.get('styleTemplates') || [],
     defs: state.get('constTextBoxes') || [],
+    shapeDefs: state.get('constShapes') || [],
+    maskDefs: state.get('cropMasks') || [],
     // the last step's chapter: normalizeOrder files chapter-less steps BEFORE
     // every chapter, which is not "after the existing steps"
     chapterId: last?.chapterId ?? null,
@@ -356,6 +493,13 @@ export async function importStepsFromSheet({ rows, titleColumns = [], groups = n
   const created = built.steps, newDefs = built.newDefs;
   const createdIds = new Set(created.map(s => s.id));
   const newDefIds  = new Set(newDefs.map(d => d.id));
+  // V0.3.5.59 — the new style / pinned-position / mask defs come and go with the steps (same undo entry)
+  const extraDefs = [
+    { key: 'styleTemplates', items: built.newStyles || [] },
+    { key: 'constShapes',    items: built.newPins   || [] },
+    { key: 'cropMasks',      items: built.newMasks  || [] },
+  ].filter(e => e.items.length).map(e => ({ ...e, ids: new Set(e.items.map(d => d.id)) }));
+  const pictures = built.pictures || 0;
 
   // V0.3.5.54 — chapter codes: each named group is a NEW chapter (the app's
   // own factory, like "+ Chapter") owning its rows' steps in typed order;
@@ -397,6 +541,8 @@ export async function importStepsFromSheet({ rows, titleColumns = [], groups = n
     const curSeed = seed ? cur.find(s => s.id === seed.id) : null;
     const defsNow = (state.get('constTextBoxes') || []).filter(d => !newDefIds.has(d.id));
     const next = { steps: planStepList(cur, created, curSeed), constTextBoxes: [...defsNow, ...newDefs] };
+    // defs in the SAME setState as the steps — the first step's overlay loads with its pin / mask / style there
+    for (const e of extraDefs) next[e.key] = [...(state.get(e.key) || []).filter(d => !e.ids.has(d.id)), ...e.items];
     // chapters in the SAME setState as their steps — no render ever sees a step whose chapter is missing
     if (newChapters.length) {
       next.chapters = insertChaptersAfter((state.get('chapters') || []).filter(c => !newChapterIds.has(c.id)), newChapters, chapterAnchor);
@@ -412,6 +558,7 @@ export async function importStepsFromSheet({ rows, titleColumns = [], groups = n
     if (patched.size) cur = cur.map(s => (patched.get(s.id)?.next === s ? patched.get(s.id).orig : s));
     if (seed && !cur.some(s => s.id === seed.id)) cur.splice(Math.min(Math.max(0, seedIndex), cur.length), 0, seed);
     const undone = { steps: cur, constTextBoxes: (state.get('constTextBoxes') || []).filter(d => !newDefIds.has(d.id)) };
+    for (const e of extraDefs) undone[e.key] = (state.get(e.key) || []).filter(d => !e.ids.has(d.id));
     if (newChapters.length) undone.chapters = (state.get('chapters') || []).filter(c => !newChapterIds.has(c.id));
     state.setState(undone);
     steps.normalizeOrder();
@@ -426,6 +573,6 @@ export async function importStepsFromSheet({ rows, titleColumns = [], groups = n
 
   place();
   undoManager.push(`Steps from Excel (${created.length})`, unplace, place);
-  console.log(`[sheet-import] ${created.length} step(s)${seed ? ' (replaced the empty starting step)' : ''}, ${newDefs.length} new title type(s), ${newChapters.length} new chapter(s)${newChapters.length ? (chapterAnchor ? ` after chapter ${chapterAnchor}` : ' at the end') : ''}.`);
-  return { ok: true, created: created.length, chapters: newChapters.length };
+  console.log(`[sheet-import] ${created.length} step(s)${seed ? ' (replaced the empty starting step)' : ''}, ${newDefs.length} new title type(s), ${(built.newStyles || []).length} new style(s), ${pictures} picture(s), ${(built.newPins || []).length} new pinned position(s), ${(built.newMasks || []).length} new mask(s), ${newChapters.length} new chapter(s)${newChapters.length ? (chapterAnchor ? ` after chapter ${chapterAnchor}` : ' at the end') : ''}.`);
+  return { ok: true, created: created.length, chapters: newChapters.length, pictures };
 }
