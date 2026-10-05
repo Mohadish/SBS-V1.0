@@ -32,7 +32,7 @@
 import state    from '../core/state.js';
 import sceneCore from '../core/scene.js';
 import * as clock from '../core/clock.js';
-import { resolveNodeWorldPosition, listCables, cableCurveMode } from './cables.js';
+import { resolveNodeWorldPosition, listCables, cableCurveMode, anchorHost } from './cables.js';
 import { socketActualSize, cableEffectiveRadius } from './actions.js';
 import steps from './steps.js';   // for object3dById fallback in anchor resolution
 
@@ -750,7 +750,7 @@ function _socketWorldQuat(node) {
   // So a plugged socket seats flush + facing the destination, not its old host.
   const ct = sock.plugged ? sock.connectTarget : null;
   if (ct?.nodeId) {
-    const tObj = state.get('nodeById')?.get?.(ct.nodeId)?.object3d;
+    const tObj = anchorHost(ct.nodeId, ct.anchorLocal, state.get('nodeById')?.get?.(ct.nodeId)?.object3d);   // 🔩 V0.3.5.65 — or the piece standing in for it
     if (tObj) {
       const tQ = new T.Quaternion();
       tObj.getWorldQuaternion(tQ);
@@ -772,7 +772,7 @@ function _socketWorldQuat(node) {
   // a normal-derived default).
   if (node.anchorType === 'mesh' && node.nodeId) {
     const sceneNode = state.get('nodeById')?.get?.(node.nodeId);
-    const obj = sceneNode?.object3d;
+    const obj = anchorHost(node.nodeId, node.anchorLocal, sceneNode?.object3d);   // 🔩 V0.3.5.65
     if (!obj) return null;
     const meshQ = new T.Quaternion();
     obj.getWorldQuaternion(meshQ);
@@ -856,7 +856,7 @@ function _socketAxisMorphed(node, entry) {
   }
   const sq = entry?._morphSockQuat?.get(node.id);
   if (sq && node.anchorType === 'mesh' && node.nodeId) {
-    const obj = state.get('nodeById')?.get?.(node.nodeId)?.object3d;
+    const obj = anchorHost(node.nodeId, node.anchorLocal, state.get('nodeById')?.get?.(node.nodeId)?.object3d);   // 🔩 V0.3.5.65
     if (obj) {
       const meshQ = new T.Quaternion();
       obj.getWorldQuaternion(meshQ);

@@ -37,6 +37,8 @@ import * as clock      from '../core/clock.js';
 import { generateScrewParts } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
 import { computeSafeFrameRect } from '../core/safe-frame.js';
+import { materials }        from './materials.js';          // 🔩 V0.3.5.65 — the pieces carry the nut's outline
+import { setAnchorHostProxy } from './cables.js';           // 🔩 V0.3.5.65 — a cable end on the nut follows its piece
 
 // Staged actors, keyed by node id:
 //   { group, mergedMesh, meshes, offsets,
@@ -240,6 +242,94 @@ function _tickGhosts(k) {
   }
 }
 
+// ── the pieces stand in for the nut: its OUTLINE and what is ANCHORED on it go with them (V0.3.5.65) ──
+// His report: with the geometry outline on, the outline stayed where the nut finally sits (the merged mesh is
+// only moved to a hidden layer — its outline children were not) and the pieces had none; during the insertion
+// there was no outline at all. And a cable end on the screw's head stayed at the assembled place.
+const _edgeCache = new Map();        // piece signature → edge geometry (shared; rebuilt per step change otherwise)
+function _edgesFor(sig, i, geometry) {
+  const key = `${sig}|${i}|${state.get('geometryOutline')?.creaseAngle ?? 35}`;
+  let g = _edgeCache.get(key);
+  if (!g) {
+    if (_edgeCache.size > 400) { for (const x of _edgeCache.values()) x.dispose?.(); _edgeCache.clear(); }   // (three re-uploads one still in use)
+    g = materials.buildOutlineEdges(geometry);
+    _edgeCache.set(key, g);
+  }
+  return g;
+}
+const _partsSig = (tpl, node) => { try { return `${tpl?.id}|${JSON.stringify(tpl?.params || {})}|${JSON.stringify(node?.washers || null)}`; } catch { return String(tpl?.id); } };
+/** Each piece gets the nut's two outline passes (the nut's own materials: same colour, opacity and fade). */
+function _attachPieceOutlines(entry) {
+  const T = window.THREE;
+  entry.outlines = [];
+  const passes = materials.getOutlinePasses?.(entry.outlineNode);
+  if (!T || !passes) return;                                  // outline off (or not built yet): _syncPieceOutlines tries again
+  (entry.outlineElems || []).forEach((piece, i) => {
+    let geo; try { geo = _edgesFor(entry.outlineSig, i, piece.geometry); } catch { return; }
+    const mk = (mat, back) => { const l = new T.LineSegments(geo, mat); l.raycast = () => {}; l.userData.noSelect = true; if (back) l.renderOrder = -1; piece.add(l); return l; };
+    entry.outlines.push({ front: mk(passes.front.material, false), back: passes.back ? mk(passes.back.material, true) : null });
+  });
+}
+/** Every tick: the pieces follow the nut's current outline (it can be rebuilt, restyled, switched off); in the preview the nut's own is parked on the hidden layer. */
+function _syncPieceOutlines(entry, parkMerged) {
+  const passes = materials.getOutlinePasses?.(entry.outlineNode);
+  if (passes && !entry.outlines?.length) _attachPieceOutlines(entry);
+  for (const o of entry.outlines || []) {
+    o.front.visible = !!passes;
+    if (passes && o.front.material !== passes.front.material) o.front.material = passes.front.material;
+    if (o.back) {
+      o.back.visible = !!(passes?.back?.visible);
+      if (passes?.back && o.back.material !== passes.back.material) o.back.material = passes.back.material;
+    }
+  }
+  if (parkMerged && passes) {
+    if (passes.front.layers.mask !== (1 << PREVIEW_HIDE_LAYER)) passes.front.layers.set(PREVIEW_HIDE_LAYER);
+    if (passes.back && passes.back.layers.mask !== (1 << PREVIEW_HIDE_LAYER)) passes.back.layers.set(PREVIEW_HIDE_LAYER);
+  }
+}
+function _dropPieceOutlines(entry, unparkMerged) {
+  for (const o of entry.outlines || []) { o.front.parent?.remove(o.front); o.back?.parent?.remove(o.back); }   // geometry: the cache's; materials: the nut's
+  entry.outlines = [];
+  if (unparkMerged) { const passes = materials.getOutlinePasses?.(entry.outlineNode); passes?.front.layers.set(0); passes?.back?.layers.set(0); }
+}
+
+/** Which piece carries a point given in the nut's own frame: a washer for a point in its band outside the shank, else the screw. */
+function _pieceFor(elems, washers, shankR, pt) {
+  const y = Number(pt?.[1]) || 0, r = Math.hypot(Number(pt?.[0]) || 0, Number(pt?.[2]) || 0);
+  for (let i = 0; i < (washers?.length || 0); i++) {
+    const w = washers[i];
+    if (elems[i + 1] && y <= w.yTop + 1e-6 && y >= w.yTop - w.height - 1e-6 && r > shankR + 1e-6) return elems[i + 1];
+  }
+  return elems[0] || null;
+}
+let _vP = null, _vQ = null, _vS = null;
+/**
+ * The piece standing in for node `nodeId` at a point of its own frame — null when the nut is shown as itself.
+ * Posed on demand: the cables' tick runs before this module's, and would otherwise trail the screw by a frame.
+ */
+export function proxyHostFor(nodeId, localPt) {
+  const st = _staged.get(nodeId);
+  if (st?.meshes?.length) {
+    const now = clock.now();
+    if (now !== _advancedAt) _advance(now);                  // posed for this instant (the tick's own call still runs: it is a pure function of the time)
+    const piece = _pieceFor(st.meshes, st.washersInfo, st.shankR, localPt);
+    piece?.updateWorldMatrix?.(true, false);
+    return piece;
+  }
+  const p = _preview.get(nodeId);
+  if (p && !p.tagsOnly && p.elems?.length && p.group && p.mergedMesh) {
+    const T = window.THREE; if (!T) return null;
+    _vP = _vP || new T.Vector3(); _vQ = _vQ || new T.Quaternion(); _vS = _vS || new T.Vector3();
+    p.mergedMesh.updateWorldMatrix(true, false);
+    p.mergedMesh.matrixWorld.decompose(_vP, _vQ, _vS);
+    p.group.position.copy(_vP); p.group.quaternion.copy(_vQ); p.group.scale.copy(_vS);
+    p.group.updateMatrixWorld(true);
+    return _pieceFor(p.elems, p.washersInfo, p.shankR, localPt);
+  }
+  return null;
+}
+setAnchorHostProxy(proxyHostFor);
+
 /** Tags-only entries for the spotlighted candidates that have none yet. */
 function _ensureSpotTags() {
   if (!_settled || !_spotCands.length) return;
@@ -300,6 +390,7 @@ function _isBeforeInsertStep(insertStepId, activeStepId) {
 export function clearPreInstall() {
   for (const p of _preview.values()) {
     if (p.spotOnly && p.node) _ghostFrom(p.node.id, p.tagItems || []);   // 🔦 V0.3.5.63 — they fade out where they stood
+    if (!p.tagsOnly) _dropPieceOutlines(p, true);            // 🔩 V0.3.5.65 — the nut's own outline shows again
     if (p.group?.parent) p.group.parent.remove(p.group);
     // Dispose transient GEOMETRY only — the material is SHARED with the live
     // merged mesh (owned by the materials system); never dispose it.
@@ -390,7 +481,11 @@ export function refreshPreInstall(activeStepId, opts = {}) {
       group, elems, mergedMesh: merged, prevLayerMask,
       tagItems: _buildTagItems(tpl, eff, parts, elems),
       node, spotOnly: !!(eff.tagName && eff.tagSpotlight),   // 🔦 its tags wait for the spotlight
+      // 🔩 V0.3.5.65 — the pieces carry the nut's outline and what is anchored on it
+      outlineNode: node.id, outlineElems: elems, outlineSig: _partsSig(tpl, node), outlines: [],
+      washersInfo: parts.washers.map(w => ({ yTop: w.yTop, height: w.height })), shankR: (Number(tpl.params?.diameter) || 4) / 2,
     };
+    _attachPieceOutlines(entry);
     if (entry.spotOnly && _spotShown(entry)) _adoptGhosts(node.id, entry.tagItems);
     _preview.set(node.id, entry);
     gated++;
@@ -506,6 +601,9 @@ export function stageInsertActors(actors, opts = {}) {
     const repMs   = Number(eff.repositionMs);
     const pauseMs = Number(eff.pauseBeforeMs);
     const entry = {
+      // 🔩 V0.3.5.65 — the pieces carry the nut's outline and what is anchored on it
+      outlineNode: node.id, outlineElems: elems, outlineSig: _partsSig(tpl, node), outlines: [],
+      washersInfo: parts.washers.map(w => ({ yTop: w.yTop, height: w.height })), shankR: (Number(tpl.params?.diameter) || 4) / 2,
       group, mergedMesh: merged, meshes: elems, offsets,
       needsReposition, preExploded, targetPos, targetQuat, prevPos, prevQuat,
       repositionMs: Number.isFinite(repMs) && repMs >= 0 ? repMs : 300,
@@ -552,6 +650,7 @@ export function stageInsertActors(actors, opts = {}) {
       entry.lineMat = lineMat;
     }
 
+    _attachPieceOutlines(entry);
     _staged.set(node.id, entry);
     staged.add(node.id);
   }
@@ -679,8 +778,10 @@ export function cancelInsertAnimations() {
 
 // ─── Per-tick ───────────────────────────────────────────────────────────────
 
+let _advancedAt = null;
 function _advance(now) {
   if (!_staged.size) return;
+  _advancedAt = now;                                         // 🔩 V0.3.5.65 — proxyHostFor asks ahead of the tick, once per instant
 
   // Every tick: keep the merged mesh hidden (override the visibility
   // channel, which may flip it visible), and re-point the transient
@@ -694,6 +795,7 @@ function _advance(now) {
         ? s.mergedMesh.material[0] : s.mergedMesh.material;
       if (liveMat) for (const m of s.meshes) { if (m.material !== liveMat) m.material = liveMat; }
     }
+    _syncPieceOutlines(s, false);                            // 🔩 V0.3.5.65
   }
 
   if (_reposition) {
@@ -959,6 +1061,7 @@ function _advancePreview() {
       p.group.quaternion.copy(wq);
       p.group.scale.copy(ws);
       p.group.updateMatrixWorld(true);      // so tags track this frame's pose
+      _syncPieceOutlines(p, true);          // 🔩 V0.3.5.65
       // merged.visible is the nut's honest visibility (we hid RENDERING via
       // layers, not .visible) — so the pieces follow it, and the shared
       // material carries the fade.
@@ -1043,6 +1146,7 @@ function _disposeAll(restore) {
     // Dispose transient GEOMETRY only. The material is SHARED with the
     // live merged mesh (owned by the materials system) — never dispose it.
     for (const m of (s.meshes || [])) m.geometry?.dispose?.();
+    _dropPieceOutlines(s, false);                            // 🔩 V0.3.5.65
     // Spec-name + washer tag DOM + trajectory line are owned here.
     for (const it of (s.tagItems || [])) {
       if (it.div?.parentNode) it.div.parentNode.removeChild(it.div);

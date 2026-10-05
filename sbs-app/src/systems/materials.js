@@ -2425,6 +2425,19 @@ gl_FragColor.a = 1.0;
     return result;
   }
 
+  /**
+   * 🔩 V0.3.5.65 — for STAND-INS that are shown in a mesh's place (a hardware nut's exploded pieces): the mesh's
+   * two outline passes (their materials carry the colour, the opacity and the fade), and an edge geometry built
+   * the same way for another geometry. null when the outline is off for that node.
+   */
+  getOutlinePasses(nodeId) {
+    const front = this._outlineMeshes.get(nodeId) || null;
+    return front ? { front, back: this._outlineBackMeshes.get(nodeId) || null } : null;
+  }
+  buildOutlineEdges(geometry) {
+    return this._buildAnnotatedEdgeGeometry(geometry, state.get('geometryOutline')?.creaseAngle ?? 35);
+  }
+
   applyGeometryOutlines() {
     const settings = state.get('geometryOutline');
     if (!settings) return;
