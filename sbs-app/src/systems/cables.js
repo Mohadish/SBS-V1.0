@@ -473,8 +473,8 @@ export function applyStepSnapshot(snap) {
 let _hostProxy = null;
 export function setAnchorHostProxy(fn) { _hostProxy = typeof fn === 'function' ? fn : null; }
 /** The object that carries `anchorLocal` of node `nodeId` right now: its stand-in piece, else `obj` itself. */
-export function anchorHost(nodeId, anchorLocal, obj) {
-  if (!_hostProxy || !nodeId) return obj;
+export function anchorHost(nodeId, anchorLocal, obj, noProxy = false) {
+  if (noProxy || !_hostProxy || !nodeId) return obj;
   try { return _hostProxy(nodeId, anchorLocal) || obj; } catch { return obj; }
 }
 
@@ -490,7 +490,7 @@ export function resolveNodeWorldPosition(node, ctx = {}) {
   if (ct?.nodeId && Array.isArray(ct.anchorLocal)) {
     const T = window.THREE;
     const tNode = (ctx.nodeById || state.get('nodeById'))?.get?.(ct.nodeId);
-    const tObj  = anchorHost(ct.nodeId, ct.anchorLocal, tNode?.object3d || ctx.object3dById?.get?.(ct.nodeId));
+    const tObj  = anchorHost(ct.nodeId, ct.anchorLocal, tNode?.object3d || ctx.object3dById?.get?.(ct.nodeId), ctx.noProxy);
     if (tObj && T) {
       tObj.updateMatrixWorld?.();
       const p = new T.Vector3(ct.anchorLocal[0], ct.anchorLocal[1], ct.anchorLocal[2]);
@@ -523,7 +523,7 @@ export function resolveNodeWorldPosition(node, ctx = {}) {
       obj = ctx.object3dById.get(node.nodeId);
     }
     const own = obj;
-    obj = anchorHost(node.nodeId, node.anchorLocal, obj);       // 🔩 the exploded piece it sits on, when the nut is shown that way
+    obj = anchorHost(node.nodeId, node.anchorLocal, obj, ctx.noProxy);   // 🔩 the exploded piece it sits on, when the nut is shown that way (ctx.noProxy: a measurement of ANOTHER step)
     if (obj && typeof obj.localToWorld === 'function') {
       // Three.js path — caller should pass a Three.Vector3 factory
       // or use this only from C2 onwards where Three is loaded.

@@ -369,15 +369,18 @@ class StepManager {
     // Resolve A & B at whatever transforms are currently applied, honouring each
     // node's per-step pose override (anc / pos) when the step stored one. Temp
     // copies so resolveNodeWorldPosition's cache write never touches the live node.
-    const measure = (snapNodes) => {
+    const measure = (snapNodes, stepId) => {
       const aPose = snapNodes?.[aId];
       const bPose = snapNodes?.[bId];
       const aTmp = { ...A };
       const bTmp = { ...B };
       if (aPose?.anc) aTmp.anchorLocal = aPose.anc;  if (aPose?.pos) aTmp.position = aPose.pos;
       if (bPose?.anc) bTmp.anchorLocal = bPose.anc;  if (bPose?.pos) bTmp.position = bPose.pos;
-      const ra = cablesSystem.resolveNodeWorldPosition(aTmp, ctx);
-      const rb = cablesSystem.resolveNodeWorldPosition(bTmp, ctx);
+      // 🔩 V0.3.5.66 — a hardware nut's exploded stand-in belongs to the OPEN step: measuring another step against
+      // it put the midpoint half an explode offset off on every step after the insertion (saved data)
+      const c2 = stepId === activeId ? ctx : { ...ctx, noProxy: true };
+      const ra = cablesSystem.resolveNodeWorldPosition(aTmp, c2);
+      const rb = cablesSystem.resolveNodeWorldPosition(bTmp, c2);
       if (!ra.pos || !rb.pos) return null;
       const mid = new THREE.Vector3(
         (ra.pos[0] + rb.pos[0]) / 2,
@@ -397,7 +400,7 @@ class StepManager {
         if (!this._isPlayable(s)) continue;
         const tf = s.snapshot?.transforms;
         if (tf) { applyAllTransformSnapshots(nodeById, tf); applyAllTransformsToScene(nodeById, this.object3dById); }
-        const pose = measure(s.snapshot?.cables?.[cableId]?.nodes);
+        const pose = measure(s.snapshot?.cables?.[cableId]?.nodes, s.id);
         if (pose) {
           result.perStep.set(s.id, pose);
           if (s.id === activeId) result.current = pose;

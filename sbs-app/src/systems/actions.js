@@ -6285,7 +6285,7 @@ export function socketBackFaceWorld(cableId, nodeId) {
   const n  = c?.nodes?.find(x => x.id === nodeId);
   if (!c || !n?.socket || n.anchorType !== 'mesh' || !n.nodeId) return null;
   const sceneNode = state.get('nodeById')?.get?.(n.nodeId);
-  const obj = sceneNode?.object3d;
+  const obj = cables.anchorHost(n.nodeId, n.anchorLocal, sceneNode?.object3d);   // 🔩 V0.3.5.66 — the piece standing in for an exploded nut
   if (!obj) return null;
   const backLocal = _socketBackFaceMeshLocal(c, n);
   if (!backLocal) return null;

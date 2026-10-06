@@ -310,8 +310,7 @@ let _vP = null, _vQ = null, _vS = null;
 export function proxyHostFor(nodeId, localPt) {
   const st = _staged.get(nodeId);
   if (st?.meshes?.length) {
-    const now = clock.now();
-    if (now !== _advancedAt) _advance(now);                  // posed for this instant (the tick's own call still runs: it is a pure function of the time)
+    if (_proxyTick !== _tickNo) { _proxyTick = _tickNo; _advance(clock.now()); }   // posed ahead of this frame's tick, once (the tick's own call still runs: a pure function of the time)
     const piece = _pieceFor(st.meshes, st.washersInfo, st.shankR, localPt);
     piece?.updateWorldMatrix?.(true, false);
     return piece;
@@ -656,7 +655,7 @@ export function stageInsertActors(actors, opts = {}) {
   }
 
   if (staged.size && !_tickUnsub) {
-    _tickUnsub = sceneCore.addTickHook(() => _advance(clock.now()));
+    _tickUnsub = sceneCore.addTickHook(() => { _tickNo++; _advance(clock.now()); });
   }
   return staged;
 }
@@ -778,10 +777,9 @@ export function cancelInsertAnimations() {
 
 // ─── Per-tick ───────────────────────────────────────────────────────────────
 
-let _advancedAt = null;
+let _tickNo = 0, _proxyTick = -1;                           // 🔩 V0.3.5.66 — proxyHostFor advances at most once per tick (live time never repeats)
 function _advance(now) {
   if (!_staged.size) return;
-  _advancedAt = now;                                         // 🔩 V0.3.5.65 — proxyHostFor asks ahead of the tick, once per instant
 
   // Every tick: keep the merged mesh hidden (override the visibility
   // channel, which may flip it visible), and re-point the transient
