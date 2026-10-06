@@ -387,8 +387,13 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
     }
     const b = planNewPictureBox(look.position, { cw, ch, size: look.size, aspect: look.aspect });
     // same shapes the 📌 "Make pinned position…" / 🎭 promote menus write
-    const pin  = { id: generateId('csp'), name: uniqueName(usedPos, label), anchor: b.anchor, x: b.defX, y: b.y };
-    const mask = { id: generateId('cmk'), name: uniqueName(usedMask, label), kind: 'rect', x: b.x / cw, y: b.y / ch, w: b.w / cw, h: b.h / ch, rot: 0 };
+    // V0.3.5.70 — ONE name, free in both lists: the next import's default look pairs a pin with the mask of the same
+    // name, so "Photo (2)" + "Photo" would have paired the new mask with an older, unrelated pin
+    let shared = label, k = 2;
+    while (usedPos.has(shared) || usedMask.has(shared)) shared = `${label} (${k++})`;
+    usedPos.add(shared); usedMask.add(shared);
+    const pin  = { id: generateId('csp'), name: shared, anchor: b.anchor, x: b.defX, y: b.y };
+    const mask = { id: generateId('cmk'), name: shared, kind: 'rect', x: b.x / cw, y: b.y / ch, w: b.w / cw, h: b.h / ch, rot: 0 };
     newPins.push(pin); newMasks.push(mask);
     picPlans.push({ box: { x: b.x, y: b.y, w: b.w, h: b.h }, posId: pin.id, maskId: mask.id });
   });

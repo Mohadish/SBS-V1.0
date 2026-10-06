@@ -107,7 +107,11 @@ async function _readZipSheet(bytes, ext) {
     if (rel && !/\/worksheet$/.test(rel.type)) continue;
     const xml = rel ? text(rel.target) : null;
     const vmCells = [];
-    const rows = xml ? _parseWorksheet(xml, shared, fmt, date1904, vmCells, name) : [];
+    let rows = [];
+    // V0.3.5.70 — a sheet past the grid bound is carried as an EMPTY sheet with its message, not thrown: the
+    // client's small "Steps" tab beside a 100k-row data tab must still import (the dialog shows the message on that tab)
+    try { rows = xml ? _parseWorksheet(xml, shared, fmt, date1904, vmCells, name) : []; }
+    catch (e) { if (!e?.gridBound) throw e; sheets.push({ name, rows: [], images: {}, imagesSkipped: 0, error: e.message }); continue; }
     const pics = { images: {}, imagesSkipped: 0 };
     // V0.3.5.59: a broken picture part must never cost the user the TEXT of the sheet.
     try {
@@ -131,6 +135,7 @@ async function _readZipSheet(bytes, ext) {
     sheets.push({ name, rows: _coverImages(rows, pics.images), images: pics.images, imagesSkipped: pics.imagesSkipped });
   }
   if (!sheets.length) throw new Error('This workbook has no sheets with cells in it.');
+  _onlyErrors(sheets);
   return { sheets };
 }
 
@@ -202,7 +207,14 @@ const _COVER_MAX_ROW = 20000, _COVER_MAX_COL = 1024;
 const _GRID_MAX_COLS = 1024, _GRID_MAX_ROWS = 200000, _GRID_MAX_CELLS = 6e6;
 function _checkGrid(lastRow, lastCol, name) {
   if (lastCol < _GRID_MAX_COLS && lastRow < _GRID_MAX_ROWS && (lastRow + 1) * (lastCol + 1) <= _GRID_MAX_CELLS) return;
-  throw new Error(`${name ? `Sheet "${name}"` : 'This sheet'} has text far outside the table — it reaches column ${columnLetter(Math.max(0, lastCol))}, row ${lastRow + 1}. Delete that stray cell in Excel and save the file again.`);
+  // V0.3.5.70 — worded for both cases (a stray cell, or a genuinely huge table); the readers keep the sheet, empty, with this
+  const err = new Error(`${name ? `Sheet "${name}"` : 'This sheet'} reaches column ${columnLetter(Math.max(0, lastCol))}, row ${lastRow + 1} — too large to import (${_GRID_MAX_COLS} columns / ${_GRID_MAX_ROWS.toLocaleString('en')} rows / ${(_GRID_MAX_CELLS / 1e6)}M cells). If that is one stray cell, delete it in Excel and save the file again.`);
+  err.gridBound = true;
+  throw err;
+}
+/** Every sheet refused by the grid bound: nothing to offer, so the first message is the error. */
+function _onlyErrors(sheets) {
+  if (sheets.length && sheets.every(s => s.error)) throw new Error(sheets[0].error);
 }
 
 function _coverImages(rows, images) {
@@ -414,13 +426,15 @@ function _readOds(xml, part) {
       }
       r += rep;
     }
-    _checkGrid(lastRow, lastCol, name);
+    try { _checkGrid(lastRow, lastCol, name); }
+    catch (e) { if (!e?.gridBound) throw e; sheets.push({ name, rows: [], images: {}, imagesSkipped: 0, error: e.message }); continue; }   // V0.3.5.70
     const rows = [];
     for (let i = 0; i <= lastRow; i++) rows.push(new Array(lastCol + 1).fill(''));
     for (const [ri, cells] of found) for (const [ci, v] of cells) rows[ri][ci] = v;
     sheets.push({ name, rows: _coverImages(rows, pics.images), images: pics.images, imagesSkipped: pics.imagesSkipped });
   }
   if (!sheets.length) throw new Error('This spreadsheet has no sheets with cells in it.');
+  _onlyErrors(sheets);
   return sheets;
 }
 

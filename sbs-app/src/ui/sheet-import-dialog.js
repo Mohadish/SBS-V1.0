@@ -632,7 +632,7 @@ function _showViewer(fileName, sheets, choices, importer) {
     const renderTabs = () => {
       tabsEl.style.display = sheets.length > 1 ? 'flex' : 'none';
       tabsEl.innerHTML = sheets.map((s, i) =>
-        `<button class="tabBtn${i === cur ? ' active' : ''}" data-sheet="${i}" style="padding:4px 10px;font-size:12px;" dir="auto">${_esc(s.name || `Sheet ${i + 1}`)}${s.rows.length ? '' : ' (empty)'}</button>`).join('');
+        `<button class="tabBtn${i === cur ? ' active' : ''}" data-sheet="${i}" style="padding:4px 10px;font-size:12px;" dir="auto">${_esc(s.name || `Sheet ${i + 1}`)}${s.rows.length ? '' : (s.error ? ' (too large)' : ' (empty)')}</button>`).join('');
     };
 
     const renderTable = () => {
@@ -643,7 +643,8 @@ function _showViewer(fileName, sheets, choices, importer) {
       const p = plan();
       const light = _isLight();
       if (!rows.length || !p.width) {
-        wrap.innerHTML = '<div class="small muted" style="padding:14px;">This sheet is empty.</div>';
+        // V0.3.5.70 — a sheet the reader refused (past the grid bound) says why, here, instead of "empty"
+        wrap.innerHTML = `<div class="small muted" style="padding:14px;" dir="auto">${_esc(sheets[cur].error || 'This sheet is empty.')}</div>`;
         moreEl.textContent = '';
         return;
       }
