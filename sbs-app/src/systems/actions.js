@@ -5747,6 +5747,12 @@ function _findTreeNodeIdForObject(obj) {
   if (!nodeById) return null;
   let cur = obj;
   while (cur) {
+    // 🔩 V0.3.5.67 (his report) — a STAND-IN piece (a hardware nut's exploded preview / insertion pieces) hangs on
+    // rootGroup and carries the nut's id in userData: the walk up ended at the scene root and the cable point
+    // was anchored to the WORLD (it landed at 0,0,0). The tag wins. Its local frame is the nut's own (the pieces
+    // are the nut's parts at their assembled coordinates, offset as whole objects), so the point is stored right.
+    const tag = cur.userData?.hardwareInstanceId || cur.userData?.meshNodeId || cur.userData?.nodeId;
+    if (typeof tag === 'string' && tag !== 'scene_root' && nodeById.has(tag)) return tag;
     for (const [nodeId, node] of nodeById) {
       if (node?.object3d === cur) return nodeId;
     }
