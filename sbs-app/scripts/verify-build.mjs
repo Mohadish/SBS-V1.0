@@ -5,7 +5,7 @@
 import { createRequire } from 'node:module';
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 
 const APP = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(`${APP}/package.json`);
@@ -49,7 +49,7 @@ ok(sharpV && semverGte(sharpV, '0.35.4'), `sharp native ${sharpPkgs[0] || '(none
 // sprintf-js / roarr came with global-agent@3 (onnxruntime-node's install script); the override pins global-agent 4.
 const shipped = (name) => list.find(p => p === `/node_modules/${name}/package.json`);
 for (const bad of ['sprintf-js', 'roarr']) ok(!shipped(bad), `asar has no node_modules/${bad} (GHSA-hp3w-g68c-fv3c chain)`);
-const gaV = shipped('global-agent') ? JSON.parse(asar.extractFile(A, 'node_modules/global-agent/package.json').toString()).version : null;
+const gaV = shipped('global-agent') ? JSON.parse(asar.extractFile(A, ['node_modules', 'global-agent', 'package.json'].join(sep)).toString()).version : null;   // nested paths: @electron/asar wants the OS separator
 ok(!gaV || semverGte(gaV, '4.0.0'), `global-agent ${gaV || '(not shipped)'} (≥ 4, no roarr)`);
 // the runtime itself: electron.exe beside resources/ is the version electron-builder packed (41.10.6+ closes the 2026-09-29 advisories)
 const elV = (() => { try { return readFileSync(`${APP}/node_modules/electron/dist/version`, 'utf8').trim(); } catch { return null; } })();
