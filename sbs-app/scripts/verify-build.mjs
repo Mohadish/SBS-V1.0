@@ -45,6 +45,16 @@ const sharpV = sharpPkgs.length ? JSON.parse(readFileSync(`${sharpDir}/${sharpPk
 const semverGte = (a, b) => { const pa = String(a).split('.').map(Number), pb = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); } return true; };
 ok(sharpV && semverGte(sharpV, '0.35.4'), `sharp native ${sharpPkgs[0] || '(none)'} ${sharpV} (≥ 0.35.4, the libheif advisory)`);   // numeric, not string: '0.35.10' >= '0.35.4'
 
+// SBOM (V0.3.5.68): the audit is run on the lockfile, the scanner reads the SHIPPED tree — check the tree.
+// sprintf-js / roarr came with global-agent@3 (onnxruntime-node's install script); the override pins global-agent 4.
+const shipped = (name) => list.find(p => p === `/node_modules/${name}/package.json`);
+for (const bad of ['sprintf-js', 'roarr']) ok(!shipped(bad), `asar has no node_modules/${bad} (GHSA-hp3w-g68c-fv3c chain)`);
+const gaV = shipped('global-agent') ? JSON.parse(asar.extractFile(A, 'node_modules/global-agent/package.json').toString()).version : null;
+ok(!gaV || semverGte(gaV, '4.0.0'), `global-agent ${gaV || '(not shipped)'} (≥ 4, no roarr)`);
+// the runtime itself: electron.exe beside resources/ is the version electron-builder packed (41.10.6+ closes the 2026-09-29 advisories)
+const elV = (() => { try { return readFileSync(`${APP}/node_modules/electron/dist/version`, 'utf8').trim(); } catch { return null; } })();
+ok(elV && semverGte(elV, '41.10.6'), `electron ${elV || '(unknown)'} (≥ 41.10.6: GHSA-j84w-jfhq-vhvj, -9qh4-3jw8-366w, -gr2m-v5gq-v685, -hq2x-r82h-9wj4)`);
+
 // extraResources
 ok(existsSync(`${UNP}/manual/SBS-Manual.pdf`) && existsSync(`${UNP}/manual/SBS-Manual.html`), `manual resources: ${existsSync(`${UNP}/manual`) ? readdirSync(`${UNP}/manual`).join(', ') : 'MISSING'}`);
 ok(existsSync(`${UNP}/ffmpeg/ffmpeg.exe`), 'ffmpeg/ffmpeg.exe shipped (subfolder — the old check looked at resources/ffmpeg.exe)');
