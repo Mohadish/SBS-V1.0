@@ -34,7 +34,7 @@
 import { state }       from '../core/state.js';
 import { sceneCore }   from '../core/scene.js';
 import * as clock      from '../core/clock.js';
-import { generateScrewParts } from './hardware-generator.js';
+import { generateScrewParts, washerStackFor } from './hardware-generator.js';
 import { resolveInsertAnim }  from './hardware-defaults.js';
 import { computeSafeFrameRect } from '../core/safe-frame.js';
 import { materials }        from './materials.js';          // 🔩 V0.3.5.65 — the pieces carry the nut's outline
@@ -181,7 +181,9 @@ let _spotCands = [];
 let _settled = true, _idleTicks = 0, _animProbe = null;
 /** main.js hands in "is a step transition running?" (steps.js imports this module: no import back). */
 export function setInsertAnimProbe(fn) { _animProbe = typeof fn === 'function' ? fn : null; }
-const _spotShown = (p) => _settled && !!p.node?.spotlight && p.mergedMesh?.visible !== false;
+/** 🔩 V0.3.5.69 — the entry's nut is still the tree's node (a delete + undo makes a NEW node object) and its mesh is in the scene. */
+const _live = (p) => !!p.node && state.get('nodeById')?.get?.(p.node.id) === p.node && !!p.mergedMesh?.parent;
+const _spotShown = (p) => _settled && _live(p) && !!p.node?.spotlight && p.mergedMesh?.visible !== false;
 
 // ── tag fades (V0.3.5.63 — his note: "they fade in nicely but snap out; they need to fade out also") ──
 // The spotlight-only tags and the insertion's own tags fade in AND out over TAG_FADE_MS, on the app clock (so
@@ -225,6 +227,35 @@ function _adoptGhosts(nodeId, items) {
     items[i].alpha = g.alpha;
     if (g.div?.parentNode) g.div.parentNode.removeChild(g.div);
   }
+}
+/** Drop every ghost at once, no fade (their world points belong to a scene that is gone, or to a frame the export must not show). */
+function _purgeGhosts() {
+  for (const g of _ghosts) { if (g.div?.parentNode) g.div.parentNode.removeChild(g.div); }
+  _ghosts.length = 0;
+}
+/**
+ * 🔩 V0.3.5.69 — the EXPORT lands every tag fade before its first frame: no ghost of the step the user came from, and a
+ * first-step spotlight tag at full strength instead of wherever the wall-clock ticks of the warm-up left it (two exports
+ * of one project differed). Called after the export's reset to its first step, before the synthetic clock takes over.
+ */
+export function settleTagFades() {
+  _purgeGhosts();
+  _ensureSpotTags();                                           // a spotlighted nut whose tags-only entry no tick has built yet
+  for (const p of _preview.values()) {
+    if (!p.spotOnly) continue;
+    const a = (p.tagsOnly ? _spotShown(p) : (p.group?.visible !== false && _spotShown(p))) ? 1 : 0;
+    for (const it of (p.tagItems || [])) { it.alpha = a; if (it.div) _showTagDiv(it.div, a); }
+  }
+  for (const s of _staged.values()) {
+    for (const it of (s.tagItems || [])) { const a = (s.tagShown && it.piece?.visible) ? 1 : 0; it.alpha = a; if (it.div) _showTagDiv(it.div, a); }
+  }
+  _fadeTPrev = _fadeTStaged = null;                            // the next tick measures from the new clock
+}
+/** New Project / Open: tear the previews down with NO ghosts (the old scene's tags have nowhere to stand). */
+export function resetPreInstall() {
+  clearPreInstall();
+  _purgeGhosts();
+  if (_previewTickUnsub) { _previewTickUnsub(); _previewTickUnsub = null; }
 }
 function _tickGhosts(k) {
   if (!_ghosts.length) return;
@@ -293,14 +324,49 @@ function _dropPieceOutlines(entry, unparkMerged) {
   if (unparkMerged) { const passes = materials.getOutlinePasses?.(entry.outlineNode); passes?.front.layers.set(0); passes?.back?.layers.set(0); }
 }
 
-/** Which piece carries a point given in the nut's own frame: a washer for a point in its band outside the shank, else the screw. */
-function _pieceFor(elems, washers, shankR, pt) {
+/** Which piece carries a point given in the nut's own frame: a washer (index i+1) for a point in its band outside the shank, else the screw (0). */
+function _pieceIndexFor(washers, shankR, pt) {
   const y = Number(pt?.[1]) || 0, r = Math.hypot(Number(pt?.[0]) || 0, Number(pt?.[2]) || 0);
   for (let i = 0; i < (washers?.length || 0); i++) {
     const w = washers[i];
-    if (elems[i + 1] && y <= w.yTop + 1e-6 && y >= w.yTop - w.height - 1e-6 && r > shankR + 1e-6) return elems[i + 1];
+    if (y <= w.yTop + 1e-6 && y >= w.yTop - w.height - 1e-6 && r > shankR + 1e-6) return i + 1;
   }
-  return elems[0] || null;
+  return 0;
+}
+function _pieceFor(elems, washers, shankR, pt) {
+  return elems[_pieceIndexFor(washers, shankR, pt)] || elems[0] || null;
+}
+/** The nut's stand-in layout on step `stepId` — { bands, shankR, offsets } — or null when it is shown as itself there. */
+function _standInLayout(nodeId, stepId) {
+  const node = state.get('nodeById')?.get?.(nodeId);
+  if (!stepId || !node || node.type !== 'hardwareInstance' || !node.insertAnim?.enabled) return null;
+  const eff = resolveInsertAnim(node), insertStep = node.insertAnim?.stepId;
+  if (!eff.explodeBefore || !insertStep || !_isBeforeInsertStep(insertStep, stepId)) return null;
+  const tpl = (state.get('hardwareTemplates') || []).find(t => t.id === node.templateId);
+  if (!tpl) return null;
+  let bands = [];
+  try { bands = washerStackFor(tpl.params || {}, node.washers || null) || []; } catch { bands = []; }
+  return { bands, shankR: (Number(tpl.params?.diameter) || 4) / 2, offsets: _explodeOffsets(tpl, eff, 1 + bands.length) };
+}
+/**
+ * 🔩 V0.3.5.69 — how far up the nut's own +Y a point of its frame is DRAWN on step `stepId`: the exploded stand-in's
+ * piece carrying it sits that far up on every step before the insertion when "display exploded before" is on; 0 when
+ * the nut is shown as itself there. For code that writes anchors for steps OTHER than the open one (no stand-in exists).
+ */
+export function standInOffsetFor(nodeId, stepId, localPt) {
+  const lay = _standInLayout(nodeId, stepId);
+  return lay ? (lay.offsets[_pieceIndexFor(lay.bands, lay.shankR, localPt)] || 0) : 0;
+}
+/**
+ * The anchor (nut frame) of a point DRAWN at `drawnLocal` (nut frame) on step `stepId` — the inverse of
+ * standInOffsetFor: each piece is tried as the carrier; the one whose band holds the shifted point wins (the screw when none).
+ */
+export function standInAnchorFor(nodeId, stepId, drawnLocal) {
+  const lay = _standInLayout(nodeId, stepId);
+  if (!lay) return drawnLocal;
+  const shifted = (c) => [drawnLocal[0], drawnLocal[1] - (lay.offsets[c] || 0), drawnLocal[2]];
+  for (let c = 1; c <= lay.bands.length; c++) { const a = shifted(c); if (_pieceIndexFor(lay.bands, lay.shankR, a) === c) return a; }
+  return shifted(0);
 }
 let _vP = null, _vQ = null, _vS = null;
 /**
@@ -316,7 +382,7 @@ export function proxyHostFor(nodeId, localPt) {
     return piece;
   }
   const p = _preview.get(nodeId);
-  if (p && !p.tagsOnly && p.elems?.length && p.group && p.mergedMesh) {
+  if (p && !p.tagsOnly && p.elems?.length && p.group && p.mergedMesh && _live(p)) {
     const T = window.THREE; if (!T) return null;
     _vP = _vP || new T.Vector3(); _vQ = _vQ || new T.Quaternion(); _vS = _vS || new T.Vector3();
     p.mergedMesh.updateWorldMatrix(true, false);
@@ -333,10 +399,11 @@ setAnchorHostProxy(proxyHostFor);
 function _ensureSpotTags() {
   if (!_settled || !_spotCands.length) return;
   const tpls = state.get('hardwareTemplates') || [];
+  const byId = state.get('nodeById');
   for (const node of _spotCands) {
     if (!node.spotlight || _preview.has(node.id)) continue;
     const merged = node.object3d, tpl = tpls.find(t => t.id === node.templateId);
-    if (!merged || !tpl) continue;
+    if (!merged || !merged.parent || !tpl || byId?.get?.(node.id) !== node) continue;   // 🔩 V0.3.5.69 — deleted since the step opened
     let parts;
     try { parts = generateScrewParts(tpl.params || {}, node.washers || null); } catch { continue; }
     // only the parts' measures are needed: every tag hangs on the ASSEMBLED nut, at its part's own height

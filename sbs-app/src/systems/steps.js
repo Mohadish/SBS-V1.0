@@ -40,7 +40,7 @@ import {
   stageInsertActors, runInsertReposition, runInsertPause, runInsertAssemble,
   showInsertTags, showInsertTrajectory,
   finalizeInsertActors, clearPreInstall, findActorsForStep,
-  getStagedInsertTotalMs,
+  getStagedInsertTotalMs, standInOffsetFor, standInAnchorFor,
 } from './hardware-insert-anim.js'; // V0.2.22.57 — screw stage/reposition/assemble + tag/trajectory
 // V0.1.78 — narration overflow coordination. UI module exports the
 // query helpers; cross-layer import is OK here (actions.js + overlay.js
@@ -377,20 +377,34 @@ class StepManager {
       if (aPose?.anc) aTmp.anchorLocal = aPose.anc;  if (aPose?.pos) aTmp.position = aPose.pos;
       if (bPose?.anc) bTmp.anchorLocal = bPose.anc;  if (bPose?.pos) bTmp.position = bPose.pos;
       // 🔩 V0.3.5.66 — a hardware nut's exploded stand-in belongs to the OPEN step: measuring another step against
-      // it put the midpoint half an explode offset off on every step after the insertion (saved data)
-      const c2 = stepId === activeId ? ctx : { ...ctx, noProxy: true };
+      // it put the midpoint half an explode offset off on every step after the insertion (saved data).
+      // 🔩 V0.3.5.69 — every step is measured in the nut's ASSEMBLED frame (noProxy), then each end on a nut shown
+      // exploded on that step is moved up the nut's axis by its stand-in offset: that is where it is DRAWN there.
+      const c2 = { ...ctx, noProxy: true };
+      const drawn = (tmp, r) => {
+        if (tmp.anchorType !== 'mesh' || !tmp.nodeId || !Array.isArray(tmp.anchorLocal)) return r.pos;
+        const off = standInOffsetFor(tmp.nodeId, stepId, tmp.anchorLocal);
+        const obj = off ? this.object3dById.get(tmp.nodeId) : null;
+        if (!obj) return r.pos;
+        obj.updateMatrixWorld?.(true);
+        const v = obj.localToWorld(new THREE.Vector3(tmp.anchorLocal[0], tmp.anchorLocal[1] + off, tmp.anchorLocal[2]));
+        return [v.x, v.y, v.z];
+      };
       const ra = cablesSystem.resolveNodeWorldPosition(aTmp, c2);
       const rb = cablesSystem.resolveNodeWorldPosition(bTmp, c2);
       if (!ra.pos || !rb.pos) return null;
+      const pa = drawn(aTmp, ra), pb = drawn(bTmp, rb);
       const mid = new THREE.Vector3(
-        (ra.pos[0] + rb.pos[0]) / 2,
-        (ra.pos[1] + rb.pos[1]) / 2,
-        (ra.pos[2] + rb.pos[2]) / 2,
+        (pa[0] + pb[0]) / 2,
+        (pa[1] + pb[1]) / 2,
+        (pa[2] + pb[2]) / 2,
       );
       if (hostObj) {
         hostObj.updateMatrixWorld?.(true);
         const local = hostObj.worldToLocal(mid.clone());
-        return { anc: [local.x, local.y, local.z] };
+        // the stored anchor is in the nut's frame; on a step where the nut stands exploded the new point is drawn through
+        // its piece, so the anchor is the drawn point brought back DOWN by that piece's offset (standInAnchorFor)
+        return { anc: standInAnchorFor(hostNodeId, stepId, [local.x, local.y, local.z]) };
       }
       return { pos: [mid.x, mid.y, mid.z] };
     };
@@ -412,7 +426,7 @@ class StepManager {
     // Live/current pose fallback if the active step wasn't playable.
     if (!result.current) {
       const active = (state.get('steps') || []).find(s => s.id === activeId);
-      result.current = measure(active?.snapshot?.cables?.[cableId]?.nodes) || measure(null);
+      result.current = measure(active?.snapshot?.cables?.[cableId]?.nodes, activeId) || measure(null, activeId);
     }
     return result;
   }

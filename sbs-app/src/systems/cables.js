@@ -535,7 +535,7 @@ export function resolveNodeWorldPosition(node, ctx = {}) {
           obj.localToWorld(tmp);
           const out = [tmp.x, tmp.y, tmp.z];
           if (obj === own) node.cachedWorldPos = out.slice();   // refresh cache (never with a stand-in's passing place)
-          return { pos: out, tier: 'live' };
+          return { pos: out, tier: 'live', proxied: obj !== own };   // 🔩 V0.3.5.69 — proxied: callers must not cache it either
         }
       } catch { /* fall through to cache */ }
     }
@@ -548,8 +548,8 @@ export function resolveNodeWorldPosition(node, ctx = {}) {
     if (srcNode) {
       const r = resolveNodeWorldPosition(srcNode, ctx);
       if (r.pos) {
-        node.cachedWorldPos = r.pos.slice();
-        return { pos: r.pos, tier: r.tier };
+        if (!r.proxied) node.cachedWorldPos = r.pos.slice();   // 🔩 V0.3.5.69 — a branch off an exploded screw: not its saved place
+        return { pos: r.pos, tier: r.tier, proxied: !!r.proxied };
       }
     }
   }

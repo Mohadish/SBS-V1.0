@@ -28,7 +28,7 @@ import * as videoOverlay from './video-overlay.js';   // 🎬 V0.3.2.82 — seek
 import { stepHasOverlaySlot, stepOverlaySlotInfo, videoStepAnimMs, narrationStartOffsetMs } from './narration-timeline.js';   // 🎬 V0.3.2.84 — video-in-phase vs video-in-hold · V0.3.4.187 one timing model
 import { rasterizeHeaderLayer, waitForHeaderStable }  from './header.js';
 import { rasterizeNotesLayer }                        from './notes-render.js';
-import { rasterizeTagsLayer }                         from './hardware-insert-anim.js';
+import { rasterizeTagsLayer, settleTagFades }         from './hardware-insert-anim.js';
 import { computeSafeFrameRect }                       from '../core/safe-frame.js';
 import { decodeToAudioBuffer, resampleToMonoFloat32, mixTrackToFloat32 } from './audio-bridge.js';
 import { synthesize as ttsSynthesize } from './tts.js';
@@ -1610,6 +1610,9 @@ async function _hardResetToFirstStep(stepsToPlay) {
   await _frameOrTimeout();
   await _frameOrTimeout();
   await _wait(50);
+  // 🔩 V0.3.5.69 — the hardware name tags: no ghost of the step the user came from in the first frames, and the first
+  // step's spotlight tags at full strength (the warm-up above ran on the wall clock; the synthetic clock starts next)
+  try { settleTagFades(); } catch {}
 }
 
 function _withTimeout(promise, ms, label) {

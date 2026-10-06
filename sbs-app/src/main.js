@@ -359,6 +359,12 @@ import('./systems/hardware-insert-anim.js').then(hw => {
   state.on('step:activate', (id) => hw.refreshPreInstall(id, { animating: true }));
   state.on('step:applied',  ()   => hw.refreshPreInstall(state.get('activeStepId'), { animating: !!steps._animRunning }));
   state.on('hardware:insertAnimChanged', () => hw.refreshPreInstall(state.get('activeStepId')));   // a tag option changed: show it now
+  // 🔩 V0.3.5.69 — a tree change (nut deleted, template deleted, undo of either) rebuilds the carriers: a stale tag
+  // becomes a fading ghost, a live nut adopts its ghost (no blink); New Project / Open start clean, no ghosts at all
+  let treeRefresh = 0;
+  state.on('change:treeData', () => { if (treeRefresh) return; treeRefresh = setTimeout(() => { treeRefresh = 0; hw.refreshPreInstall(state.get('activeStepId')); }, 0); });
+  state.on('project:fresh',  () => { hw.resetPreInstall(); hw.refreshPreInstall(state.get('activeStepId')); });
+  state.on('project:loaded', () => { hw.resetPreInstall(); hw.refreshPreInstall(state.get('activeStepId')); });
   hw.refreshPreInstall(state.get('activeStepId'));
 }).catch(() => {});
 

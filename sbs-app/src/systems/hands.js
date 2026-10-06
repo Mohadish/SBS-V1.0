@@ -507,7 +507,7 @@ export function targetWorld(node, finger, params = node?.handParams) {
   if (Array.isArray(t.pos)) return _v(t.pos);
   if (t.nodeId && Array.isArray(t.anchorLocal)) {
     const r = resolveNodeWorldPosition({ anchorType: 'mesh', nodeId: t.nodeId, anchorLocal: t.anchorLocal, cachedWorldPos: t.cachedWorldPos }, { makeVec3: (x, y, z) => new Th.Vector3(x, y, z) });
-    if (r.pos) { t.cachedWorldPos = r.pos.slice(); return _v(r.pos); }
+    if (r.pos) { if (!r.proxied) t.cachedWorldPos = r.pos.slice(); return _v(r.pos); }   // 🔩 V0.3.5.69 — a finger on an exploded screw: the cache keeps the nut's own place
   }
   return Array.isArray(t.cachedWorldPos) ? _v(t.cachedWorldPos) : null;
 }
