@@ -134,7 +134,7 @@ export function resultModel(plan, rows) {
   return { sections, total: plan.rows.length, notIn, skipped: ranged ? 0 : plan.skipped };
 }
 
-export const ROLE_LABELS = { ignore: 'Ignore', name: 'Step name', voice: 'Voiceover', title: 'Title', image: 'Image' };
+export const ROLE_LABELS = { ignore: 'Ignore', name: 'Step name', voice: 'Voiceover', title: 'Title', image: 'Image', chapter: 'Chapter' };
 
 /** V0.3.5.59 — does the sheet hold a picture in cell (sheetRow, col)? 0-based, as rows[sheetRow][col]. */
 export function hasPicture(images, sheetRow, col) {
@@ -165,8 +165,8 @@ export function planRowEmpty(plan, rows, excelRow) {
   return text.every(i => String(row[i] ?? '').trim() === '') && pics.every(c => !hasPicture(plan.images, excelRow - 1, c));
 }
 
-// The roles a sheet can only have ONE of — a step has one name, one voice-over.
-const _SINGLE = new Set(['name', 'voice']);
+// The roles a sheet can only have ONE of — a step has one name, one voice-over, one chapter.
+const _SINGLE = new Set(['name', 'voice', 'chapter']);
 
 // Default spots for the 1st, 2nd, … Title column, so two titles never land on
 // top of each other before the user has touched anything.
@@ -177,6 +177,7 @@ const _ROLE_TINT = {
   voice: 'rgba(34,197,94,0.14)',
   title: 'rgba(245,158,11,0.16)',
   image: 'rgba(168,85,247,0.16)',   // V0.3.5.59
+  chapter: 'rgba(244,114,182,0.16)', // V0.3.6.1
 };
 
 // V0.3.5.59 — a new picture look starts away from the first titles (top-left / top-right)
@@ -234,12 +235,12 @@ export function defaultImageLook(n, choices = {}) {
     // V0.3.5.62 — only a mask made WITH this position (the same name): one paired by its place in the list
     // sat somewhere else on the frame, and the pictures loaded half or fully blank
     const pin = pins[n % pins.length], mate = (choices.masks || []).find(m => m.name === pin.name);
-    return { kind: 'brand', posId: pin.id, maskId: mate ? mate.id : null };
+    return { kind: 'brand', posId: pin.id, maskId: mate ? mate.id : null, mask: true, pin: true };
   }
   const keys = (choices.positions || []).map(p => p.key);
   const order = _IMG_POS_ORDER.filter(k => keys.includes(k));
   const pool = order.length ? order : (keys.length ? keys : _IMG_POS_ORDER);
-  return { kind: 'new', position: pool[n % pool.length], size: 0.3, aspect: '4:3' };
+  return { kind: 'new', position: pool[n % pool.length], size: 0.3, aspect: '4:3', mask: true, pin: true };
 }
 
 /**
@@ -278,12 +279,20 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
   const firstRow = headerRow ? 2 : 1;
   const nameCol = roles.indexOf('name');
   const voiceCol = roles.indexOf('voice');
+  const chapterCol = roles.indexOf('chapter');   // V0.3.6.1
   const titleCols = [], imageCols = [];
   roles.forEach((r, i) => { if (r === 'title') titleCols.push(i); else if (r === 'image') imageCols.push(i); });
   const mapped = [nameCol, voiceCol, ...titleCols, ...imageCols].filter(i => i >= 0);
   const pics = images || {};
 
   const cell = (row, i) => String(row[i] ?? '').trim();
+  // V0.3.6.1 — a Chapter column: the chapter each data row belongs to; an empty cell continues the one
+  // above (a merged cell reads as its first row only), rows before the first name have none
+  const chapterOf = new Map();   // Excel row → chapter text
+  if (chapterCol >= 0) {
+    let last = '';
+    data.forEach((row, k) => { const v = cell(row, chapterCol); if (v) last = v; chapterOf.set(k + firstRow, last); });
+  }
   const shape = { nameCol, voiceCol, titleCols, imageCols, images: pics };
   const isEmpty = (excelRow) => planRowEmpty(shape, rows, excelRow);
   const out = [];
@@ -298,6 +307,7 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
     });
     out.push({
       name:   nm || `Step ${out.length + 1}`,   // N = place in the IMPORTED order
+      unnamed: !nm,                               // V0.3.6.1 — renumbered when a Chapter column regroups the rows
       voice:  voiceCol >= 0 ? cell(row, voiceCol) : '',
       titles: titleCols.map(i => cell(row, i)),
       ...(imageCols.length ? { pics: keys } : {}),
@@ -353,6 +363,35 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
   }
   warnings.unshift(...selection.warnings);
 
+  // V0.3.6.1 — the Chapter column makes the chapters when the line typed none: every row with the same
+  // chapter text goes into ONE chapter (gathered, in order of first appearance; rows inside keep the sheet
+  // order), rows without a chapter come first as a plain block. A line with codes wins (it is explicit).
+  let chapterColUsed = false;
+  if (chapterCol >= 0 && out.length && !chapters) {
+    const byName = new Map();   // chapter text → indexes into out
+    const plain = [];
+    out.forEach((_, k) => { const t = chapterOf.get(order[k]) || ''; if (!t) plain.push(k); else { if (!byName.has(t)) byName.set(t, []); byName.get(t).push(k); } });
+    if (byName.size) {
+      const blocks = [...(plain.length ? [[null, plain]] : []), ...byName.entries()];
+      const o2 = [], ord2 = [], sg2 = [];
+      groupInfo.length = 0;
+      blocks.forEach(([name, idx]) => {
+        const gi = groupInfo.length;
+        groupInfo.push({ code: name === null ? '' : `C${String(gi + (plain.length ? 0 : 1)).padStart(2, '0')}`, name, count: idx.length });
+        for (const k of idx) { o2.push(out[k]); ord2.push(order[k]); sg2.push(gi); }
+      });
+      out.length = 0; out.push(...o2); order.length = 0; order.push(...ord2); stepGroup.length = 0; stepGroup.push(...sg2);
+      out.forEach((st, k) => { if (st.unnamed) st.name = `Step ${k + 1}`; });   // "Step N" = place in the NEW order
+      chapters = byName.size;
+      groups = groupInfo.map(g => ({ name: g.name, count: g.count }));
+      chapterColUsed = true;
+    } else {
+      notes.push(`Column ${_letter(chapterCol)} is empty in the chosen rows — no chapters from it`);
+    }
+  } else if (chapterCol >= 0 && chapters) {
+    notes.push(`The "Rows to import" line names chapters, so column ${_letter(chapterCol)} is not used`);
+  }
+
   const noStyles = !!choices && !(choices.styles || []).length;
   const titleColumns = titleCols.map((i, n) => ({
     label: names[i] || `Column ${_letter(i)}`,
@@ -364,7 +403,7 @@ export function buildPlan(rows, { headerRow, roles, looks, range = '', skipEmpty
   }));
   return {
     rows: out, titleColumns, skipped, emptyTaken, nameCol, voiceCol, titleCols, dataCount: data.length, width, names,
-    imageCols, imageColumns, picSteps, images: pics,
+    imageCols, imageColumns, picSteps, images: pics, chapterCol, chapterColUsed,
     groups, order, stepGroup, groupInfo, chapters, selection, warnings, notes, firstRow, skippedRows,
     blocked: !selection.ok,
   };
@@ -379,9 +418,10 @@ export function summaryText(plan) {
   const steps = n === 1 ? '1 step' : `${n} steps`;
   const ranged = plan.selection && !plan.selection.empty;
   if (ranged && plan.blocked) return 'Fix the "Rows to import" line — nothing is imported until it reads cleanly.';
-  const bits = [!ranged
-    ? `${steps} will be created`
-    : (plan.chapters ? `${plan.chapters === 1 ? '1 chapter' : `${plan.chapters} chapters`} · ${steps}` : steps)];
+  const chapWord = plan.chapters === 1 ? '1 chapter' : `${plan.chapters} chapters`;
+  const bits = [plan.chapterColUsed
+    ? `${chapWord} from column ${_letter(plan.chapterCol)} · ${steps}`      // V0.3.6.1
+    : (!ranged ? `${steps} will be created` : (plan.chapters ? `${chapWord} · ${steps}` : steps))];
   bits.push(plan.nameCol >= 0 ? `names from ${_letter(plan.nameCol)}` : 'named Step 1, Step 2, …');
   if (plan.voiceCol >= 0) bits.push(`voiceover from ${_letter(plan.voiceCol)}`);
   const t = plan.titleCols.length;
@@ -393,7 +433,7 @@ export function summaryText(plan) {
   });
   if (plan.skipped) bits.push(plan.skipped === 1 ? '1 empty row skipped' : `${plan.skipped} empty rows skipped`);
   if (plan.emptyTaken) bits.push(plan.emptyTaken === 1 ? '1 of them empty' : `${plan.emptyTaken} of them empty`);
-  if (ranged && plan.chapters && plan.groupInfo?.[0] && !plan.groupInfo[0].code) {
+  if ((ranged || plan.chapterColUsed) && plan.chapters && plan.groupInfo?.[0] && !plan.groupInfo[0].code) {
     const pre = plan.groupInfo[0].count;
     bits.push(`${pre === 1 ? '1 step' : `${pre} steps`} before the chapters`);
   }
@@ -669,14 +709,14 @@ function _showViewer(fileName, sheets, choices, importer) {
           ? ` <span class="small" title="${nPic} picture${nPic === 1 ? '' : 's'} in this column" style="color:#c4b5fd;">🖼 ${nPic}</span>`
           : (noPic ? ' <span style="color:#fbbf24;">⚠ no pictures</span>' : '');
         html += `<th${thTip} style="${thBase}${tint}min-width:110px;">
-          <select data-col="${c}" style="height:26px;font-size:12px;padding:0 4px;">${['ignore', 'name', 'voice', 'title', 'image'].map(v => opt(v, role)).join('')}</select>
+          <select data-col="${c}" style="height:26px;font-size:12px;padding:0 4px;">${['ignore', 'name', 'voice', 'title', 'image', 'chapter'].map(v => opt(v, role)).join('')}</select>
           <div style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;"><b>${_letter(c)}</b>${p.names[c] ? ` <span dir="auto" title="${_esc(p.names[c])}">${_esc(p.names[c])}</span>` : ''}${badge}</div>
         </th>`;
       }
       html += '</tr></thead><tbody>';
       // V0.3.5.54 — with a "Rows to import" line: Excel row → its import order
       // number(s) + block, so the chosen rows show the moment they are typed
-      const ranged = !p.selection.empty;
+      const ranged = !p.selection.empty || !!p.chapterColUsed;   // V0.3.6.1 — column chapters mark the rows too
       const marks = new Map();
       if (ranged) p.order.forEach((xr, k) => { if (!marks.has(xr)) marks.set(xr, []); marks.get(xr).push(k); });
       const shown = Math.min(PREVIEW_ROWS, data.length);
@@ -896,21 +936,27 @@ function _showViewer(fileName, sheets, choices, importer) {
       const pinOpts = pinnedPositions.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Pinned position')}</option>`).join('');
       const maskOpts = '<option value="">No mask</option>' + masks.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Mask')}</option>`).join('');
       const sel = (attr, opts, w = 120) => `<select ${attr} style="height:28px;width:auto;min-width:${w}px;">${opts}</select>`;
+      // V0.3.6.1 — his ticks: Mask (cut through a window; the WHOLE picture stays behind it, centred, to be
+      // dragged into place later) and Pinned position (a corner that snaps home). Both off = as is, free.
       imagesEl.innerHTML = lostNote +
-        `<div class="small muted">Every step gets its row's picture per Image column — all in the same place, under the same mask, so they line up. Each picture fills its mask, centred; fix any one by hand later.</div>` +
+        `<div class="small muted">Every step gets its row's picture per Image column. The picture is never cropped: under a mask it fills the window, centred, and the rest waits behind the mask — drag it to re-frame. Untick both for "as is": placed at the spot, free.</div>` +
         p.imageCols.map((c, n) => {
           const look = st.imgLooks[c] || defaultImageLook(n, lookChoices);
           const isBrand = look.kind === 'brand';
+          const wantMask = look.mask !== false, wantPin = look.pin !== false;
+          const tick = (attr, on, text, title) => `<label class="small muted" style="display:flex;align-items:center;gap:4px;" title="${title}"><input type="checkbox" ${attr}${on ? ' checked' : ''}> ${text}</label>`;
           return `<div data-icol="${c}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid var(--line);border-radius:8px;box-shadow:inset 3px 0 0 #a855f7;">
             <span style="min-width:140px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><b>Image · ${_letter(c)}</b>${p.names[c] ? ` <span dir="auto">${_esc(p.names[c])}</span>` : ''}</span>
             <label class="small muted" style="display:flex;align-items:center;gap:4px;">Look
               ${sel('data-ilook', `${pinnedPositions.length ? '<option value="brand">Project position + mask</option>' : ''}<option value="new">New unified look</option>`, 170)}</label>
-            <label class="small muted" style="display:${isBrand ? 'flex' : 'none'};align-items:center;gap:4px;">Position ${sel('data-ipin', pinOpts, 140)}</label>
-            <label class="small muted" style="display:${isBrand ? 'flex' : 'none'};align-items:center;gap:4px;">Mask ${sel('data-imask', maskOpts, 110)}</label>
-            <label class="small muted" style="display:${isBrand ? 'none' : 'flex'};align-items:center;gap:4px;">Position ${sel('data-ipos', posOpts)}</label>
-            <label class="small muted" style="display:${isBrand ? 'none' : 'flex'};align-items:center;gap:4px;">Size ${sel('data-isize', pctOpts, 130)}</label>
-            <label class="small muted" style="display:${isBrand ? 'none' : 'flex'};align-items:center;gap:4px;" title="The shape of the rectangle mask every picture of this column is cut to">Mask ${sel('data-iaspect', aspOpts, 70)}</label>
-            ${isBrand ? '' : '<span class="small muted">made once as a shared position + mask</span>'}
+            ${tick('data-imaskon', wantMask, '🎭 Mask', 'Cut the pictures through a window. The whole picture stays behind it — drag it to re-frame.')}
+            ${tick('data-ipinon', wantPin, '📌 Pinned position', 'Hold the place: with a mask the window is pinned; without one the picture\'s corner snaps to it.')}
+            <label class="small muted" style="display:${isBrand && wantPin ? 'flex' : 'none'};align-items:center;gap:4px;">Position ${sel('data-ipin', pinOpts, 140)}</label>
+            <label class="small muted" style="display:${isBrand && wantMask ? 'flex' : 'none'};align-items:center;gap:4px;">Mask ${sel('data-imask', maskOpts, 110)}</label>
+            <label class="small muted" style="display:${!isBrand || !wantPin ? 'flex' : 'none'};align-items:center;gap:4px;">Position ${sel('data-ipos', posOpts)}</label>
+            <label class="small muted" style="display:${!isBrand || !wantMask ? 'flex' : 'none'};align-items:center;gap:4px;">Size ${sel('data-isize', pctOpts, 130)}</label>
+            <label class="small muted" style="display:${!isBrand && wantMask ? 'flex' : 'none'};align-items:center;gap:4px;" title="The shape of the window every picture of this column shows through">Window ${sel('data-iaspect', aspOpts, 70)}</label>
+            <span class="small muted">${isBrand ? (wantMask || wantPin ? '' : 'placed as is, free') : (wantMask && wantPin ? 'made once as a shared position + mask' : wantMask ? 'made once as a shared mask' : wantPin ? 'made once as a shared position' : 'placed as is, free')}</span>
           </div>`;
         }).join('');
       imagesEl.querySelectorAll('[data-icol]').forEach((rowEl, n) => {
@@ -1021,7 +1067,9 @@ function _showViewer(fileName, sheets, choices, importer) {
         if (look.kind === 'brand' && !look.posId) { look.posId = pinnedPositions[0].id; look.maskId = masks[0]?.id ?? null; }
         if (look.kind === 'new') { look.position ??= fresh.position; look.size ??= fresh.size; look.aspect ??= fresh.aspect; }
         renderImages();
-      } else if (t.matches('[data-ipin]')) look.posId = t.value;
+      } else if (t.matches('[data-imaskon]')) { look.mask = !!t.checked; renderImages(); }   // V0.3.6.1
+      else if (t.matches('[data-ipinon]'))  { look.pin  = !!t.checked; renderImages(); }
+      else if (t.matches('[data-ipin]')) look.posId = t.value;
       else if (t.matches('[data-imask]')) look.maskId = t.value || null;
       else if (t.matches('[data-ipos]')) look.position = t.value;
       else if (t.matches('[data-isize]')) look.size = Number(t.value) || 0.3;
@@ -1367,9 +1415,12 @@ function _showViewer(fileName, sheets, choices, importer) {
       // V0.3.5.59 — Image looks, cleaned to the importer's contract
       const imageColumns = p.imageColumns.map(t => ({
         label: t.label,
-        look: t.look.kind === 'brand'
-          ? { kind: 'brand', posId: t.look.posId, maskId: t.look.maskId || null }
-          : { kind: 'new', position: t.look.position, size: Number(t.look.size) || 0.3, aspect: t.look.aspect || '4:3' },
+        look: {
+          ...(t.look.kind === 'brand'
+            ? { kind: 'brand', posId: t.look.posId, maskId: t.look.maskId || null, position: t.look.position || 'center', size: Number(t.look.size) || 0.3, aspect: t.look.aspect || '4:3' }
+            : { kind: 'new', position: t.look.position, size: Number(t.look.size) || 0.3, aspect: t.look.aspect || '4:3' }),
+          mask: t.look.mask !== false, pin: t.look.pin !== false,   // V0.3.6.1
+        },
       }));
       busy = true;
       okBtn.textContent = 'Importing…';

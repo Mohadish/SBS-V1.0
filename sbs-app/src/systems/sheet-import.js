@@ -200,37 +200,40 @@ export function planNewPictureBox(position, { cw, ch, size = 0.35, aspect = '4:3
 }
 
 /**
- * V0.3.5.59 — "cover": the part of a W×H picture that fills a bw×bh box at
- * one scale, centred, as Konva crop attrs (source pixels). WHY a crop and not
- * a centred oversize node: a pinned position snaps the node's bounding-box
- * corner to the def on every step load (_applyConstShapeToNode), so an
- * oversize picture centred under the mask would be dragged back to its own
- * corner — off centre — the moment the step opened. Cropped, the node IS the
- * box: pin and mask both line up exactly, for every picture shape.
+ * V0.3.6.1 — the picture node's geometry, the WHOLE picture at one scale, never cropped (his ask: "if the image
+ * is bigger than the crop, don't crop the actual image — bring it fully behind the mask so I can arrange it").
+ *   'cover' (under a mask): the picture fills the window, centred — the mask shows the middle, the rest waits
+ *           behind it to be dragged into place;
+ *   'fit'   (no mask): the picture at the box's WIDTH with its own shape, from the box's corner (a pinned one
+ *           snaps that corner to the pin on every load, which is right: the whole picture shows).
+ * A 'fit' picture taller than `box.maxH` shrinks to it (its top stays at the box). Whole pixels.
  * null when the picture's size is unknown (it then stretches to the box).
+ * (Until .70 the node was CROPPED to the box so a pinned corner and the mask would coincide; the crop threw the
+ *  rest of the picture away and nothing could be re-framed. Now a masked picture is never pinned — see picPlans.)
  */
-export function coverCrop(W, H, bw, bh) {
-  if (!(W > 0 && H > 0 && bw > 0 && bh > 0)) return null;
-  const s = Math.max(bw / W, bh / H);
-  const cwid = Math.min(W, bw / s), chgt = Math.min(H, bh / s);
-  const r = v => Math.round(v * 100) / 100;
-  return { cropX: r((W - cwid) / 2), cropY: r((H - chgt) / 2), cropWidth: r(cwid), cropHeight: r(chgt) };
+export function pictureGeometry(W, H, box, mode = 'fit') {
+  if (!(W > 0 && H > 0 && box?.w > 0 && box?.h > 0)) return null;
+  const r = v => Math.round(v);
+  if (mode === 'cover') {
+    const s = Math.max(box.w / W, box.h / H);
+    const w = W * s, h = H * s;
+    return { x: r(box.x + (box.w - w) / 2), y: r(box.y + (box.h - h) / 2), width: r(w), height: r(h) };
+  }
+  let s = box.w / W;
+  if (box.maxH > 0 && H * s > box.maxH) s = box.maxH / H;
+  const w = W * s, h = H * s;
+  return { x: r(box.anchor === 'tr' ? box.x + box.w - w : box.x), y: r(box.y), width: r(w), height: r(h) };
 }
 
 /** V0.3.5.59 — one overlay picture node, the way addImage + the 📌 / 🎭 menus
  *  leave it: name 'userImage', the data URL in src, natural size, bound by
- *  constShapeId / cropMaskId (ids, never copies — moving a def moves them all). */
+ *  constShapeId / cropMaskId (ids, never copies — moving a def moves them all).
+ *  V0.3.6.1 — uncropped (pictureGeometry): under a mask it covers the window, else it sits at the box's width. */
 export function pictureSpec({ pic, box, posId = null, maskId = null }) {
-  const attrs = {
-    x: box.x, y: box.y, width: box.w, height: box.h,
-    draggable: true,
-    name: 'userImage',
-    src: pic.dataUrl,
-  };
   const W = Number(pic.width) || 0, H = Number(pic.height) || 0;
+  const g = pictureGeometry(W, H, box, maskId ? 'cover' : 'fit') || { x: box.x, y: box.y, width: box.w, height: box.h };
+  const attrs = { ...g, draggable: true, name: 'userImage', src: pic.dataUrl };
   if (W > 0 && H > 0) { attrs.naturalW = W; attrs.naturalH = H; }
-  const crop = coverCrop(W, H, box.w, box.h);
-  if (crop) Object.assign(attrs, crop);
   if (posId)  attrs.constShapeId = posId;
   if (maskId) attrs.cropMaskId   = maskId;
   return { attrs, className: 'Image' };
@@ -352,50 +355,48 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
     const label = String(c?.label || '').trim() || 'Picture';
     const look = c?.look || { kind: 'new' };
     if (!rows.some(r => picAt(r, i))) { picPlans.push(null); return; }   // no picture anywhere → no defs
+    // V0.3.6.1 — his two ticks per column: Mask (cut through a window) and Pinned position (a corner that
+    // snaps home). Both off = "as is": the picture placed at the look's spot, free. Under a MASK the picture
+    // itself is never pinned — a pinned corner would drag it back the moment he re-frames it under the window;
+    // the mask (made at the pin's own box) is what holds the place.
+    const wantMask = look.mask !== false, wantPin = look.pin !== false;
+    const maxH = Math.round(ch * 0.9);
     if (look.kind === 'brand') {
-      const pos  = look.posId  ? posById.get(look.posId)   : null;
-      const mask = look.maskId ? maskById.get(look.maskId) : null;
-      if (look.posId && !pos)   { picPlans.error = `The pinned position for "${label}" is no longer in this project — pick it again.`; return; }
-      if (look.maskId && !mask) { picPlans.error = `The mask for "${label}" is no longer in this project — pick it again.`; return; }
-      if (!pos && !mask)        { picPlans.error = `Pick a pinned position for "${label}".`; return; }
-      let posId = pos?.id || null, x, y, w, h;
-      if (!mask) {                                            // pinned, no mask: the look's size / aspect at the pin
-        const fallback = planNewPictureBox('center', { cw, ch, size: look.size, aspect: look.aspect });
-        w = fallback.w; h = fallback.h;
-        x = Math.round(pos.anchor === 'tr' ? (pos.x || 0) - w : (pos.x || 0)); y = Math.round(pos.y || 0);
-      } else {
+      const pos  = wantPin  && look.posId  ? posById.get(look.posId)   : null;
+      const mask = wantMask && look.maskId ? maskById.get(look.maskId) : null;
+      if (wantPin  && look.posId  && !pos)  { picPlans.error = `The pinned position for "${label}" is no longer in this project — pick it again.`; return; }
+      if (wantMask && look.maskId && !mask) { picPlans.error = `The mask for "${label}" is no longer in this project — pick it again.`; return; }
+      if (wantPin && !look.posId && !mask)  { picPlans.error = `Pick a pinned position for "${label}" (or untick it).`; return; }
+      if (mask) {
         const mx = mask.x * cw, my = mask.y * ch, mw = Math.max(1, mask.w * cw), mh = Math.max(1, mask.h * ch);
-        x = Math.round(mx); y = Math.round(my); w = Math.round(mw); h = Math.round(mh);   // the window itself
-        if (pos) {
-          // V0.3.5.62 (diagnostic) — the pin snaps the box's CORNER home on every load while the mask stays where
-          // it is: the box must reach from the pin's corner over the WHOLE window, or the picture loads half /
-          // fully blank. A pin that lies inside or past the window cannot do that: the mask alone is bound.
-          const px = pos.x || 0, py = pos.y || 0, tr = pos.anchor === 'tr';
-          const okX = tr ? px >= mx + mw - 2 : px <= mx + 2, okY = py <= my + 2;
-          if (okX && okY) {
-            if (tr) { x = Math.round(mx); w = Math.max(1, Math.round(px - mx)); }
-            else    { x = Math.round(px); w = Math.max(1, Math.round(mx + mw - px)); }
-            y = Math.round(py); h = Math.max(1, Math.round(my + mh - py));
-          } else {
-            posId = null;
-            console.info(`[sheet-import] "${label}": its pinned position lies inside / past the mask — the pictures are bound to the mask only`);
-          }
-        }
+        picPlans.push({ box: { x: Math.round(mx), y: Math.round(my), w: Math.round(mw), h: Math.round(mh), maxH }, posId: null, maskId: mask.id });
+        return;
       }
-      picPlans.push({ box: { x, y, w, h }, posId, maskId: mask?.id || null });
+      const fallback = planNewPictureBox(pos ? 'center' : (look.position || 'center'), { cw, ch, size: look.size, aspect: look.aspect });
+      if (pos) {                                              // pinned, no mask: the look's width at the pin, the picture's own shape
+        const w = fallback.w, tr = pos.anchor === 'tr';
+        picPlans.push({ box: { x: Math.round(tr ? (pos.x || 0) - w : (pos.x || 0)), y: Math.round(pos.y || 0), w, h: fallback.h, anchor: pos.anchor, maxH }, posId: pos.id, maskId: null });
+      } else {                                                // as is
+        picPlans.push({ box: { x: fallback.x, y: fallback.y, w: fallback.w, h: fallback.h, anchor: fallback.anchor, maxH }, posId: null, maskId: null });
+      }
       return;
     }
     const b = planNewPictureBox(look.position, { cw, ch, size: look.size, aspect: look.aspect });
+    if (!wantMask && !wantPin) {                              // as is: nothing made, the picture sits at the preset, free
+      picPlans.push({ box: { x: b.x, y: b.y, w: b.w, h: b.h, anchor: b.anchor, maxH }, posId: null, maskId: null });
+      return;
+    }
     // same shapes the 📌 "Make pinned position…" / 🎭 promote menus write
     // V0.3.5.70 — ONE name, free in both lists: the next import's default look pairs a pin with the mask of the same
     // name, so "Photo (2)" + "Photo" would have paired the new mask with an older, unrelated pin
     let shared = label, k = 2;
     while (usedPos.has(shared) || usedMask.has(shared)) shared = `${label} (${k++})`;
     usedPos.add(shared); usedMask.add(shared);
-    const pin  = { id: generateId('csp'), name: shared, anchor: b.anchor, x: b.defX, y: b.y };
-    const mask = { id: generateId('cmk'), name: shared, kind: 'rect', x: b.x / cw, y: b.y / ch, w: b.w / cw, h: b.h / ch, rot: 0 };
-    newPins.push(pin); newMasks.push(mask);
-    picPlans.push({ box: { x: b.x, y: b.y, w: b.w, h: b.h }, posId: pin.id, maskId: mask.id });
+    const pin  = wantPin  ? { id: generateId('csp'), name: shared, anchor: b.anchor, x: b.defX, y: b.y } : null;
+    const mask = wantMask ? { id: generateId('cmk'), name: shared, kind: 'rect', x: b.x / cw, y: b.y / ch, w: b.w / cw, h: b.h / ch, rot: 0 } : null;
+    if (pin)  newPins.push(pin);
+    if (mask) newMasks.push(mask);
+    picPlans.push({ box: { x: b.x, y: b.y, w: b.w, h: b.h, anchor: b.anchor, maxH }, posId: mask ? null : pin.id, maskId: mask?.id || null });
   });
   if (picPlans.error) return { error: picPlans.error };
 
@@ -478,8 +479,9 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
 /**
  * @param {{ rows: {name:string, voice:string, titles:string[]}[],
  *           titleColumns: {label:string, look:{kind:'brand',constId:string}|{kind:'new',styleId:string|null,position:string}}[],
- *           imageColumns?: {label:string, look:{kind:'brand',posId:string,maskId:string|null}|{kind:'new',position:string,size:number,aspect:string}}[],
+ *           imageColumns?: {label:string, look:({kind:'brand',posId:string,maskId:string|null}|{kind:'new',position:string,size:number,aspect:string}) & {mask?:boolean, pin?:boolean}}[],
  *           groups?: {name:string|null, count:number}[] }} p
+ *   look.mask / look.pin (V0.3.6.1, default true): cut through a window / snap a corner home; both false = as is.
  *   groups (V0.3.5.54): cover `rows` in order; name null = a plain block
  *   (today's placement), a name = a NEW chapter holding those rows' steps.
  *   imageColumns (V0.3.5.59): rows[i].images[k] = { dataUrl, width, height } | null for column k.
