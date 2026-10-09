@@ -148,6 +148,7 @@ const _KEY_ACTIONS = [
   { id: 'polyEdges',         name: '⬚ Poly: edges',         desc: 'A selected editable poly goes straight into Edit poly, edges mode (and switches to it inside the mode).' },
   { id: 'polyFaces',         name: '⬚ Poly: faces',         desc: 'A selected editable poly goes straight into Edit poly, faces mode (and switches to it inside the mode).' },
   { id: 'polyElements',      name: '⬚ Poly: elements',      desc: 'A selected editable poly goes straight into Edit poly, elements mode — each separate piece (and switches to it inside the mode).' },
+  { id: 'repeatMenuAction',  name: '↻ Repeat menu action',  desc: 'Do the last right-click menu action again on the item under the pointer — the same function, wherever it sits in that item\'s menu.' },
 ];
 
 function _renderKeysTab(body) {

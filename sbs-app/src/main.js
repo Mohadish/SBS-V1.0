@@ -65,6 +65,7 @@ import { positionSafeFrameEl }    from './core/safe-frame.js';
 import { initOverlay, getStage as getOverlayStage, handleAnchorPick, cancelAnchoredArrowPlacement, nudgeSelection as nudgeOverlaySelection, cancelOverlayMarquee, cancelOverlayPolyEdit, isEditing as isOverlayEditing, selectionCount as overlaySelectionCount } from './systems/overlay.js';
 import { initOverlayToolbar, toggleOverlayEditing, toggleOverlayXray, toggleOverlaySnap } from './ui/overlay-toolbar.js';
 import { matches as keyMatches, keyFor, keyLabel, keyHint, setKeyOverrides } from './core/keymap.js';   // 🎹 central shortcut table
+import { installMenuRepeat, repeatLastMenuAction } from './ui/menu-repeat.js';   // ↻ V0.3.6.8
 import { initHeaderLayer }     from './systems/header.js';
 import { initCables, resolveNodeWorldPosition, flattenCablesToCascade, resolveCableSnapshotAtStep, applyStepSnapshot as applyCableStepSnapshot } from './systems/cables.js';        // C1: cables wire step:applied → applyStepSnapshot; C5-B: pos resolver for gizmo target; V0.3.0.151 cascade flatten
 import * as pivotCenterPicker     from './systems/pivot-center-picker.js';   // 3-point center pivot tool — snap-based picker for cylinder-axis pivot placement
@@ -353,6 +354,7 @@ setupUndoKeyboard();
 // re-activation and rides an incoming camera/object move) and on
 // step:applied (final settle). The per-frame tick keeps the merged mesh
 // hidden and the tags glued.
+installMenuRepeat();   // ↻ V0.3.6.8 — tracks the pointer so R can rebuild the menu where it stands
 import('./systems/hardware-insert-anim.js').then(hw => {
   // 🔦 V0.3.5.61 — { animating }: the spotlight-only name tags wait for the step to settle, and go when the next animation starts
   hw.setInsertAnimProbe?.(() => !!steps._animRunning);
@@ -5541,6 +5543,12 @@ window.addEventListener('keydown', async e => {
     }
   }
 
+  // ↻ V0.3.6.8 — R: the last right-click menu action again, on what is under the pointer
+  if (keyMatches('repeatMenuAction', e) && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
+    e.preventDefault();
+    repeatLastMenuAction();
+    return;
+  }
   // ── Fit ──────────────────────────────────────────────────────────────────
   // F frames the SELECTION (the whole point of the shortcut). Only when nothing
   // is selected does it fall back to fitting the entire scene. V0.3.0.110 — was

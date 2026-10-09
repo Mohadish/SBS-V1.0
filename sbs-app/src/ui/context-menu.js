@@ -48,6 +48,22 @@ function _detachLiveModListeners() {
   // and live updates silently no-op. The list is reset in showContextMenu.
 }
 
+import { recordMenuAction, captureIfActive } from './menu-repeat.js';   // ↻ V0.3.6.8
+
+/** ↻ Every runnable entry records WHICH entry it was (its labels down the menu) when it runs. */
+function _wrapForRepeat(items, parent = []) {
+  for (const it of items || []) {
+    if (!it || it.separator || !it.label) continue;
+    const path = [...parent, it.label];
+    if (typeof it.action === 'function' && !it.__repeatWrapped) {
+      const orig = it.action;
+      it.action = (ctx) => { recordMenuAction(path); return orig(ctx); };
+      it.__repeatWrapped = true;
+    }
+    if (Array.isArray(it.submenu)) _wrapForRepeat(it.submenu, path);
+  }
+}
+
 export function initContextMenu() {
   _el = document.getElementById('context-menu');
   if (!_el) return;
@@ -127,7 +143,9 @@ function _openFlyout(parentBtn, subItems) {
  *        a menu opened while Ctrl is already held starts in the right state.
  */
 export function showContextMenu(items, x, y, opts = {}) {
+  if (captureIfActive(items)) return;   // ↻ a replay is asking what this menu WOULD hold — hand it back, draw nothing
   if (!_el) return;
+  _wrapForRepeat(items);
 
   // Re-invoking while a submenu flyout is open (right-click A, then
   // right-click B) must close A's flyout — a lingering one still fires

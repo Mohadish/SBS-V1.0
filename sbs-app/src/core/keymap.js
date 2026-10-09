@@ -33,6 +33,7 @@ const DEFAULTS = {
   polyEdges:         'Digit2', // ⬚ V0.3.5.45 — … EDGES (Max's 2)
   polyFaces:         'Digit3', // ⬚ … FACES (Max's 4 was "polygon"; his order: 3 = faces since V0.3.5.45)
   polyElements:      'Digit4', // ⬚ V0.3.5.45 — … ELEMENTS (each separate connected piece)
+  repeatMenuAction:  'KeyR',   // ↻ V0.3.6.8 — do the last right-click menu action again on what is under the pointer
 };
 
 let _overrides = {};
