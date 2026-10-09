@@ -16,8 +16,13 @@
  *   wide / landscape / square — title above, picture fitted into the area below, notes under it
  *   pair      — two pictures side by side under the title
  * Text is bound to shared text styles and pinned title positions (constTextBoxes), so the look
- * can be restyled for every step at once in the app; nothing overlaps — the picture area is what
- * is left after the title (measured) and the notes (measured) have taken their rows.
+ * can be restyled for every step at once in the app; nothing overlaps.
+ *
+ * ▣ V0.3.6.12 — the pictures live in CELLS (pinned positions with a size, src/systems/cell-fit.js):
+ * one cell per template — main / main with notes below / left column / icon / pair left / pair
+ * right. Each picture is bound to its cell (constShapeId) and written at the geometry the app's own
+ * fit gives it; move or resize a cell in the app and every picture of that template, on every step,
+ * refits. The notes box sits under the picture's fitted rect (a free box: it does not follow the cell).
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve, basename, extname } from 'node:path';
@@ -30,6 +35,7 @@ const APP = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SI = await import('file:///' + APP.replace(/\\/g, '/') + '/src/systems/sheet-import.js');
 const SC = await import('file:///' + APP.replace(/\\/g, '/') + '/src/core/schema.js');
 const ST = await import('file:///' + APP.replace(/\\/g, '/') + '/src/systems/style-templates.js');
+const CF = await import('file:///' + APP.replace(/\\/g, '/') + '/src/systems/cell-fit.js');
 
 /** steps.json → .sbsproj (+ .layout.json, .preview.html). Returns a summary. */
 export async function buildProject({ stepsPath, out, name = null }) {
@@ -55,8 +61,18 @@ const defs = {
   titleCentre: { id: SC.generateId('ctb'), name: 'pdf2sbs Title — centred', anchor: 'tl', x: 260, y: 300, styleId: styles.centre.id },
   bodyCentre:  { id: SC.generateId('ctb'), name: 'pdf2sbs Body — centred',  anchor: 'tl', x: 260, y: 460, styleId: styles.cbody.id },
 };
-const pins = {
-  picLeft: { id: SC.generateId('csp'), name: 'pdf2sbs Picture — left column', anchor: 'tl', x: MX, y: MY },
+// ▣ the cells — one per template; a title line (56 px + padding) and a gap sit above the picture area
+const TITLE_BAND = MY + Math.ceil(TITLE.fontSize * 1.2 + 16) + GAP;   // 162
+const NOTES_BAND = 264;                                                 // room under the picture for up to ~5 note lines
+const cell = (name, x, y, w, h, align = 'c') => ({ id: SC.generateId('csp'), name: `pdf2sbs ${name}`, anchor: 'tl', x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), align });
+const halfW = (CW - 2 * MX - 48) / 2;
+const cells = {
+  main:      cell('Picture — main',               MX, TITLE_BAND, CW - 2 * MX, CH - MY - TITLE_BAND, 'c'),
+  mainNotes: cell('Picture — main, notes below',  MX, TITLE_BAND, CW - 2 * MX, CH - MY - TITLE_BAND - NOTES_BAND, 't'),
+  left:      cell('Picture — left column',        MX, MY, 760, CH - 2 * MY, 'c'),
+  icon:      cell('Picture — icon',               MX, TITLE_BAND, CW - 2 * MX, 480, 'c'),
+  pairL:     cell('Picture — pair, left',         MX, TITLE_BAND, halfW, CH - MY - TITLE_BAND - NOTES_BAND, 'c'),
+  pairR:     cell('Picture — pair, right',        MX + halfW + 48, TITLE_BAND, halfW, CH - MY - TITLE_BAND - NOTES_BAND, 'c'),
 };
 
 // ── picture helpers ──────────────────────────────────────────────────────────
@@ -66,13 +82,12 @@ const picNode = (img, x, y, w, h, extra = {}) => {
   if (!urlCache.has(img.path)) urlCache.set(img.path, dataUrl(img.path));
   return { className: 'Image', attrs: { x: Math.round(x), y: Math.round(y), width: Math.round(w), height: Math.round(h), draggable: true, name: 'userImage', src: urlCache.get(img.path), naturalW: img.w, naturalH: img.h, ...extra } };
 };
-/** fit a w×h picture into a box, centred (whole picture, one scale, never above `maxScale`) */
-function fitIn(img, box, maxScale = null) {
-  const cap = maxScale ?? (Math.max(img.w, img.h) < 700 ? 3 : 1.5);   // a small picture may grow ×3, a big one ×1.5
-  const s = Math.min(box.w / img.w, box.h / img.h, cap);
-  const w = img.w * s, h = img.h * s;
-  return { x: box.x + (box.w - w) / 2, y: box.y + (box.h - h) / 2, w, h, s };
+/** a picture in its cell: the geometry the app's fit gives it, bound to the cell */
+function picCell(img, def) {
+  const r = CF.cellRectFor(img.w, img.h, def);
+  return picNode(img, r.x, r.y, r.width, r.height, { constShapeId: def.id });
 }
+const bottomOfNode = (n) => n.attrs.y + n.attrs.height;
 const classOf = (img) => {
   if (!img) return 'none';
   const r = img.w / img.h;
@@ -111,10 +126,8 @@ function layoutStep(row) {
   }
   const cls = imgs.length > 1 ? 'pair' : classOf(imgs[0]);
   if (cls === 'tall') {
-    // left column picture, right column text
-    const colW = 760, box = { x: MX, y: MY, w: colW, h: CH - 2 * MY };
-    const f = fitIn(imgs[0], box);
-    nodes.push(picNode(imgs[0], MX, box.y + (box.h - f.h) / 2, f.w, f.h, { constShapeId: pins.picLeft.id }));
+    // left column picture (its cell), right column text
+    nodes.push(picCell(imgs[0], cells.left));
     const tx = 920, tw = CW - MX - tx;
     const t = textNode(row.name, defs.titleSide, tw, 'left', TITLE.fontSize, styles.title.id);
     const b = notes ? freeText(notes, tx, bottomOf(t) + GAP, tw, 'left', BODY.fontSize, styles.body.id) : null;
@@ -122,38 +135,29 @@ function layoutStep(row) {
     const blockH = (b ? bottomOf(b) : bottomOf(t)) - t.attrs.y, shift = Math.round((CH - blockH) / 2) - t.attrs.y;
     t.attrs.y += shift; if (b) b.attrs.y += shift;
     nodes.push(t); if (b) nodes.push(b);
-    note.template = 'tall: picture left, text right';
+    note.template = 'tall: picture left (cell), text right';
     return { nodes, note };
   }
-  // title row at the top (all remaining templates)
+  // title row at the top (all remaining templates); the picture in its cell; the notes under the fitted rect
   const tw = CW - 2 * MX;
   const t = textNode(row.name, defs.titleTop, tw, 'left', TITLE.fontSize, styles.title.id);
   nodes.push(t);
-  let areaTop = bottomOf(t) + GAP, areaBottom = CH - MY;
-  let noteNode = null;
-  if (notes) {
-    const nh = textH(notes, tw, BODY.fontSize);
-    areaBottom -= nh + GAP;
-    noteNode = freeText(notes, MX, areaBottom + GAP, tw, 'left', BODY.fontSize, styles.body.id);
-  }
-  const area = { x: MX, y: areaTop, w: tw, h: Math.max(200, areaBottom - areaTop) };
+  let pics = [];
   if (cls === 'pair') {
-    const half = { w: (area.w - 48) / 2, h: area.h };
-    imgs.slice(0, 2).forEach((img, i) => {
-      const f = fitIn(img, { x: area.x + i * (half.w + 48), y: area.y, w: half.w, h: half.h });
-      nodes.push(picNode(img, f.x, f.y, f.w, f.h));
-    });
-    note.template = 'pair: two pictures side by side';
+    pics = [picCell(imgs[0], cells.pairL), picCell(imgs[1], cells.pairR)];
+    note.template = 'pair: two pictures side by side (cells)';
   } else if (cls === 'icon') {
-    const f = fitIn(imgs[0], { x: area.x, y: area.y, w: area.w, h: Math.min(area.h, 480) }, 3);
-    nodes.push(picNode(imgs[0], f.x, area.y + (area.h - f.h) / 2, f.w, f.h));
-    note.template = 'icon: enlarged, centred';
+    pics = [picCell(imgs[0], cells.icon)];
+    note.template = 'icon: enlarged in its cell';
   } else {
-    const f = fitIn(imgs[0], area);
-    nodes.push(picNode(imgs[0], f.x, f.y, f.w, f.h));
-    note.template = `${cls}: title above, picture fitted below`;
+    pics = [picCell(imgs[0], notes ? cells.mainNotes : cells.main)];
+    note.template = `${cls}: title above, picture in the ${notes ? 'main-with-notes' : 'main'} cell`;
   }
-  if (noteNode) nodes.push(noteNode);
+  nodes.push(...pics);
+  if (notes) {
+    const under = Math.max(...pics.map(bottomOfNode)) + GAP;
+    nodes.push(freeText(notes, MX, Math.min(under, CH - MY - textH(notes, tw, BODY.fontSize)), tw, 'left', BODY.fontSize, styles.body.id));
+  }
   return { nodes, note };
 }
 
@@ -193,7 +197,7 @@ const project = {
   styles: { schema_version: 1, items: Object.values(styles), shapeItems: [] },
   shapes: { schema_version: 1, items: [], groups: [] },
   constTexts: section(Object.values(defs)),
-  constShapes: section(Object.values(pins)),
+  constShapes: section(Object.values(cells)),   // ▣ the cells
   shapeLinks: section([]), cropMasks: section([]), reviewNotes: section([]), brand: null, document: null,
   hardware: { schema_version: 1, templates: [] },
   cables: { schema_version: 2, items: [], globalScale: 1, globalRadius: 1, defaultDiameter: 2, filletReach: 40, highlightColor: '#22d3ee' },

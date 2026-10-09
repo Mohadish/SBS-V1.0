@@ -38,6 +38,7 @@ import { undoManager }  from './undo.js';
 import { createStep, createChapter, generateId } from '../core/schema.js';
 import { cloneShareStrings }      from '../core/clone.js';
 import { makeStyleTemplate }      from './style-templates.js';
+import { cellRectFor, isCellDef } from './cell-fit.js';   // ▣ V0.3.6.12 — pictures fitted into a cell
 
 /** Position presets for a NEW unified title look. */
 export const TITLE_POSITIONS = [
@@ -64,7 +65,9 @@ export function sheetTitleChoices() {
   // V0.3.5.59 — the project's / brand's pinned positions + shared masks, for an Image column's look
   const pinnedPositions = (state.get('constShapes') || []).filter(d => d?.id).map(d => ({ id: d.id, name: d.name || 'Position' }));
   const masks           = (state.get('cropMasks')   || []).filter(d => d?.id).map(d => ({ id: d.id, name: d.name || 'Mask' }));
-  return { styles, brandTitles, positions: TITLE_POSITIONS.map(p => ({ ...p })), pinnedPositions, masks };
+  // ▣ V0.3.6.12 — the cells (pinned positions with a size): a picture's natural home
+  const cells           = (state.get('constShapes') || []).filter(d => d?.id && isCellDef(d)).map(d => ({ id: d.id, name: d.name || 'Cell', w: Math.round(d.w), h: Math.round(d.h) }));
+  return { styles, brandTitles, positions: TITLE_POSITIONS.map(p => ({ ...p })), pinnedPositions, masks, cells };
 }
 
 /** V0.3.5.59 — the mask shapes a NEW picture look offers (width : height). */
@@ -239,6 +242,16 @@ export function pictureSpec({ pic, box, posId = null, maskId = null }) {
   return { attrs, className: 'Image' };
 }
 
+/** ▣ V0.3.6.12 — one overlay picture node FITTED INTO A CELL: the geometry the app's own fit gives it, bound by
+ *  constShapeId so the app refits it on every load (and when the cell is moved or resized). */
+export function pictureCellSpec({ pic, cell }) {
+  const W = Number(pic.width) || 0, H = Number(pic.height) || 0;
+  const r = (W > 0 && H > 0) ? cellRectFor(W, H, cell) : { x: cell.x, y: cell.y, width: cell.w, height: cell.h };
+  const attrs = { x: r.x, y: r.y, width: r.width, height: r.height, draggable: true, name: 'userImage', src: pic.dataUrl, constShapeId: cell.id };
+  if (W > 0 && H > 0) { attrs.naturalW = W; attrs.naturalH = H; }
+  return { attrs, className: 'Image' };
+}
+
 /** V0.3.5.59 — a usable picture from the dialog: a data URL of an image. */
 function _picOk(p) {
   return !!(p && typeof p.dataUrl === 'string' && /^data:image\//i.test(p.dataUrl));
@@ -361,6 +374,12 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
     // the mask (made at the pin's own box) is what holds the place.
     const wantMask = look.mask !== false, wantPin = look.pin !== false;
     const maxH = Math.round(ch * 0.9);
+    if (look.kind === 'cell') {                               // ▣ V0.3.6.12 — fitted into an existing cell
+      const cell = look.cellId ? posById.get(look.cellId) : null;
+      if (!cell || !isCellDef(cell)) { picPlans.error = `The cell for "${label}" is no longer in this project — pick it again.`; return; }
+      picPlans.push({ cell });
+      return;
+    }
     if (look.kind === 'brand') {
       const pos  = wantPin  && look.posId  ? posById.get(look.posId)   : null;
       const mask = wantMask && look.maskId ? maskById.get(look.maskId) : null;
@@ -461,7 +480,7 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
     // V0.3.5.59 — pictures first, so the step's titles draw on top of them
     picPlans.forEach((p, i) => {
       const pic = p && picAt(r, i);
-      if (pic) { nodes.push(pictureSpec({ pic, box: p.box, posId: p.posId, maskId: p.maskId })); pictures++; }
+      if (pic) { nodes.push(p.cell ? pictureCellSpec({ pic, cell: p.cell }) : pictureSpec({ pic, box: p.box, posId: p.posId, maskId: p.maskId })); pictures++; }
     });
     plans.forEach((p, i) => {
       const text = p && textAt(r, i);
@@ -479,7 +498,7 @@ export function buildSheetSteps({ rows, titleColumns, imageColumns = [], baseSna
 /**
  * @param {{ rows: {name:string, voice:string, titles:string[]}[],
  *           titleColumns: {label:string, look:{kind:'brand',constId:string}|{kind:'new',styleId:string|null,position:string}}[],
- *           imageColumns?: {label:string, look:({kind:'brand',posId:string,maskId:string|null}|{kind:'new',position:string,size:number,aspect:string}) & {mask?:boolean, pin?:boolean}}[],
+ *           imageColumns?: {label:string, look:({kind:'brand',posId:string,maskId:string|null}|{kind:'new',position:string,size:number,aspect:string}|{kind:'cell',cellId:string}) & {mask?:boolean, pin?:boolean}}[],
  *           groups?: {name:string|null, count:number}[] }} p
  *   look.mask / look.pin (V0.3.6.1, default true): cut through a window / snap a corner home; both false = as is.
  *   groups (V0.3.5.54): cover `rows` in order; name null = a plain block

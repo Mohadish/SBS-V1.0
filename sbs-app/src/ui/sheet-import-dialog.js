@@ -230,6 +230,9 @@ export function defaultLook(n, positions, noStyles = false) {
  * where pictures go — else a new unified look: a corner, 30 % of the width, 4:3.
  */
 export function defaultImageLook(n, choices = {}) {
+  // ▣ V0.3.6.12 — a project with cells: the n-th column goes into the n-th cell (fitted whole, follows the cell)
+  const cells = choices.cells || [];
+  if (cells.length) return { kind: 'cell', cellId: cells[n % cells.length].id };
   const pins = choices.pinnedPositions || [];
   if (pins.length) {
     // V0.3.5.62 — only a mask made WITH this position (the same name): one paired by its place in the list
@@ -934,6 +937,8 @@ function _showViewer(fileName, sheets, choices, importer) {
       const aspOpts = IMAGE_ASPECTS.map(a => `<option value="${a}">${a}</option>`).join('');
       const posOpts = positions.map(o => `<option value="${_esc(o.key)}">${_esc(o.label || o.key)}</option>`).join('');
       const pinOpts = pinnedPositions.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Pinned position')}</option>`).join('');
+      const cells = lookChoices.cells || [];   // ▣ V0.3.6.12
+      const cellOpts = cells.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Cell')}  (${o.w} × ${o.h})</option>`).join('');
       const maskOpts = '<option value="">No mask</option>' + masks.map(o => `<option value="${_esc(o.id)}">${_esc(o.name || 'Mask')}</option>`).join('');
       const sel = (attr, opts, w = 120) => `<select ${attr} style="height:28px;width:auto;min-width:${w}px;">${opts}</select>`;
       // V0.3.6.1 — his ticks: Mask (cut through a window; the WHOLE picture stays behind it, centred, to be
@@ -942,13 +947,14 @@ function _showViewer(fileName, sheets, choices, importer) {
         `<div class="small muted">Every step gets its row's picture per Image column. The picture is never cropped: under a mask it fills the window, centred, and the rest waits behind the mask — drag it to re-frame. Untick both for "as is": placed at the spot, free.</div>` +
         p.imageCols.map((c, n) => {
           const look = st.imgLooks[c] || defaultImageLook(n, lookChoices);
-          const isBrand = look.kind === 'brand';
-          const wantMask = look.mask !== false, wantPin = look.pin !== false;
-          const tick = (attr, on, text, title) => `<label class="small muted" style="display:flex;align-items:center;gap:4px;" title="${title}"><input type="checkbox" ${attr}${on ? ' checked' : ''}> ${text}</label>`;
+          const isBrand = look.kind === 'brand', isCell = look.kind === 'cell';
+          const wantMask = !isCell && look.mask !== false, wantPin = !isCell && look.pin !== false;
+          const tick = (attr, on, text, title) => `<label class="small muted" style="display:${isCell ? 'none' : 'flex'};align-items:center;gap:4px;" title="${title}"><input type="checkbox" ${attr}${on ? ' checked' : ''}> ${text}</label>`;
           return `<div data-icol="${c}" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 8px;border:1px solid var(--line);border-radius:8px;box-shadow:inset 3px 0 0 #a855f7;">
             <span style="min-width:140px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><b>Image · ${_letter(c)}</b>${p.names[c] ? ` <span dir="auto">${_esc(p.names[c])}</span>` : ''}</span>
             <label class="small muted" style="display:flex;align-items:center;gap:4px;">Look
-              ${sel('data-ilook', `${pinnedPositions.length ? '<option value="brand">Project position + mask</option>' : ''}<option value="new">New unified look</option>`, 170)}</label>
+              ${sel('data-ilook', `${cells.length ? '<option value="cell">▣ Fit into a cell</option>' : ''}${pinnedPositions.length ? '<option value="brand">Project position + mask</option>' : ''}<option value="new">New unified look</option>`, 170)}</label>
+            <label class="small muted" style="display:${isCell ? 'flex' : 'none'};align-items:center;gap:4px;" title="The picture is fitted whole into this cell and follows it when the cell is moved or resized">Cell ${sel('data-icell', cellOpts, 200)}</label>
             ${tick('data-imaskon', wantMask, '🎭 Mask', 'Cut the pictures through a window. The whole picture stays behind it — drag it to re-frame.')}
             ${tick('data-ipinon', wantPin, '📌 Pinned position', 'Hold the place: with a mask the window is pinned; without one the picture\'s corner snaps to it.')}
             <label class="small muted" style="display:${isBrand && wantPin ? 'flex' : 'none'};align-items:center;gap:4px;">Position ${sel('data-ipin', pinOpts, 140)}</label>
@@ -956,13 +962,14 @@ function _showViewer(fileName, sheets, choices, importer) {
             <label class="small muted" style="display:${!isBrand || !wantPin ? 'flex' : 'none'};align-items:center;gap:4px;">Position ${sel('data-ipos', posOpts)}</label>
             <label class="small muted" style="display:${!isBrand || !wantMask ? 'flex' : 'none'};align-items:center;gap:4px;">Size ${sel('data-isize', pctOpts, 130)}</label>
             <label class="small muted" style="display:${!isBrand && wantMask ? 'flex' : 'none'};align-items:center;gap:4px;" title="The shape of the window every picture of this column shows through">Window ${sel('data-iaspect', aspOpts, 70)}</label>
-            <span class="small muted">${isBrand ? (wantMask || wantPin ? '' : 'placed as is, free') : (wantMask && wantPin ? 'made once as a shared position + mask' : wantMask ? 'made once as a shared mask' : wantPin ? 'made once as a shared position' : 'placed as is, free')}</span>
+            <span class="small muted">${isCell ? 'fitted whole; move or resize the cell and every picture follows' : isBrand ? (wantMask || wantPin ? '' : 'placed as is, free') : (wantMask && wantPin ? 'made once as a shared position + mask' : wantMask ? 'made once as a shared mask' : wantPin ? 'made once as a shared position' : 'placed as is, free')}</span>
           </div>`;
         }).join('');
       imagesEl.querySelectorAll('[data-icol]').forEach((rowEl, n) => {
         const c = Number(rowEl.dataset.icol);
         const look = st.imgLooks[c] || defaultImageLook(n, lookChoices);
-        rowEl.querySelector('[data-ilook]').value = look.kind === 'brand' ? 'brand' : 'new';
+        rowEl.querySelector('[data-ilook]').value = look.kind === 'cell' && cells.length ? 'cell' : look.kind === 'brand' ? 'brand' : 'new';
+        if (cells.length) rowEl.querySelector('[data-icell]').value = look.cellId || cells[0].id;
         if (pinnedPositions.length) rowEl.querySelector('[data-ipin]').value = look.posId || pinnedPositions[0].id;
         rowEl.querySelector('[data-imask]').value = look.maskId || '';
         rowEl.querySelector('[data-ipos]').value = look.position || positions[0].key;
@@ -1063,11 +1070,14 @@ function _showViewer(fileName, sheets, choices, importer) {
       if (t.matches('[data-ilook]')) {
         const n = Math.max(0, plan().imageCols.indexOf(c));
         const fresh = defaultImageLook(n, { positions });   // a 'new' look's defaults
-        look.kind = t.value === 'brand' && pinnedPositions.length ? 'brand' : 'new';
+        const cells = lookChoices.cells || [];
+        look.kind = t.value === 'cell' && cells.length ? 'cell' : t.value === 'brand' && pinnedPositions.length ? 'brand' : 'new';
+        if (look.kind === 'cell' && !cells.some(x => x.id === look.cellId)) look.cellId = cells[0].id;   // ▣ V0.3.6.12
         if (look.kind === 'brand' && !look.posId) { look.posId = pinnedPositions[0].id; look.maskId = masks[0]?.id ?? null; }
         if (look.kind === 'new') { look.position ??= fresh.position; look.size ??= fresh.size; look.aspect ??= fresh.aspect; }
         renderImages();
-      } else if (t.matches('[data-imaskon]')) { look.mask = !!t.checked; renderImages(); }   // V0.3.6.1
+      } else if (t.matches('[data-icell]')) look.cellId = t.value;                            // ▣ V0.3.6.12
+      else if (t.matches('[data-imaskon]')) { look.mask = !!t.checked; renderImages(); }   // V0.3.6.1
       else if (t.matches('[data-ipinon]'))  { look.pin  = !!t.checked; renderImages(); }
       else if (t.matches('[data-ipin]')) look.posId = t.value;
       else if (t.matches('[data-imask]')) look.maskId = t.value || null;
@@ -1415,7 +1425,7 @@ function _showViewer(fileName, sheets, choices, importer) {
       // V0.3.5.59 — Image looks, cleaned to the importer's contract
       const imageColumns = p.imageColumns.map(t => ({
         label: t.label,
-        look: {
+        look: t.look.kind === 'cell' ? { kind: 'cell', cellId: t.look.cellId } : {   // ▣ V0.3.6.12
           ...(t.look.kind === 'brand'
             ? { kind: 'brand', posId: t.look.posId, maskId: t.look.maskId || null, position: t.look.position || 'center', size: Number(t.look.size) || 0.3, aspect: t.look.aspect || '4:3' }
             : { kind: 'new', position: t.look.position, size: Number(t.look.size) || 0.3, aspect: t.look.aspect || '4:3' }),

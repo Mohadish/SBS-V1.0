@@ -1301,17 +1301,10 @@ function _constShapeAnchorPos(node, anchor) {
 // Move or resize the cell and every picture in it, on every step, refits. His design ("fit to window"): the
 // pin forced text's needs onto pictures; a cell is the picture's own idea. Same list, same binding
 // (constShapeId), same bubble, same brand section — a cell is a pin that learned its size.
-const _CELL_ALIGN = { tl: [0, 0], t: [0.5, 0], tr: [1, 0], l: [0, 0.5], c: [0.5, 0.5], r: [1, 0.5], bl: [0, 1], b: [0.5, 1], br: [1, 1] };
-export const CELL_ALIGN_LABELS = { tl: '⌜ top-left', t: '⌃ top', tr: '⌝ top-right', l: '⟨ left', c: '⊙ centre', r: '⟩ right', bl: '⌞ bottom-left', b: '⌄ bottom', br: '⌟ bottom-right' };
-function _isCellDef(def) { return !!(def && Number(def.w) > 0 && Number(def.h) > 0); }
-/** Pure (tests): a node whose visible rect is `v` and origin `o` (canvas px) → { k, x, y }: the uniform scale
- *  that fits `v` into the cell and the origin that puts the scaled rect at the cell's alignment point. */
-export function cellFit(v, o, def, scale = 1) {
-  const k = Math.min(def.w / Math.max(1e-6, v.w), def.h / Math.max(1e-6, v.h)) * (scale > 0 ? scale : 1);
-  const [ax, ay] = _CELL_ALIGN[def.align] || _CELL_ALIGN.c;
-  const tx = def.x + (def.w - v.w * k) * ax, ty = def.y + (def.h - v.h * k) * ay;   // the visible rect's new top-left
-  return { k, x: tx - (v.x - o.x) * k, y: ty - (v.y - o.y) * k };
-}
+// V0.3.6.12 — the fit maths lives in cell-fit.js, shared with the importers (pdf2sbs, Steps from Excel write a
+// picture's first geometry exactly as the app refits it on load).
+import { CELL_ALIGN as _CELL_ALIGN, CELL_ALIGN_LABELS, isCellDef as _isCellDef, cellFit } from './cell-fit.js';
+export { CELL_ALIGN_LABELS, cellFit };
 /** The rect a cell fits: the private mask's window (it travels with the picture), else the bounding box.
  *  A SHARED mask is a window fixed on the canvas — it cannot come along — so the whole picture is fitted
  *  and the window stays where it is. */
