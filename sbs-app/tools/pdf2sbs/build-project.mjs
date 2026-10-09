@@ -19,10 +19,10 @@
  * can be restyled for every step at once in the app; nothing overlaps — the picture area is what
  * is left after the title (measured) and the notes (measured) have taken their rows.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve, basename, extname } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 globalThis.window = globalThis.window || {};
 globalThis.localStorage = globalThis.localStorage || { getItem: () => null, setItem: () => {} };
@@ -31,10 +31,10 @@ const SI = await import('file:///' + APP.replace(/\\/g, '/') + '/src/systems/she
 const SC = await import('file:///' + APP.replace(/\\/g, '/') + '/src/core/schema.js');
 const ST = await import('file:///' + APP.replace(/\\/g, '/') + '/src/systems/style-templates.js');
 
-const args = process.argv.slice(2);
-if (args.length < 2) { console.error('usage: build-project.mjs <steps.json> <out.sbsproj> [--name N]'); process.exit(2); }
-const [IN, OUT] = args;
-const NAME = (args.indexOf('--name') >= 0 ? args[args.indexOf('--name') + 1] : null) || basename(OUT, extname(OUT));
+/** steps.json → .sbsproj (+ .layout.json, .preview.html). Returns a summary. */
+export async function buildProject({ stepsPath, out, name = null }) {
+const IN = stepsPath, OUT = out;
+const NAME = name || basename(OUT, extname(OUT));
 const data = JSON.parse(readFileSync(IN, 'utf8'));
 
 // ── frame + text metrics ─────────────────────────────────────────────────────
@@ -237,6 +237,18 @@ const html = `<!doctype html><meta charset="utf-8"><title>${esc(NAME)} — pdf2s
 <script>const P=new URLSearchParams(location.search),q=P.get('t'),st=P.get('step'),z=P.get('z');if(q){const keep=new Set(q.split(','));document.querySelectorAll('.card').forEach(c=>{if(!keep.has(c.dataset.t))c.remove();});}
 if(st){const keep=new Set(st.split(',').map(Number));document.querySelectorAll('.card').forEach((c,i)=>{if(!keep.has(Number(c.dataset.n)))c.remove();});}if(z)document.body.style.zoom=z;</script>`;
 writeFileSync(OUT.replace(/\.sbsproj$/i, '') + '.preview.html', html);
-console.log(`wrote ${OUT} (${(json.length / 1e6).toFixed(1)} MB json → ${(gzipSync(Buffer.from(json)).length / 1e6).toFixed(1)} MB gz), ${steps.length} steps, ${chapters.length} chapters, ${urlCache.size} pictures`);
 const byT = {}; for (const r of report) byT[r.template] = (byT[r.template] || 0) + 1;
-console.log('templates:', JSON.stringify(byT));
+return { out: OUT, layout: OUT.replace(/\.sbsproj$/i, '') + '.layout.json', preview: OUT.replace(/\.sbsproj$/i, '') + '.preview.html',
+         steps: steps.length, chapters: chapters.length, pictures: urlCache.size, jsonMB: +(json.length / 1e6).toFixed(1), fileMB: +(statSync(OUT).size / 1e6).toFixed(1), templates: byT,
+         perStep: report.map(r => ({ n: r.n, name: r.name, template: r.template, figs: r.figs })) };
+}
+
+// ── CLI ──
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  const args = process.argv.slice(2);
+  if (args.length < 2) { console.error('usage: build-project.mjs <steps.json> <out.sbsproj> [--name N]'); process.exit(2); }
+  const name = args.indexOf('--name') >= 0 ? args[args.indexOf('--name') + 1] : null;
+  const r = await buildProject({ stepsPath: args[0], out: args[1], name });
+  console.log(`wrote ${r.out} (${r.jsonMB} MB json → ${r.fileMB} MB gz), ${r.steps} steps, ${r.chapters} chapters, ${r.pictures} pictures`);
+  console.log('templates:', JSON.stringify(r.templates));
+}
