@@ -1603,10 +1603,10 @@ function _commitCellEdit() {
   _teardownCellEdit();
   if (e.pic) {
     // this picture only: its own alignment / size on the node, one undo entry
-    const n = e.pic, o = e.orig[0] || {};
+    let n = e.pic; const o = e.orig[0] || {};
     const before = { cellAlign: o.cellAlign ?? null, cellScale: o.cellScale ?? null };
     const after  = { cellAlign: align === (e.def.align || 'c') ? null : align, cellScale: e.scale >= 0.999 ? null : e.scale };
-    const write = (v) => { if (!_isLiveNode(n)) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; } n.setAttr('cellAlign', v.cellAlign); n.setAttr('cellScale', v.cellScale); _refitIfCell(n); _scheduleSave(); };
+    const write = (v) => { n = _reviveNode(n); if (!n) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; } n.setAttr('cellAlign', v.cellAlign); n.setAttr('cellScale', v.cellScale); _refitIfCell(n); _scheduleSave(); };
     write(after);
     if (before.cellAlign !== after.cellAlign || before.cellScale !== after.cellScale) undoManager.push(`Adjust picture in cell "${e.def.name}"`, () => write(before), () => write(after));
     setStatus(after.cellAlign || after.cellScale ? `This picture: ${CELL_ALIGN_LABELS[align] || align}, ${Math.round(e.scale * 100)} % of the fit — the others keep the cell's rule.` : 'This picture follows the cell like the others again.', 'success', 4500);
@@ -1742,6 +1742,19 @@ function _isPlainImageOrVideo(node) {
 function _isLiveNode(node) {
   return !!(node && typeof node.getLayer === 'function' && node.getLayer());
 }
+/**
+ * ↶ V0.3.6.9 — the node an undo entry meant, as it exists NOW: the reference itself while it is on a layer, else the
+ * node with the same sbsId on the current layer — when that layer shows the step the entry was made on. null when
+ * the entry belongs to another step (undo it from there) or the node is gone.
+ */
+function _reviveNode(node) {
+  if (_isLiveNode(node)) return node;
+  const id = node?.getAttr?.('sbsId');
+  if (!id || !_layer) return null;
+  const step = node._sbsStep ?? null, here = _layerStepId ?? state.get('activeStepId') ?? null;
+  if (step && here && step !== here) return null;
+  return _layer.getChildren().find(n => n.getAttr?.('sbsId') === id) || null;
+}
 
 // ▣ V0.3.6.4 — the cell entries of a picture's right-click menu
 function _cellBindItems(node) {
@@ -1752,8 +1765,8 @@ function _cellBindItems(node) {
     node.setAttr('constShapeId', d.id);
     _applyConstShapeToNode(node, d);
     _layer.batchDraw(); _scheduleSave();
-    const back = () => { if (!_isLiveNode(node)) return; node.setAttr('constShapeId', prev); node.width(was.w); node.height(was.h); node.x(was.x); node.y(was.y); if (was.mask) node.setAttr('cropMask', was.mask); _layer?.batchDraw(); _scheduleSave(); };
-    const again = () => { if (!_isLiveNode(node)) return; node.setAttr('constShapeId', d.id); const live = _constShapeDefs().find(x => x.id === d.id); if (live) _applyConstShapeToNode(node, live); _layer?.batchDraw(); _scheduleSave(); };
+    const back = () => { node = _reviveNode(node); if (!node) return; node.setAttr('constShapeId', prev); node.width(was.w); node.height(was.h); node.x(was.x); node.y(was.y); if (was.mask) node.setAttr('cropMask', was.mask); _layer?.batchDraw(); _scheduleSave(); };
+    const again = () => { node = _reviveNode(node); if (!node) return; node.setAttr('constShapeId', d.id); const live = _constShapeDefs().find(x => x.id === d.id); if (live) _applyConstShapeToNode(node, live); _layer?.batchDraw(); _scheduleSave(); };
     undoManager.push(`Fit into cell "${d.name}"`, back, again);
     setStatus(`Fitted into cell "${d.name}" — move or resize the cell and every picture in it follows.`, 'success', 4500);
   };
@@ -1770,8 +1783,8 @@ function _cellBindItems(node) {
         node.setAttr('constShapeId', def.id);
         _scheduleSave();
         undoManager.push(`Create cell "${def.name}"`,
-          () => { _saveConstShapeDefs(_constShapeDefs().filter(x => x.id !== def.id)); if (_isLiveNode(node)) { node.setAttr('constShapeId', null); _scheduleSave(); } },
-          () => { if (!_constShapeDefs().some(x => x.id === def.id)) _saveConstShapeDefs([..._constShapeDefs(), def]); if (_isLiveNode(node)) { node.setAttr('constShapeId', def.id); _applyConstShapeToNode(node, def); _layer?.batchDraw(); _scheduleSave(); } });
+          () => { _saveConstShapeDefs(_constShapeDefs().filter(x => x.id !== def.id)); const n = _reviveNode(node); if (n) { n.setAttr('constShapeId', null); _scheduleSave(); } },
+          () => { if (!_constShapeDefs().some(x => x.id === def.id)) _saveConstShapeDefs([..._constShapeDefs(), def]); const n = _reviveNode(node); if (n) { n.setAttr('constShapeId', def.id); _applyConstShapeToNode(n, def); _layer?.batchDraw(); _scheduleSave(); } });
         setStatus(`Cell "${def.name}" made from this picture (${def.w} × ${def.h}) — fit other pictures into it from their right-click menu.`, 'success', 6000);
       } },
     { separator: true },
@@ -1784,7 +1797,7 @@ function _cellMenuItems(node, def) {
       ...((node.getAttr('cellAlign') || node.getAttr('cellScale')) ? [{ label: '↺ Like the others (drop its own alignment / size)',
           action: () => {
             const before = { cellAlign: node.getAttr('cellAlign') || null, cellScale: node.getAttr('cellScale') ?? null };
-            const write = (v) => { if (!_isLiveNode(node)) return; node.setAttr('cellAlign', v.cellAlign); node.setAttr('cellScale', v.cellScale); _refitIfCell(node); _scheduleSave(); };
+            const write = (v) => { node = _reviveNode(node); if (!node) return; node.setAttr('cellAlign', v.cellAlign); node.setAttr('cellScale', v.cellScale); _refitIfCell(node); _scheduleSave(); };
             write({ cellAlign: null, cellScale: null });
             undoManager.push(`Picture follows cell "${def.name}" again`, () => write(before), () => write({ cellAlign: null, cellScale: null }));
           } }] : []),
@@ -1813,7 +1826,7 @@ function _cellMenuItems(node, def) {
  *  the entry a no-op rather than a crash. */
 function _pushPinUndo(node, label, beforeId, afterId, beforePos = null) {
   const apply = (id, pos) => {
-    if (!_isLiveNode(node)) return;
+    node = _reviveNode(node); if (!node) return;                  // ↶ V0.3.6.9
     node.setAttr('constShapeId', id);
     const def = id ? _constShapeDefs().find(d => d.id === id) : null;
     if (def) _applyConstShapeToNode(node, def);
@@ -2705,7 +2718,7 @@ async function _commitSquareUp() {
     })(),
   };
   const write = (s) => {
-    if (!_isLiveNode(node)) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; }
+    node = _reviveNode(node); if (!node) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; }   // ↶ V0.3.6.9
     node.setAttr('src', s.src);
     node.setAttr('naturalW', s.naturalW); node.setAttr('naturalH', s.naturalH);
     if (s.image) node.image(s.image);
@@ -2750,7 +2763,7 @@ async function _revertToOriginalFile(node) {
   const after = { src: dataUrl, image: img, naturalW: img.width, naturalH: img.height, cropMask: null, cropMaskId: null, squaredUp: null, width: img.width * k, height: img.height * k,
     x: node.x() - (su.dx || 0), y: node.y() - (su.dy || 0) };
   const write = (s) => {
-    if (!_isLiveNode(node)) return;
+    node = _reviveNode(node); if (!node) return;                  // ↶ V0.3.6.9
     node.setAttr('src', s.src); node.setAttr('naturalW', s.naturalW); node.setAttr('naturalH', s.naturalH);
     if (s.image) node.image(s.image);
     node.setAttr('crop', undefined);
@@ -3424,8 +3437,8 @@ function _commitNudgeBatch() {
   if (!before.some((it, i) => it.x !== after[i].x || it.y !== after[i].y)) return;
   const write = (list) => {
     for (const it of list) {
-      if (!_isLiveNode(it.n)) continue;
-      it.n.x(it.x); it.n.y(it.y);
+      const n = _reviveNode(it.n); if (!n) continue;             // ↶ V0.3.6.9
+      n.x(it.x); n.y(it.y);
     }
     _transformer?.forceUpdate();
     _layer?.batchDraw();
@@ -3628,7 +3641,7 @@ export function setCropMask(node, mask, label = null) {
   const before = { m: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, id: node.getAttr('cropMaskId') || null };
   const after  = { m: mask ? { kind: 'rect', ...mask } : null, id: null };   // a private mask replaces any global binding
   const write = (v) => {
-    if (!_isLiveNode(node)) { setStatus('That image is on another step — undo it from there.', 'warn', 4000); return; }
+    node = _reviveNode(node); if (!node) { setStatus('That image is on another step — undo it from there.', 'warn', 4000); return; }   // ↶ V0.3.6.9
     node.setAttr('cropMask',  v.m);
     node.setAttr('cropMaskId', v.id);
     _installMaskDraw(node);
@@ -3648,7 +3661,7 @@ export function useCropMask(node, defId, label = null) {
   const before = { m: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null, id: node.getAttr('cropMaskId') || null };
   const after  = { m: null, id: defId || null };
   const write = (v) => {
-    if (!_isLiveNode(node)) { setStatus('That image is on another step — undo it from there.', 'warn', 4000); return; }
+    node = _reviveNode(node); if (!node) { setStatus('That image is on another step — undo it from there.', 'warn', 4000); return; }   // ↶ V0.3.6.9
     node.setAttr('cropMask',  v.m);
     node.setAttr('cropMaskId', v.id);
     _installMaskDraw(node);
@@ -3679,7 +3692,7 @@ export function promoteCropMaskToGlobal(node, name) {
   const before = { m: { ...m }, id: null };
   const apply = () => {
     if (!_cropMaskDefs().some(d => d.id === def.id)) _saveCropMaskDefs([..._cropMaskDefs(), def]);
-    if (!_isLiveNode(node)) return;
+    node = _reviveNode(node); if (!node) return;                  // ↶ V0.3.6.9
     node.setAttr('cropMask', null);
     node.setAttr('cropMaskId', def.id);
     node.getLayer()?.batchDraw();
@@ -5473,11 +5486,12 @@ function _enterTextEdit(node, ctxOverride) {
       // Skip if the node was destroyed (step change, deletion). Returning
       // false from undoManager's command tells it to drop this entry from
       // the redo path rather than spin on a dead reference.
-      if (!node || node.isDestroyed?.()) return false;
-      node.setAttr('textHtml',  snap.html);
-      node.setAttr('fillColor', snap.fillColor);
-      node.setAttr('styleId',   snap.styleId);
-      await _reflowTextBox(node);
+      const live = _reviveNode(node);                            // ↶ V0.3.6.9 — after a step round trip too
+      if (!live) return false;
+      live.setAttr('textHtml',  snap.html);
+      live.setAttr('fillColor', snap.fillColor);
+      live.setAttr('styleId',   snap.styleId);
+      await _reflowTextBox(live);
       _scheduleSave();
     },
   });
@@ -6394,8 +6408,8 @@ function _snapshotShapeAttrs(node) {
 
 function _restoreShapeAttrsMap(map) {
   if (!map) return;
-  for (const [n, attrs] of map) {
-    if (!n || typeof n.getStage !== 'function' || !n.getStage()) continue;   // node was destroyed
+  for (const [n0, attrs] of map) {
+    const n = _reviveNode(n0); if (!n) continue;                 // ↶ V0.3.6.9 — the node as it is now
     n.setAttrs(attrs);
   }
   _layer?.batchDraw();
@@ -6464,6 +6478,13 @@ function _summariseShapeAttrs(nodes) {
 }
 
 function _attachNode(node) {
+  // ↶ V0.3.6.9 — a stable id, serialised with the overlay: an undo entry made on this step finds the node AGAIN after
+  // the step was left and re-entered (the layer is rebuilt from JSON then; the entry's reference was the destroyed
+  // node and every writer silently skipped it — "the undo stack moves, the element does not"). A copy that arrives
+  // with another node's id (duplicate / paste on the same step) gets its own.
+  const sid = node.getAttr?.('sbsId');
+  if (!sid || (_layer && _layer.getChildren().some(n => n !== node && n.getAttr?.('sbsId') === sid))) node.setAttr('sbsId', `ov_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`);
+  node._sbsStep = _layerStepId ?? state.get('activeStepId') ?? null;
   _installMaskDraw(node);   // 🎭 inert until the node carries a cropMask
   // Single click selects (or toggles when held with Shift/Ctrl/Meta for
   // multi-select).
@@ -6891,6 +6912,7 @@ function _serializeNode(node) {
                       // undoing a delete resurrected it unbound too.
     'constShapeId',   // 📌 V0.3.2.143 — membership in a constant-position def
     'cellAlign', 'cellScale',   // ▣ V0.3.6.7 — this picture's own alignment / proportional size inside its cell
+    'sbsId',                    // ↶ V0.3.6.9 — the node's stable identity (undo after a step round trip)
     'linkId',         // 🔗 V0.3.2.150 — membership in a linked-shape definition
     // 🎯 V0.3.2.151 — 3D anchors. These are the AUTHORED state of an anchored
     // shape; its `points` are derived per frame and deliberately not trusted.
@@ -7029,8 +7051,9 @@ function _reconcileBondAfterRestore(nodes) {
 function _restoreNodePositions(snaps) {
   let any = false;
   let peerLayer = null;
-  for (const s of snaps) {
-    if (!s.n || s.n.isDestroyed?.()) continue;
+  for (const s0 of snaps) {
+    const n = _reviveNode(s0.n); if (!n) continue;                 // ↶ V0.3.6.9 — the node as it is now (isDestroyed never existed in this Konva)
+    const s = s0.n === n ? s0 : { ...s0, n };
     any = true;
     s.n.x(s.x);
     s.n.y(s.y);
@@ -7056,8 +7079,9 @@ function _restoreNodePositions(snaps) {
  */
 async function _restoreNodeGeom(snaps) {
   let any = false;
-  for (const s of snaps) {
-    if (!s.n || s.n.isDestroyed?.()) continue;
+  for (const s0 of snaps) {
+    const n = _reviveNode(s0.n); if (!n) continue;                 // ↶ V0.3.6.9 — the node as it is now (isDestroyed never existed in this Konva)
+    const s = s0.n === n ? s0 : { ...s0, n };
     any = true;
     s.n.x(s.x);
     s.n.y(s.y);
@@ -8521,7 +8545,7 @@ function _polySnapshot(n) {
   return { points: (n.points() || []).slice(), x: n.x(), y: n.y(), sbsHeadStart: n.getAttr('sbsHeadStart'), sbsHeadEnd: n.getAttr('sbsHeadEnd'), sbsCurve: n.getAttr('sbsCurve'), sbsFillet: n.getAttr('sbsFillet') };
 }
 function _polyRestore(n, s) {
-  if (!_isLiveNode(n)) return false;
+  n = _reviveNode(n); if (!n) return false;                       // ↶ V0.3.6.9
   n.points(s.points.slice()); n.x(s.x); n.y(s.y);
   for (const k of ['sbsHeadStart', 'sbsHeadEnd', 'sbsCurve', 'sbsFillet']) n.setAttr(k, s[k]);
   _layer.batchDraw();
@@ -9621,12 +9645,12 @@ function _snapTextBox(node) {
 async function _restoreTextBoxes(snaps) {
   let anyAlive = false;
   for (const s of snaps) {
-    if (!s.node || s.node.isDestroyed?.()) continue;
+    const n = _reviveNode(s.node); if (!n) continue;             // ↶ V0.3.6.9
     anyAlive = true;
-    s.node.setAttr('textHtml',  s.textHtml);
-    s.node.setAttr('fillColor', s.fillColor);
-    s.node.setAttr('styleId',   s.styleId);
-    await _reflowTextBox(s.node);
+    n.setAttr('textHtml',  s.textHtml);
+    n.setAttr('fillColor', s.fillColor);
+    n.setAttr('styleId',   s.styleId);
+    await _reflowTextBox(n);
   }
   _scheduleSave();
   return anyAlive ? undefined : false;
