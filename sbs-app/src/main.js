@@ -1453,22 +1453,31 @@ window.sbsGroupFix.dryRun = (scope = 'all') => {
 // ── Save-progress overlay (V0.3.1.83) — big saves serialize 1GB+ before the
 // file shrinks back to ~100MB; without feedback the app just looks frozen.
 // io/project.js emits 'save:progress' stages; this renders them.
+// V0.3.6.11 — his ask: not a strip in the top corner but a card in the MIDDLE of the interface, "something you
+// cannot ignore": a dimmed backdrop while the save runs (visual only — nothing is blocked), a large card with the
+// stage and the bar, the ✓ for a moment at the end. The backdrop goes the moment the write is done.
+const _saveBg = document.createElement('div');
+_saveBg.id = 'save-progress-backdrop';
+_saveBg.style.cssText = 'position:fixed;inset:0;z-index:2999;display:none;background:rgba(0,0,0,0.35);pointer-events:none;transition:opacity .2s';
+document.body.appendChild(_saveBg);
 const _saveOv = document.createElement('div');
 _saveOv.id = 'save-progress-overlay';
-_saveOv.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:3000;display:none;'
-  + 'background:var(--float-bg-solid);color:var(--float-text);padding:10px 16px;border-radius:10px;'
-  + 'font:13px sans-serif;box-shadow:var(--shadow-float);min-width:300px;pointer-events:none';
-_saveOv.innerHTML = '<div id="save-ov-text">Saving…</div>'
-  + '<div style="margin-top:6px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px">'
-  + '<div id="save-ov-bar" style="height:100%;width:0%;background:#3b82f6;border-radius:2px;transition:width .15s"></div></div>';
+_saveOv.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:3000;display:none;'
+  + 'background:var(--float-bg-solid);color:var(--float-text);padding:22px 30px;border-radius:16px;border:1px solid rgba(59,130,246,0.55);'
+  + 'font:17px/1.35 sans-serif;box-shadow:0 20px 60px rgba(0,0,0,0.6),0 0 0 6px rgba(59,130,246,0.12);min-width:460px;max-width:70vw;text-align:center;pointer-events:none';
+_saveOv.innerHTML = '<div id="save-ov-text" style="font-weight:600;">Saving…</div>'
+  + '<div style="margin-top:12px;height:8px;background:rgba(255,255,255,0.15);border-radius:4px;overflow:hidden">'
+  + '<div id="save-ov-bar" style="height:100%;width:0%;background:#3b82f6;border-radius:4px;transition:width .15s"></div></div>';
 document.body.appendChild(_saveOv);
 let _saveOvHideT = null;
+const _saveOvHide = () => { _saveOv.style.display = 'none'; _saveBg.style.display = 'none'; };
 state.on('save:progress', (p) => {
   const txt = _saveOv.querySelector('#save-ov-text');
   const bar = _saveOv.querySelector('#save-ov-bar');
   const mb  = (n) => (n / 1048576) >= 100 ? Math.round(n / 1048576) + ' MB' : (n / 1048576).toFixed(1) + ' MB';
   clearTimeout(_saveOvHideT);
   _saveOv.style.display = 'block';
+  _saveBg.style.display = (p.stage === 'done' || p.stage === 'cancelled' || p.stage === 'error' || p.autosave) ? 'none' : 'block';   // the dim only while a MANUAL save runs
   const what = p.autosave ? '🛟 Auto-backup' : '💾 Saving';
   if (p.stage === 'serialize')      { txt.textContent = `${what} — gathering project data…`; bar.style.width = '4%'; }
   else if (p.stage === 'compress')  { const f = p.total ? p.done / p.total : 0;
@@ -1478,10 +1487,10 @@ state.on('save:progress', (p) => {
     bar.style.width = (4 + f * 84) + '%'; }
   else if (p.stage === 'write')     { txt.textContent = `${what} — writing ${mb(p.bytes)} to disk…`; bar.style.width = '92%'; }
   else if (p.stage === 'done')      { txt.textContent = `✓ ${p.autosave ? 'Backed up' : 'Saved'} ${mb(p.bytes)} (${mb(p.rawBytes)} uncompressed) in ${(p.ms / 1000).toFixed(1)}s`;
-    bar.style.width = '100%'; _saveOvHideT = setTimeout(() => { _saveOv.style.display = 'none'; }, 2600); }
-  else if (p.stage === 'cancelled') { _saveOv.style.display = 'none'; }
+    bar.style.width = '100%'; _saveOvHideT = setTimeout(_saveOvHide, 2600); }
+  else if (p.stage === 'cancelled') { _saveOvHide(); }
   else if (p.stage === 'error')     { txt.textContent = `⚠ Save failed: ${p.message || 'unknown error'}`;
-    bar.style.width = '100%'; _saveOvHideT = setTimeout(() => { _saveOv.style.display = 'none'; }, 6000); }
+    bar.style.width = '100%'; _saveOvHideT = setTimeout(_saveOvHide, 6000); }
 });
 
 // ── Auto-backup (V0.3.2.18) ──────────────────────────────────────────────────
