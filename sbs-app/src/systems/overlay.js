@@ -5420,7 +5420,7 @@ function _enterTextEdit(node, ctxOverride) {
   // [data-sbs-text-toolbar] so toolbar clicks won't dismiss the editor.
   const toolbarHost = getTextToolbarSlot();
   if (toolbarHost) {
-    mountTextToolbar(toolbarHost, _singleEditorApplier, div);
+    mountTextToolbar(toolbarHost, _singleEditorApplier, div, { onAlignScope: _onAlignScope });   // ⇶ V0.3.6.10
     // Style dropdown — only mount when the controller actually supports
     // style-template binding for this context. Headers don't (yet — P4),
     // so we pass null to remove the dropdown rather than show a no-op
@@ -9213,7 +9213,7 @@ function _refreshMultiToolbar() {
   unmountShapeToolbar();
 
   if (textBoxes.length >= 1) {
-    mountTextToolbar(host, _multiTextApplier);
+    mountTextToolbar(host, _multiTextApplier, null, { onAlignScope: _onAlignScope });   // ⇶ V0.3.6.10
     setToolbarValues(_summariseStyleAcrossBoxes(textBoxes));
     // Style dropdown — multi-mode assignment writes the same styleId
     // to every selected text box. Show "(no style)" when the selection
@@ -9624,6 +9624,92 @@ function _multiTextApplier(action, value) {
     );
   }
   _scheduleSave();
+}
+
+// ─── ⇶ Alignment for a whole style + pinned position, across steps (V0.3.6.10) ─────────
+// His ask: a style does not carry alignment (each box has its own); with the tick on, an alignment click goes to
+// every text box that is bound to the SAME style AND the SAME pinned position, on the steps he chooses. Data-level,
+// like the overlay copy / paste across steps: the steps' overlay STRINGS are rewritten (the live step's edits are
+// flushed first), then the live stage is rebuilt from them. One undo entry.
+function _alignKeyOf(node) {
+  if (!node) return null;
+  const styleId = node.getAttr?.('styleId') || null, constId = node.getAttr?.('constId') || null;
+  return (styleId || constId) ? { styleId, constId } : null;
+}
+/** The toolbar's tick is on and an alignment was clicked: ask for the steps, then do it. */
+function _onAlignScope(align, anchorEl) {
+  const node = _activeTextEditor?.node || (_transformer?.nodes() || []).find(n => n.getAttr?.('textHtml')) || null;
+  const key = _alignKeyOf(node);
+  if (!key) { setStatus('⇶ This box has no text style and no pinned position — nothing to carry the alignment to.', 'warn', 5000); return; }
+  const styleName = key.styleId ? (listStyleTemplates().find(t => t.id === key.styleId)?.name || 'style') : null;
+  const constName = key.constId ? (_constDefs().find(d => d.id === key.constId)?.name || 'position') : null;
+  const what = [styleName && `style "${styleName}"`, constName && `position "${constName}"`].filter(Boolean).join(' + ');
+  const sel = state.get('selectedStepIds');
+  const nSel = sel instanceof Set ? sel.size : 0;
+  const go = (scope) => () => applyTextAlignAcrossSteps(align, { ...key, scope });
+  const items = [
+    { label: `⇶ Align ${align}: every box of ${what}…`, disabled: true },
+    { separator: true },
+    { label: '⦿ Only this step', action: go('only') },
+    ...(nSel > 1 ? [{ label: `☑ The ${nSel} selected steps`, action: go('selected') }] : []),
+    { label: '▶ This step and all following', action: go('following') },
+    { label: '◀ This step and all previous', action: go('previous') },
+    { label: '🌐 All steps', action: go('all') },
+  ];
+  const r = anchorEl?.getBoundingClientRect?.();
+  showContextMenu(items, r ? r.left : 200, r ? r.bottom + 4 : 200);
+}
+/**
+ * Align every text box bound to `styleId` (and / or `constId`) on the chosen steps.
+ * scope: 'only' | 'selected' | 'following' | 'previous' | 'all'. Returns the number of boxes changed.
+ */
+export function applyTextAlignAcrossSteps(align, { styleId = null, constId = null, scope = 'only' } = {}) {
+  if (!styleId && !constId) return 0;
+  const action = align === 'center' ? 'alignCenter' : align === 'right' ? 'alignRight' : 'alignLeft';
+  try { if (_activeTextEditor) _exitTextEdit(); } catch { /* the editor closes on its own */ }
+  const activeId = state.get('activeStepId');
+  _writeOverlayToStep(activeId);                                   // this step's live edits first
+  const steps = (state.get('steps') || []).filter(s => s && !s.isBaseStep);
+  const idx = steps.findIndex(s => s.id === activeId);
+  const sel = state.get('selectedStepIds');
+  let targets;
+  if (scope === 'selected')       targets = steps.filter(s => sel instanceof Set && sel.has(s.id));
+  else if (scope === 'following') targets = idx >= 0 ? steps.slice(idx) : [];
+  else if (scope === 'previous')  targets = idx >= 0 ? steps.slice(0, idx + 1) : [];
+  else if (scope === 'all')       targets = steps;
+  else                            targets = idx >= 0 ? [steps[idx]] : [];
+  const before = new Map(), after = new Map();
+  let boxes = 0;
+  for (const st of targets) {
+    if (typeof st.overlay !== 'string' || !st.overlay) continue;
+    let spec; try { spec = JSON.parse(st.overlay); } catch { continue; }
+    let touched = 0;
+    for (const layer of spec.children || []) for (const n of layer?.children || []) {
+      const a = n?.attrs;
+      if (!a || a.name !== 'userTextBox' || typeof a.textHtml !== 'string') continue;
+      if (styleId && a.styleId !== styleId) continue;
+      if (constId && a.constId !== constId) continue;
+      const root = document.createElement('div');
+      root.innerHTML = a.textHtml;
+      try { textEngine.apply(root, null, action); } catch { continue; }
+      if (root.innerHTML !== a.textHtml) { a.textHtml = root.innerHTML; touched++; }
+    }
+    if (!touched) continue;
+    before.set(st.id, st.overlay); after.set(st.id, JSON.stringify(spec)); boxes += touched;
+  }
+  if (!before.size) { setStatus('⇶ Every box of that style at that position is already aligned so, on those steps.', 'info', 4000); return 0; }
+  const write = (map) => {
+    const all = state.get('steps') || [];
+    for (const [id, json] of map) { const st = all.find(s => s.id === id); if (st) { st.overlay = json; st.altered = true; } }
+    state.setState({ steps: [...all] });
+    state.markDirty();
+    _markOverlayStringsAuthoritative();                            // the live stage follows the strings
+  };
+  write(after);
+  const label = `Align ${align}: ${boxes} box${boxes === 1 ? '' : 'es'} on ${before.size} step${before.size === 1 ? '' : 's'}`;
+  undoManager.push(label, () => write(before), () => write(after));
+  setStatus(`⇶ ${label}.`, 'success', 4000);
+  return boxes;
 }
 
 /** Snapshot a single textbox node's user-visible styling state. */

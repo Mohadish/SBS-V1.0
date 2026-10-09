@@ -60,6 +60,8 @@ let _styleSeparators = [];    // visual separators between locked + always-on co
  *   in single-editor mode (null in multi-mode); used only to refocus
  *   before each apply so execCommand sees the editable as active.
  */
+let _alignScopeOn = false;   // ⇶ the tick beside the alignment buttons (session-wide)
+let _alignTick = null;
 export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
   if (_toolbar) unmountTextToolbar();
   _toolbar = host;
@@ -94,12 +96,29 @@ export function mountTextToolbar(host, applier, editorEl = null, opts = {}) {
   _alphaInput = alphaCtl.querySelector('input[type=range]');
 
   if (showAlignment) {
+    // ⇶ V0.3.6.10 — his ask: a tick beside the alignment, off by default; on = the alignment goes to EVERY text
+    // box of this style at this pinned position (the overlay asks for the steps: this one / selected / following /
+    // previous / all). The tick is remembered while the app runs.
+    const scoped = (action) => { _apply(action); if (_alignScopeOn && typeof opts.onAlignScope === 'function') opts.onAlignScope(action.slice(5).toLowerCase(), _alignTick); };
     _toolbar.append(
-      _btn('⫷', 'Align left',   () => _apply('alignLeft')),
-      _btn('⫿', 'Align center', () => _apply('alignCenter')),
-      _btn('⫸', 'Align right',  () => _apply('alignRight')),
-      _sep(),
+      _btn('⫷', 'Align left',   () => scoped('alignLeft')),
+      _btn('⫿', 'Align center', () => scoped('alignCenter')),
+      _btn('⫸', 'Align right',  () => scoped('alignRight')),
     );
+    if (typeof opts.onAlignScope === 'function') {
+      _alignTick = document.createElement('label');
+      _alignTick.title = 'Also align every text box of this STYLE at this PINNED POSITION — you choose the steps (this one, selected, following, previous, all)';
+      _alignTick.style.cssText = 'display:flex;align-items:center;gap:3px;height:28px;padding:0 4px;color:var(--float-text);font-size:12px;cursor:pointer;user-select:none;';
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = _alignScopeOn; cb.style.cssText = 'margin:0;cursor:pointer;';
+      cb.addEventListener('mousedown', e => e.preventDefault());
+      cb.addEventListener('click', e => { e.stopPropagation(); });
+      cb.addEventListener('change', () => { _alignScopeOn = cb.checked; _alignTick.style.color = cb.checked ? '#fbbf24' : 'var(--float-text)'; });
+      _alignTick.addEventListener('mousedown', e => e.preventDefault());
+      _alignTick.append(cb, document.createTextNode('⇶'));
+      _alignTick.style.color = _alignScopeOn ? '#fbbf24' : 'var(--float-text)';
+      _toolbar.append(_alignTick);
+    }
+    _toolbar.append(_sep());
   }
   // Style-locked group — these controls are hidden when a styleId is
   // active so the user only has alignment to vary.
@@ -321,6 +340,7 @@ export function setToolbarValues({ fontSize, fontName, color, fillColor, fillAlp
 export function unmountTextToolbar() {
   closeTextEffectsPopover();
   _fxBtn = null;
+  _alignTick = null;
   if (_toolbar) {
     _toolbar.innerHTML = '';
     _toolbar.style.display = 'none';
