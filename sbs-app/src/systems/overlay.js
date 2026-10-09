@@ -366,6 +366,7 @@ function _rescaleOnCanonicalChange() {
   // resolution change mid-edit would leave it pointing at the old frame
   // while its geometry is read against the new one.
   if (_maskEdit) _cancelMaskEdit();
+  if (_cellEdit) _cancelCellEdit();     // ▣ V0.3.6.5 — same: its frame lives on the UI layer
   if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.1 — the four corner dots live on the UI layer too
   const c = getCanonicalSize();
   if (!_prevCanonical || !_layer) {
@@ -555,6 +556,7 @@ export function setEditingMode(on) {
   if (_tableEditor) _exitTableEdit();  // ▦ same story: its HTML is not a Konva node
   _maskFollow = null; _maskFollowDone();    // 🎭 no gesture survives a mode flip, nor its hint
   if (_maskEdit) _cancelMaskEdit();   // 🎭 its handle lives on the UI layer; never leave it up
+  if (_cellEdit) _cancelCellEdit();   // ▣ V0.3.6.5
   if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.8 — the four corner dots live on the UI layer too (this site was missed in .1)
   clearStickyStatus('overlayKeys');     // ⌨ the keys line belongs to overlay editing
   if (_angleEntry) _endAngleEntry(false);   // ⌨ never leave the keyboard captured
@@ -1181,7 +1183,7 @@ function _pinBubbleRender() {
   ui.bubble.querySelectorAll('[data-pin]').forEach(b => b.addEventListener('click', (e) => {
     e.stopPropagation();
     const k = b.dataset.pin;
-    if (k === 'arm') _pinArm();
+    if (k === 'arm') { if (_isCellDef(ui.def)) { const d = ui.def; _pinTeardown(); beginCellEdit(d); } else _pinArm(); }   // ▣ a cell is edited as its frame
     else if (k === 'commit') _pinCommit();
     else if (k === 'cancel') _cancelPinReposition('user');
     else _pinTeardown();
@@ -1218,6 +1220,7 @@ function _pinOpen(node, mode) {
     _pinUI = { node, def, mode: 'idle', stepId: state.get('activeStepId'), bubble, onKey };
   }
   _pinUI.def = def;
+  if (mode === 'armed' && _isCellDef(def)) { _pinTeardown(); beginCellEdit(def); return; }   // ▣
   if (mode === 'armed') _pinArm(); else { _pinUI.mode = 'idle'; _pinBubbleRender(); }
 }
 
@@ -1334,6 +1337,153 @@ function _refitIfCell(node) {
 }
 /** Public: the cells (pinned positions with a size), for the importers. */
 export function listCellDefs() { return _constShapeDefs().filter(_isCellDef).map(d => ({ ...d })); }
+
+// ─── ▣ Cell editor (V0.3.6.5) ─────────────────────────────────────────────────
+// His correction after .4: a cell is edited as ITS OWN dashed frame — drag it, pull its handles (wider but not
+// taller is a normal wish), click one of nine spots on the frame to set the alignment — never by dragging a
+// picture. Every picture in the cell on this step follows LIVE; Apply writes the definition (every step
+// follows, one undo entry); Cancel puts the pictures back where they were.
+let _cellEdit = null;   // { def, rect, tr, bar, onKey, place, spots, align, orig, nodes }
+function _cellEditRect() {
+  const r = _cellEdit?.rect; if (!r) return null;
+  return { x: r.x(), y: r.y(), w: Math.abs(r.width() * r.scaleX()), h: Math.abs(r.height() * r.scaleY()) };
+}
+function _cellEditPreview() {
+  const e = _cellEdit; if (!e) return;
+  const g = _cellEditRect(); if (!g || !(g.w > 0 && g.h > 0)) return;
+  const tmp = { ...e.def, x: g.x, y: g.y, w: g.w, h: g.h, align: e.align };
+  for (const n of e.nodes) if (_isLiveNode(n)) _fitNodeToCell(n, tmp);
+  _layer?.batchDraw();
+}
+/** Nine spots just outside the frame (clear of the resize handles) + the centre; the lit one is the alignment. */
+function _cellSpots(rect, onPick) {
+  const spots = Object.keys(_CELL_ALIGN).map(k => {
+    const g = new Konva.Group({ name: 'sbs-cell-spot' });
+    g.add(new Konva.Circle({ radius: 10, fill: '#0f172a', stroke: '#ef4444', strokeWidth: 1.5, name: 'ring' }));
+    g.add(new Konva.Circle({ radius: 3.5, fill: '#ef4444', name: 'dot' }));
+    g.setAttr('alignKey', k);
+    const pick = (ev) => { ev.cancelBubble = true; ev.evt?.stopPropagation?.(); ev.evt?.preventDefault?.(); onPick(k); };
+    g.on('mousedown touchstart', pick);
+    g.on('mouseenter', () => { if (_container) _container.style.cursor = 'pointer'; });
+    g.on('mouseleave', () => { if (_container) _container.style.cursor = ''; });
+    return g;
+  });
+  const place = (align) => {
+    const s = _stage?.scaleX() || 1, off = 22 / s;
+    const w = Math.abs(rect.width() * rect.scaleX()), h = Math.abs(rect.height() * rect.scaleY());
+    for (const g of spots) {
+      const k = g.getAttr('alignKey'), [ax, ay] = _CELL_ALIGN[k];
+      g.position({ x: rect.x() + w * ax + (ax - 0.5) * 2 * off, y: rect.y() + h * ay + (ay - 0.5) * 2 * off });
+      g.scale({ x: 1 / s, y: 1 / s });
+      const lit = k === align;
+      g.findOne('.dot').setAttrs({ fill: lit ? '#fbbf24' : '#ef4444', radius: lit ? 6 : 3.5 });
+      g.findOne('.ring').setAttrs({ stroke: lit ? '#fbbf24' : '#ef4444', strokeWidth: lit ? 2.5 : 1.5 });
+      g.moveToTop();
+    }
+  };
+  return { spots, place, destroy: () => { for (const g of spots) { try { g.destroy(); } catch { /* gone */ } } } };
+}
+/** Open the cell editor on `def` (a cell). The pictures in it on this step preview the change live. */
+export function beginCellEdit(def) {
+  if (!_isCellDef(def) || !_uiLayer || !_layer) return false;
+  if (_cellEdit) _cancelCellEdit();
+  if (_maskEdit) _cancelMaskEdit();
+  if (_squareEdit) _cancelSquareUp();
+  _cancelBand();
+  if (_pinUI) _pinTeardown();
+  const nodes = (_layer.getChildren() || []).filter(n => n.getAttr?.('constShapeId') === def.id);
+  const orig = nodes.map(n => ({ n, x: n.x(), y: n.y(), w: n.width(), h: n.height(), mask: n.getAttr('cropMask') ? { ...n.getAttr('cropMask') } : null }));
+  const rect = new Konva.Rect({
+    x: def.x, y: def.y, width: def.w, height: def.h,
+    stroke: '#ef4444', strokeWidth: 2, dash: [8, 5], fill: 'rgba(239,68,68,0.05)',
+    draggable: true, name: 'sbs-cell-handle', strokeScaleEnabled: false,
+  });
+  const tr = new Konva.Transformer({
+    rotateEnabled: false, keepRatio: false, anchorSize: 9,
+    borderStroke: '#ef4444', anchorStroke: '#ef4444', anchorFill: '#fff',
+    enabledAnchors: ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'],
+    boundBoxFunc: (oldBox, newBox) => (newBox.width < 8 || newBox.height < 8) ? oldBox : newBox,
+  });
+  _uiLayer.add(rect); _uiLayer.add(tr); tr.nodes([rect]);
+  rect.on('transformend', () => { rect.width(Math.abs(rect.width() * rect.scaleX())); rect.height(Math.abs(rect.height() * rect.scaleY())); rect.scaleX(1); rect.scaleY(1); });
+  const redraw = () => { _cellEditPreview(); _cellEdit?.spots?.place?.(_cellEdit.align); _uiLayer?.batchDraw(); _cellEdit?.place?.(); };
+  rect.on('dragmove transform transformend', redraw);
+  const spots = _cellSpots(rect, (k) => { if (!_cellEdit) return; _cellEdit.align = k; redraw(); });
+  for (const g of spots.spots) _uiLayer.add(g);
+  _setSelection(null);   // the content transformer would fight this one
+  // the bar — the mask editor's, in red, parked above the frame
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:fixed;z-index:9999;display:flex;gap:8px;align-items:center;padding:7px 10px;'
+    + 'background:var(--panel,#0f172a);border:1px solid #ef4444;border-radius:10px;'
+    + 'box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e2e8f0);font-size:12px;white-space:nowrap;';
+  const label = document.createElement('span'); label.textContent = `▣ Cell "${def.name}"`; label.style.cssText = 'font-weight:600;';
+  const apply = document.createElement('button'); apply.className = 'btn'; apply.textContent = '✓ Apply (Enter)'; apply.style.cssText = 'height:24px;padding:0 10px;background:rgba(239,68,68,0.25);font-weight:600;';
+  const cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = '✕ Cancel (Esc)'; cancel.style.cssText = 'height:24px;padding:0 10px;';
+  const hint = document.createElement('span'); hint.className = 'small muted'; hint.textContent = 'drag the frame · pull its handles · click a spot on the frame for the alignment · every step follows on Apply';
+  bar.append(label, apply, cancel, hint);
+  document.body.appendChild(bar);
+  const place = () => {
+    const cr = _container?.getBoundingClientRect(); const r = _cellEdit?.rect;
+    if (!cr || !r) return;
+    const box = r.getClientRect();
+    let cx = cr.left + box.x + box.width / 2, top = cr.top + box.y - bar.offsetHeight - 34;
+    if (top < cr.top + 4) top = cr.top + box.y + box.height + 34;
+    const w = bar.offsetWidth;
+    bar.style.left = `${Math.round(Math.min(Math.max(cr.left + 4, cx - w / 2), cr.right - w - 4))}px`;
+    bar.style.top  = `${Math.round(Math.min(Math.max(cr.top + 4, top), cr.bottom - bar.offsetHeight - 4))}px`;
+  };
+  const onKey = (e) => {
+    if (e.key !== 'Enter' && e.key !== 'Escape') return;
+    const el = document.activeElement, tag = el?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+    if (document.querySelector('dialog[open]')) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === 'Enter') _commitCellEdit(); else _cancelCellEdit();
+  };
+  apply.addEventListener('click', () => _commitCellEdit());
+  cancel.addEventListener('click', () => _cancelCellEdit());
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('resize', place);
+  _cellEdit = { def, rect, tr, bar, onKey, place, spots, align: def.align || 'c', orig, nodes };
+  redraw();
+  setStatus(`Editing cell "${def.name}" — ${nodes.length} picture${nodes.length === 1 ? '' : 's'} on this step follow as you go; Apply moves every step.`, 'info', 6000);
+  return true;
+}
+function _teardownCellEdit() {
+  const e = _cellEdit; if (!e) return;
+  _cellEdit = null;
+  try { e.spots?.destroy?.(); } catch { /* gone */ }
+  try { e.tr.destroy(); e.rect.destroy(); } catch { /* gone */ }
+  try { e.bar.remove(); } catch { /* gone */ }
+  window.removeEventListener('keydown', e.onKey, true);
+  window.removeEventListener('resize', e.place);
+  if (_container) _container.style.cursor = '';
+  _uiLayer?.batchDraw();
+}
+function _commitCellEdit() {
+  const e = _cellEdit; if (!e) return;
+  const g = _cellEditRect(), align = e.align;
+  _teardownCellEdit();
+  if (!g || !(g.w > 0 && g.h > 0)) return;
+  const live = _constShapeDefs().find(d => d.id === e.def.id);
+  if (!live) { setStatus('That cell is gone — nothing applied.', 'warn', 4000); return; }
+  _updateConstShapeDef(live, { x: Math.round(g.x), y: Math.round(g.y), w: Math.round(g.w), h: Math.round(g.h), align }, `Edit cell "${live.name}"`);
+  _refreshPinBadges();
+  setStatus(`Cell "${live.name}": ${Math.round(g.w)} × ${Math.round(g.h)} at ${Math.round(g.x)}, ${Math.round(g.y)}, aligned ${CELL_ALIGN_LABELS[align] || align} — every step follows.`, 'success', 5000);
+}
+function _cancelCellEdit() {
+  const e = _cellEdit; if (!e) return;
+  _teardownCellEdit();
+  for (const o of e.orig) {
+    if (!_isLiveNode(o.n)) continue;
+    o.n.width(o.w); o.n.height(o.h); o.n.x(o.x); o.n.y(o.y);
+    if (o.mask) o.n.setAttr('cropMask', o.mask);
+  }
+  _layer?.batchDraw();
+  setStatus('Cell editing cancelled.', 'info', 2500);
+}
+/** Public: true while the cell frame is up. */
+export function isCellEditing() { return !!_cellEdit; }
 
 /** Pin a shape to its definition. Size and styling untouched. */
 function _applyConstShapeToNode(node, def) {
@@ -1480,7 +1630,7 @@ function _cellBindItems(node) {
 }
 function _cellMenuItems(node, def) {
   return [{ label: `▣ In cell "${def.name}"`, submenu: [
-      { label: '⊹ Move / resize the cell (all steps)…', action: () => _pinOpen(node, 'armed') },
+      { label: '⊹ Edit the cell — frame, size, alignment (all steps)…', action: () => beginCellEdit(def) },
       { label: '↺ Fit again', action: () => { _fitNodeToCell(node, def); _layer.batchDraw(); _scheduleSave(); } },
       { separator: true },
       { label: 'Align in the cell', submenu: Object.entries(CELL_ALIGN_LABELS).map(([k, lab]) => ({
@@ -1921,6 +2071,7 @@ function _maskRotKnobs(rect, onChange) {
 export function beginMaskEdit(node, { defId = null, seedFromDefId = null } = {}) {
   if (!_isPlainImageOrVideo(node)) { setStatus('Masks work on plain images and video clips.', 'warn', 4000); return false; }
   if (_maskEdit) _cancelMaskEdit();
+  if (_cellEdit) _cancelCellEdit();     // ▣
   if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.1 — the four corner dots live on the UI layer too
   _cancelBand();
   const c = getCanonicalSize();
@@ -2181,6 +2332,7 @@ export function beginSquareUp(node) {
   if (!_isPlainImageOrVideo(node) || videoOverlay.isVideoNode(node)) { setStatus('Square up works on plain pictures.', 'warn', 4000); return false; }
   if (_squareEdit) _cancelSquareUp();
   if (_maskEdit) _cancelMaskEdit();
+  if (_cellEdit) _cancelCellEdit();   // ▣
   _cancelBand();
   // the starting quad: the picture's own box, inset 15 %
   const b = _shapeBox(node);
@@ -9972,6 +10124,7 @@ async function _loadFromActiveStep() {
   _exitPolyEdit();
   // 🎭 The editor's node is about to be destroyed with the rest of the layer.
   if (_maskEdit) _cancelMaskEdit();
+  if (_cellEdit) _cancelCellEdit();   // ▣ V0.3.6.5 — the pictures it previews are about to go too
   if (_squareEdit) _cancelSquareUp();   // ⌗ V0.3.5.1 — the four corner dots live on the UI layer too
   if (_angleEntry) _endAngleEntry(false);
   // 📌 A pin reposition left hanging: snap home + rewrite the LEAVING step
