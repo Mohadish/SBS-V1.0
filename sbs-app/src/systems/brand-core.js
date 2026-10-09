@@ -133,6 +133,7 @@ function _summary(secKey, d) {
   if (!d) return '';
   if (secKey === 'textStyles')  return [d.fontFamily, d.fontSize && `${d.fontSize}px`, d.color, d.fontWeight === 'bold' ? 'bold' : '', d.fontStyle === 'italic' ? 'italic' : '', d.fillColor ? `fill ${d.fillColor}` : ''].filter(Boolean).join(' · ');
   if (secKey === 'shapeStyles') return [d.fill ? `fill ${d.fill}` : 'no fill', d.stroke ? `outline ${d.stroke} ${d.strokeWidth ?? ''}` : 'no outline'].join(' · ');
+  if (secKey === 'constShapes' && d.w > 0 && d.h > 0) return `▣ ${_round(d.x ?? 0)}, ${_round(d.y ?? 0)} · ${_round(d.w)} × ${_round(d.h)} · ${d.align || 'c'}`;   // ▣ a cell (V0.3.6.4)
   if (secKey === 'constTexts' || secKey === 'constShapes') return `${d.anchor === 'tr' ? '⌝' : '⌜'} ${_round(d.x ?? 0)}, ${_round(d.y ?? 0)}`;
   if (secKey === 'cropMasks')   return `${_round((d.x ?? 0) * 100)}%, ${_round((d.y ?? 0) * 100)}% · ${_round((d.w ?? 0) * 100)}% × ${_round((d.h ?? 0) * 100)}%${d.rot ? ` · ${_round(d.rot)}°` : ''}`;
   if (secKey === 'headerItems') return [d.kind === 'image' && d.isLogo ? 'logo' : d.kind, d.text ? `"${String(d.text).slice(0, 30)}"` : '', `${_round(d.x ?? 0)}, ${_round(d.y ?? 0)}`, d.src ? 'image' : ''].filter(Boolean).join(' · ');

@@ -993,6 +993,20 @@ function _updateConstDef(def, patch, label) {
  *  at their next load. */
 function _commitPinMove(node) {
   const shapeDef = _constShapeDefOf(node);
+  if (_isCellDef(shapeDef)) {
+    // ▣ the picture was dragged / resized while armed: the cell moves by the same offset and grows by the
+    // same factor, so the picture lands exactly where the user put it and every other step follows
+    const v = _cellVisibleRect(node);
+    const r = v.w / Math.max(1e-6, v.h), ca = shapeDef.w / Math.max(1e-6, shapeDef.h);
+    const fitW = r >= ca ? shapeDef.w : shapeDef.h * r;        // the width the fit gave this shape before the gesture
+    const f = fitW > 0 ? v.w / fitW : 1;                       // 1 when it was only moved
+    const nw = Math.round(shapeDef.w * f), nh = Math.round(shapeDef.h * f);
+    const [ax, ay] = _CELL_ALIGN[shapeDef.align] || _CELL_ALIGN.c;
+    const nx = Math.round(v.x - (nw - v.w) * ax), ny = Math.round(v.y - (nh - v.h) * ay);   // the picture stays exactly where he put it
+    _updateConstShapeDef(shapeDef, { x: nx, y: ny, w: nw, h: nh }, `Move / resize cell "${shapeDef.name}"`);
+    setStatus(`Cell "${shapeDef.name}" is now ${nw} × ${nh} at ${nx}, ${ny} — every step follows.`, 'success', 4000);
+    return;
+  }
   if (shapeDef) {
     const p = _constShapeAnchorPos(node, shapeDef.anchor);
     _updateConstShapeDef(shapeDef, { x: p.x, y: p.y }, `Reposition "${shapeDef.name}"`);
@@ -1079,6 +1093,19 @@ function _refreshPinBadges() {
   }
   _placePinBadges();
 }
+// ▣ the cell's own rectangle, dashed, under the badge of a selected cell picture
+const _cellRects = new Map();   // node → Konva.Rect
+function _placeCellRects(s) {
+  for (const [n, r] of _cellRects) { const d = _pinnedDefOf(n); if (!_pinBadges.has(n) || !_isCellDef(d)) { r.destroy(); _cellRects.delete(n); } }
+  for (const [n] of _pinBadges) {
+    const d = _pinnedDefOf(n);
+    if (!_isCellDef(d)) continue;
+    let r = _cellRects.get(n);
+    if (!r) { r = new Konva.Rect({ listening: false, name: 'sbs-cell-rect', stroke: '#ef4444', dash: [8, 5], fill: 'rgba(239,68,68,0.04)' }); _uiLayer.add(r); _cellRects.set(n, r); }
+    r.setAttrs({ x: d.x, y: d.y, width: d.w, height: d.h, strokeWidth: 1.2 / s, dash: [8 / s, 5 / s] });
+    r.moveToBottom();
+  }
+}
 
 /** Every badge onto its corner, at constant SCREEN size whatever the stage scale. */
 function _placePinBadges() {
@@ -1091,6 +1118,7 @@ function _placePinBadges() {
     g.scale({ x: 1 / s, y: 1 / s });
     g.moveToTop();
   }
+  _placeCellRects(s);
   _uiLayer.batchDraw();
 }
 
@@ -1133,11 +1161,12 @@ function _pinBubbleRender() {
   if (!ui?.bubble) return;
   const name = _pinEsc(ui.def.name);
   const btn = (id, text, primary) => `<button class="btn" data-pin="${id}" style="pointer-events:auto;height:24px;padding:0 10px;${primary ? 'background:rgba(239,68,68,0.25);font-weight:600;' : ''}">${text}</button>`;
-  const free = ui.node.getAttr('constShapeId') ? '✂ Unpin' : '✂ Detach from constant';
+  const cell = _isCellDef(ui.def);
+  const free = ui.node.getAttr('constShapeId') ? (cell ? '✂ Take out of the cell' : '✂ Unpin') : '✂ Detach from constant';
   let html;
   if (ui.mode === 'idle') {
-    html = `<div style="font-weight:600;">📌 Pinned to "${name}"</div>`
-         + `<div style="display:flex;gap:6px;">${btn('arm', '⊹ Reposition (all steps)', true)}${btn('close', '✕')}</div>`
+    html = `<div style="font-weight:600;">${cell ? '▣ In cell' : '📌 Pinned to'} "${name}"</div>`
+         + `<div style="display:flex;gap:6px;">${btn('arm', cell ? '⊹ Move / resize the cell (all steps)' : '⊹ Reposition (all steps)', true)}${btn('close', '✕')}</div>`
          + `<div class="small muted">to move only this copy: right-click ▸ ${free}</div>`;
   } else if (ui.mode === 'armed') {
     html = `<div style="font-weight:600;">⊹ Repositioning "${name}"</div>`
@@ -1262,8 +1291,53 @@ function _constShapeAnchorPos(node, anchor) {
   return { x: anchor === 'tr' ? b.x + b.width : b.x, y: b.y };
 }
 
+// ─── ▣ Cells (V0.3.6.4) ───────────────────────────────────────────────────────
+// A pinned position that also has a SIZE (w, h) and an alignment is a CELL: a picture bound to it is fitted
+// WHOLE into that rectangle — scaled by whichever side limits, proportions kept — and its visible rect (the
+// crop window when it wears a private mask, else its bounding box) is aligned to the cell's anchor point.
+// Move or resize the cell and every picture in it, on every step, refits. His design ("fit to window"): the
+// pin forced text's needs onto pictures; a cell is the picture's own idea. Same list, same binding
+// (constShapeId), same bubble, same brand section — a cell is a pin that learned its size.
+const _CELL_ALIGN = { tl: [0, 0], t: [0.5, 0], tr: [1, 0], l: [0, 0.5], c: [0.5, 0.5], r: [1, 0.5], bl: [0, 1], b: [0.5, 1], br: [1, 1] };
+export const CELL_ALIGN_LABELS = { tl: '⌜ top-left', t: '⌃ top', tr: '⌝ top-right', l: '⟨ left', c: '⊙ centre', r: '⟩ right', bl: '⌞ bottom-left', b: '⌄ bottom', br: '⌟ bottom-right' };
+function _isCellDef(def) { return !!(def && Number(def.w) > 0 && Number(def.h) > 0); }
+/** Pure (tests): a node whose visible rect is `v` and origin `o` (canvas px) → { k, x, y }: the uniform scale
+ *  that fits `v` into the cell and the origin that puts the scaled rect at the cell's alignment point. */
+export function cellFit(v, o, def) {
+  const k = Math.min(def.w / Math.max(1e-6, v.w), def.h / Math.max(1e-6, v.h));
+  const [ax, ay] = _CELL_ALIGN[def.align] || _CELL_ALIGN.c;
+  const tx = def.x + (def.w - v.w * k) * ax, ty = def.y + (def.h - v.h * k) * ay;   // the visible rect's new top-left
+  return { k, x: tx - (v.x - o.x) * k, y: ty - (v.y - o.y) * k };
+}
+/** The rect a cell fits: the private mask's window (it travels with the picture), else the bounding box.
+ *  A SHARED mask is a window fixed on the canvas — it cannot come along — so the whole picture is fitted
+ *  and the window stays where it is. */
+function _cellVisibleRect(node) {
+  if (node.getAttr?.('cropMaskId')) { const b = _shapeBox(node); return { x: b.x, y: b.y, w: b.width, h: b.height }; }
+  return _pinVisibleRect(node);
+}
+function _fitNodeToCell(node, def) {
+  const v = _cellVisibleRect(node);
+  if (!(v.w > 0 && v.h > 0)) return;
+  const f = cellFit(v, { x: node.x(), y: node.y() }, def);
+  const starts = _maskFollowSnap([node]);                     // the private mask comes along: uniform scale + move
+  if (Math.abs(f.k - 1) > 1e-6) { node.width(node.width() * f.k); node.height(node.height() * f.k); }
+  node.x(f.x); node.y(f.y);
+  _followMasks(starts, false);
+}
+/** After anything that changes what a picture shows (a mask set / removed / edited): back into its cell. */
+function _refitIfCell(node) {
+  const d = _constShapeDefOf(node);
+  if (!_isCellDef(d) || !_isLiveNode(node)) return;
+  _fitNodeToCell(node, d);
+  node.getLayer()?.batchDraw();
+}
+/** Public: the cells (pinned positions with a size), for the importers. */
+export function listCellDefs() { return _constShapeDefs().filter(_isCellDef).map(d => ({ ...d })); }
+
 /** Pin a shape to its definition. Size and styling untouched. */
 function _applyConstShapeToNode(node, def) {
+  if (_isCellDef(def)) return _fitNodeToCell(node, def);      // ▣ V0.3.6.4
   const b = _shapeBox(node);
   // Offset between the node's own origin and its bbox top-left — zero for
   // a Rect, half the diameter for a Circle. Shifting by it is what makes
@@ -1289,7 +1363,7 @@ function _applyConstShapeToStep(def) {
  * rather than riding along with whatever the user did last.
  */
 function _updateConstShapeDef(def, patch, label) {
-  const before = { x: def.x, y: def.y, anchor: def.anchor };
+  const before = { x: def.x, y: def.y, anchor: def.anchor, w: def.w, h: def.h, align: def.align };
   const after  = { ...before, ...patch };
   const write  = (vals) => {
     const live = _constShapeDefs().find(d => d.id === def.id);
@@ -1368,6 +1442,60 @@ function _isPlainImageOrVideo(node) {
  */
 function _isLiveNode(node) {
   return !!(node && typeof node.getLayer === 'function' && node.getLayer());
+}
+
+// ▣ V0.3.6.4 — the cell entries of a picture's right-click menu
+function _cellBindItems(node) {
+  const cells = _constShapeDefs().filter(_isCellDef);
+  const bindTo = (d) => {
+    const prev = node.getAttr('constShapeId') || null;
+    const was  = { x: node.x(), y: node.y(), w: node.width(), h: node.height(), mask: node.getAttr('cropMask') ? { ...node.getAttr('cropMask') } : null };
+    node.setAttr('constShapeId', d.id);
+    _applyConstShapeToNode(node, d);
+    _layer.batchDraw(); _scheduleSave();
+    const back = () => { if (!_isLiveNode(node)) return; node.setAttr('constShapeId', prev); node.width(was.w); node.height(was.h); node.x(was.x); node.y(was.y); if (was.mask) node.setAttr('cropMask', was.mask); _layer?.batchDraw(); _scheduleSave(); };
+    const again = () => { if (!_isLiveNode(node)) return; node.setAttr('constShapeId', d.id); const live = _constShapeDefs().find(x => x.id === d.id); if (live) _applyConstShapeToNode(node, live); _layer?.batchDraw(); _scheduleSave(); };
+    undoManager.push(`Fit into cell "${d.name}"`, back, again);
+    setStatus(`Fitted into cell "${d.name}" — move or resize the cell and every picture in it follows.`, 'success', 4500);
+  };
+  return [
+    ...(cells.length ? [{ label: '▣ Fit into cell', submenu: cells.map(d => ({ label: `▣ ${d.name}  (${Math.round(d.w)} × ${Math.round(d.h)})`, action: () => bindTo(d) })) }] : []),
+    { label: '▣ Make cell from this picture…',
+      action: async () => {
+        const name = await promptString('Name this cell', `Cell ${_constShapeDefs().filter(_isCellDef).length + 1}`);
+        if (!name) return;
+        const v = _cellVisibleRect(node);
+        const def = { id: `csp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, name: name.trim(), anchor: 'tl',
+                      x: Math.round(v.x), y: Math.round(v.y), w: Math.round(v.w), h: Math.round(v.h), align: 'c' };
+        _saveConstShapeDefs([..._constShapeDefs(), def]);
+        node.setAttr('constShapeId', def.id);
+        _scheduleSave();
+        undoManager.push(`Create cell "${def.name}"`,
+          () => { _saveConstShapeDefs(_constShapeDefs().filter(x => x.id !== def.id)); if (_isLiveNode(node)) { node.setAttr('constShapeId', null); _scheduleSave(); } },
+          () => { if (!_constShapeDefs().some(x => x.id === def.id)) _saveConstShapeDefs([..._constShapeDefs(), def]); if (_isLiveNode(node)) { node.setAttr('constShapeId', def.id); _applyConstShapeToNode(node, def); _layer?.batchDraw(); _scheduleSave(); } });
+        setStatus(`Cell "${def.name}" made from this picture (${def.w} × ${def.h}) — fit other pictures into it from their right-click menu.`, 'success', 6000);
+      } },
+    { separator: true },
+  ];
+}
+function _cellMenuItems(node, def) {
+  return [{ label: `▣ In cell "${def.name}"`, submenu: [
+      { label: '⊹ Move / resize the cell (all steps)…', action: () => _pinOpen(node, 'armed') },
+      { label: '↺ Fit again', action: () => { _fitNodeToCell(node, def); _layer.batchDraw(); _scheduleSave(); } },
+      { separator: true },
+      { label: 'Align in the cell', submenu: Object.entries(CELL_ALIGN_LABELS).map(([k, lab]) => ({
+          label: `${(def.align || 'c') === k ? '✓ ' : ''}${lab}`,
+          action: () => _updateConstShapeDef(def, { align: k }, `Align cell "${def.name}" ${lab}`) })) },
+      { separator: true },
+      { label: '✂ Take out of the cell (this item only)',
+        action: () => {
+          const prev = node.getAttr('constShapeId');
+          node.setAttr('constShapeId', null); _scheduleSave();
+          _pushPinUndo(node, `Take out of cell "${def.name}"`, prev, null);
+          setStatus('Out of the cell — now a free picture.', 'info', 3000);
+        } },
+    ] },
+    { separator: true }];
 }
 
 /** Pin / unpin one node with undo. A wrong pin snaps the node across the
@@ -3195,6 +3323,7 @@ export function setCropMask(node, mask, label = null) {
     node.setAttr('cropMask',  v.m);
     node.setAttr('cropMaskId', v.id);
     _installMaskDraw(node);
+    _refitIfCell(node);                                        // ▣ the new window is the picture's new shape
     node.getLayer()?.batchDraw();
     _scheduleSave();
   };
@@ -3214,6 +3343,7 @@ export function useCropMask(node, defId, label = null) {
     node.setAttr('cropMask',  v.m);
     node.setAttr('cropMaskId', v.id);
     _installMaskDraw(node);
+    _refitIfCell(node);                                        // ▣
     node.getLayer()?.batchDraw();
     _scheduleSave();
   };
@@ -6292,6 +6422,8 @@ function _attachNode(node) {
     // Zoom: resize is a viewport — re-crop at constant density (never stretch).
     // Then release the pin so non-resize recomputes keep the source origin.
     if (node.getAttr('isZoom')) { _recomputeZoomCrop(node); node._zoomAnchor = null; }
+    // ▣ V0.3.6.4 — a picture in a cell keeps the cell's fit: a free resize snaps back (arm the bubble to resize the cell)
+    { const cd = _constShapeDefOf(node); if (_isCellDef(cd) && !_pinRepositionActive(node)) { _fitNodeToCell(node, cd); setStatus(`Fitted back into cell "${cd.name}" — to change its size, right-click ▸ ⊹ Move / resize the cell.`, 'info', 4000); } }
     const editing = _activeTextEditor && _activeTextEditor.node === node;
     if (editing) {
       // In edit mode the editor IS the source of truth — sync its width
@@ -7700,7 +7832,7 @@ function _showOverlayContextMenu(node, x, y) {
   // state (an interface bond, say) changed what the predicate says.
   const isShape       = node.name?.() === 'userShape' || _isPlainImageOrVideo(node) || !!node.getAttr('constShapeId');
   const constShapeDef = isShape ? _constShapeDefOf(node) : null;
-  const constShapeItems = !isShape ? [] : (constShapeDef
+  const constShapeItems = !isShape ? [] : (_isCellDef(constShapeDef) ? _cellMenuItems(node, constShapeDef) : constShapeDef
     ? [{ label: `📌 Pinned "${constShapeDef.name}"`, submenu: [
           { label: '⊹ Set as new position (all steps)…',
             action: () => _pinOpen(node, 'armed') },
@@ -7745,9 +7877,11 @@ function _showOverlayContextMenu(node, x, y) {
            } },
          { separator: true }]
       : [
-         ...(_constShapeDefs().length ? [{
+         // ▣ V0.3.6.4 — cells first: a picture's natural home
+         ...(_isPlainImageOrVideo(node) ? _cellBindItems(node) : []),
+         ...(_constShapeDefs().some(d => !_isCellDef(d)) ? [{
            label: '📌 Pin to position',
-           submenu: _constShapeDefs().map(d => ({
+           submenu: _constShapeDefs().filter(d => !_isCellDef(d)).map(d => ({
              label: `📌 ${d.name}`,
              action: () => {
                const prev = node.getAttr('constShapeId') || null;
