@@ -1306,8 +1306,8 @@ export const CELL_ALIGN_LABELS = { tl: '⌜ top-left', t: '⌃ top', tr: '⌝ to
 function _isCellDef(def) { return !!(def && Number(def.w) > 0 && Number(def.h) > 0); }
 /** Pure (tests): a node whose visible rect is `v` and origin `o` (canvas px) → { k, x, y }: the uniform scale
  *  that fits `v` into the cell and the origin that puts the scaled rect at the cell's alignment point. */
-export function cellFit(v, o, def) {
-  const k = Math.min(def.w / Math.max(1e-6, v.w), def.h / Math.max(1e-6, v.h));
+export function cellFit(v, o, def, scale = 1) {
+  const k = Math.min(def.w / Math.max(1e-6, v.w), def.h / Math.max(1e-6, v.h)) * (scale > 0 ? scale : 1);
   const [ax, ay] = _CELL_ALIGN[def.align] || _CELL_ALIGN.c;
   const tx = def.x + (def.w - v.w * k) * ax, ty = def.y + (def.h - v.h * k) * ay;   // the visible rect's new top-left
   return { k, x: tx - (v.x - o.x) * k, y: ty - (v.y - o.y) * k };
@@ -1319,10 +1319,14 @@ function _cellVisibleRect(node) {
   if (node.getAttr?.('cropMaskId')) { const b = _shapeBox(node); return { x: b.x, y: b.y, w: b.width, h: b.height }; }
   return _pinVisibleRect(node);
 }
+// V0.3.6.7 — a picture may have its OWN alignment and a proportional size inside the cell (his ask: "a bit
+// unique for this specific situation"): cellAlign / cellScale ride on the node; the cell's box still rules.
+const _cellScaleOf = (node) => { const s = Number(node?.getAttr?.('cellScale')); return s > 0 ? Math.min(1, Math.max(0.05, s)) : 1; };
+const _cellAlignOf = (node, def) => node?.getAttr?.('cellAlign') || def.align;
 function _fitNodeToCell(node, def) {
   const v = _cellVisibleRect(node);
   if (!(v.w > 0 && v.h > 0)) return;
-  const f = cellFit(v, { x: node.x(), y: node.y() }, def);
+  const f = cellFit(v, { x: node.x(), y: node.y() }, { ...def, align: _cellAlignOf(node, def) }, _cellScaleOf(node));
   const starts = _maskFollowSnap([node]);                     // the private mask comes along: uniform scale + move
   if (Math.abs(f.k - 1) > 1e-6) { node.width(node.width() * f.k); node.height(node.height() * f.k); }
   node.x(f.x); node.y(f.y);
@@ -1350,6 +1354,14 @@ function _cellEditRect() {
 }
 function _cellEditPreview() {
   const e = _cellEdit; if (!e) return;
+  if (e.pic) {                                                 // one picture: its own alignment / size, the cell as it is
+    if (!_isLiveNode(e.pic)) return;
+    e.pic.setAttr('cellAlign', e.align === (e.def.align || 'c') ? null : e.align);
+    e.pic.setAttr('cellScale', e.scale >= 0.999 ? null : e.scale);
+    _fitNodeToCell(e.pic, e.def);
+    _layer?.batchDraw();
+    return;
+  }
   const g = _cellEditRect(); if (!g || !(g.w > 0 && g.h > 0)) return;
   const tmp = { ...e.def, x: g.x, y: g.y, w: g.w, h: g.h, align: e.align };
   for (const n of e.nodes) if (_isLiveNode(n)) _fitNodeToCell(n, tmp);
@@ -1432,49 +1444,54 @@ function _cellAnchorSnap(oldAbs, newAbs, evt) {
   } else hideSnapGuides();
   return _stage.getAbsoluteTransform().point(p);
 }
-function _cellState() { const g = _cellEditRect(); return g ? { x: g.x, y: g.y, w: g.w, h: g.h, align: _cellEdit.align } : null; }
+function _cellState() { if (_cellEdit?.pic) return { align: _cellEdit.align, scale: _cellEdit.scale }; const g = _cellEditRect(); return g ? { x: g.x, y: g.y, w: g.w, h: g.h, align: _cellEdit.align } : null; }
 function _cellPushHist() {
   const e = _cellEdit; if (!e) return;
   const s = _cellState(); if (!s) return;
   const top = e.hist[e.hi];
-  if (top && ['x', 'y', 'w', 'h', 'align'].every(k => top[k] === s[k])) return;
+  if (top && ['x', 'y', 'w', 'h', 'align', 'scale'].every(k => top[k] === s[k])) return;
   e.hist.length = e.hi + 1; e.hist.push(s); e.hi = e.hist.length - 1;
 }
 function _cellApplyState(s, redraw) {
   const e = _cellEdit; if (!e || !s) return;
+  if (e.pic) { e.align = s.align; e.scale = s.scale; if (e.slider) { e.slider.value = String(Math.round(s.scale * 100)); e.sliderLabel.textContent = `${Math.round(s.scale * 100)} %`; } redraw(); return; }
   e.rect.setAttrs({ x: s.x, y: s.y, width: s.w, height: s.h, scaleX: 1, scaleY: 1 });
   e.align = s.align;
-  e.tr.forceUpdate?.();
+  e.tr?.forceUpdate?.();
   redraw();
 }
-/** Open the cell editor on `def` (a cell). The pictures in it on this step preview the change live. */
-export function beginCellEdit(def) {
+/** Open the cell editor on `def` (a cell). The pictures in it on this step preview the change live.
+ *  `node` (V0.3.6.7): the PICTURE mode — the frame stays as it is (no handles), the spots and a size slider set
+ *  THIS picture's own alignment and proportional size inside the cell; Apply writes them on the node (undoable). */
+export function beginCellEdit(def, { node = null } = {}) {
   if (!_isCellDef(def) || !_uiLayer || !_layer) return false;
   if (_cellEdit) _cancelCellEdit();
   if (_maskEdit) _cancelMaskEdit();
   if (_squareEdit) _cancelSquareUp();
   _cancelBand();
   if (_pinUI) _pinTeardown();
-  const nodes = (_layer.getChildren() || []).filter(n => n.getAttr?.('constShapeId') === def.id);
-  const orig = nodes.map(n => ({ n, x: n.x(), y: n.y(), w: n.width(), h: n.height(), mask: n.getAttr('cropMask') ? { ...n.getAttr('cropMask') } : null }));
+  const pic = node && _isLiveNode(node) && node.getAttr?.('constShapeId') === def.id ? node : null;
+  const nodes = pic ? [pic] : (_layer.getChildren() || []).filter(n => n.getAttr?.('constShapeId') === def.id);
+  const orig = nodes.map(n => ({ n, x: n.x(), y: n.y(), w: n.width(), h: n.height(), mask: n.getAttr('cropMask') ? { ...n.getAttr('cropMask') } : null,
+                                 cellAlign: n.getAttr('cellAlign') || null, cellScale: n.getAttr('cellScale') ?? null }));
   const rect = new Konva.Rect({
     x: def.x, y: def.y, width: def.w, height: def.h,
-    stroke: '#ef4444', strokeWidth: 2, dash: [8, 5], fill: 'rgba(239,68,68,0.05)',
-    draggable: true, name: 'sbs-cell-handle', strokeScaleEnabled: false,
+    stroke: pic ? '#fbbf24' : '#ef4444', strokeWidth: 2, dash: [8, 5], fill: pic ? 'rgba(251,191,36,0.04)' : 'rgba(239,68,68,0.05)',
+    draggable: !pic, name: 'sbs-cell-handle', strokeScaleEnabled: false,
   });
-  const tr = new Konva.Transformer({
+  const tr = pic ? null : new Konva.Transformer({
     rotateEnabled: false, keepRatio: false, anchorSize: 9,
     borderStroke: '#ef4444', anchorStroke: '#ef4444', anchorFill: '#fff',
     enabledAnchors: ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'],
     boundBoxFunc: (oldBox, newBox) => (newBox.width < 8 || newBox.height < 8) ? oldBox : newBox,
     anchorDragBoundFunc: (oldAbs, newAbs, evt) => _cellAnchorSnap(oldAbs, newAbs, evt),   // 🧲 edges snap while resizing
   });
-  _uiLayer.add(rect); _uiLayer.add(tr); tr.nodes([rect]);
+  _uiLayer.add(rect); if (tr) { _uiLayer.add(tr); tr.nodes([rect]); }
   rect.on('transformend', () => { rect.width(Math.abs(rect.width() * rect.scaleX())); rect.height(Math.abs(rect.height() * rect.scaleY())); rect.scaleX(1); rect.scaleY(1); hideSnapGuides(); _cellPushHist(); });
   const redraw = () => { _cellEditPreview(); _cellEdit?.spots?.place?.(_cellEdit.align); _uiLayer?.batchDraw(); _cellEdit?.place?.(); };
   // 🧲 ⇧ the drag rides the item magnet: the session's moving box is the FRAME (its pictures are carried, not targets)
   rect.on('dragstart', () => {
-    const e = _cellEdit; if (!e) return;
+    const e = _cellEdit; if (!e || e.pic) return;
     const starts = new Map([[rect, { x: rect.x(), y: rect.y() }], ...e.nodes.map(n => [n, { x: n.x(), y: n.y() }])]);
     _snapBegin(rect, starts);
     if (_snap?.magnet) { const b = _snapBoxOf(rect); const p = _layer.getRelativePointerPosition(); if (b) { _snap.box0 = b; _snap.grabOff = p ? { x: p.x - b.x, y: p.y - b.y } : null; } }
@@ -1491,11 +1508,22 @@ export function beginCellEdit(def) {
   bar.style.cssText = 'position:fixed;z-index:9999;display:flex;gap:8px;align-items:center;padding:7px 10px;'
     + 'background:var(--panel,#0f172a);border:1px solid #ef4444;border-radius:10px;'
     + 'box-shadow:0 10px 30px rgba(0,0,0,.55);color:var(--text,#e2e8f0);font-size:12px;white-space:nowrap;';
-  const label = document.createElement('span'); label.textContent = `▣ Cell "${def.name}"`; label.style.cssText = 'font-weight:600;';
-  const apply = document.createElement('button'); apply.className = 'btn'; apply.textContent = '✓ Apply (Enter)'; apply.style.cssText = 'height:24px;padding:0 10px;background:rgba(239,68,68,0.25);font-weight:600;';
+  const label = document.createElement('span'); label.textContent = pic ? `▣ "${def.name}" — this picture only` : `▣ Cell "${def.name}"`; label.style.cssText = 'font-weight:600;';
+  const apply = document.createElement('button'); apply.className = 'btn'; apply.textContent = '✓ Apply (Enter)'; apply.style.cssText = `height:24px;padding:0 10px;background:${pic ? 'rgba(251,191,36,0.25)' : 'rgba(239,68,68,0.25)'};font-weight:600;`;
   const cancel = document.createElement('button'); cancel.className = 'btn'; cancel.textContent = '✕ Cancel (Esc)'; cancel.style.cssText = 'height:24px;padding:0 10px;';
-  const hint = document.createElement('span'); hint.className = 'small muted'; hint.textContent = 'drag the frame · pull its handles · click a spot on the frame for the alignment · every step follows on Apply';
-  bar.append(label, apply, cancel, hint);
+  const hint = document.createElement('span'); hint.className = 'small muted';
+  hint.textContent = pic ? 'click a spot for THIS picture\'s alignment · slide its size · the cell\'s box still rules' : 'drag the frame · pull its handles · click a spot on the frame for the alignment · every step follows on Apply';
+  let slider = null, sliderLabel = null, same = null;
+  if (pic) {
+    if (bar.style.borderColor !== undefined) bar.style.borderColor = '#fbbf24';
+    const wrap = document.createElement('label'); wrap.className = 'small muted'; wrap.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    wrap.append('Size');
+    slider = document.createElement('input'); slider.type = 'range'; slider.min = '5'; slider.max = '100'; slider.step = '1'; slider.style.cssText = 'width:120px;';
+    sliderLabel = document.createElement('span'); sliderLabel.style.cssText = 'min-width:38px;text-align:end;';
+    wrap.append(slider, sliderLabel);
+    same = document.createElement('button'); same.className = 'btn'; same.textContent = '↺ Like the others'; same.style.cssText = 'height:24px;padding:0 10px;'; same.title = 'drop this picture\'s own alignment and size';
+    bar.append(label, wrap, same, apply, cancel, hint);
+  } else bar.append(label, apply, cancel, hint);
   document.body.appendChild(bar);
   const place = () => {
     const cr = _container?.getBoundingClientRect(); const r = _cellEdit?.rect;
@@ -1526,7 +1554,7 @@ export function beginCellEdit(def) {
     }
     if (/^Arrow(Left|Right|Up|Down)$/.test(e.key) && !mod) {
       e.preventDefault(); e.stopPropagation();
-      const ce = _cellEdit; if (!ce) return;
+      const ce = _cellEdit; if (!ce || ce.pic) return;   // (a picture's own place is its alignment, not a nudge)
       const step = e.shiftKey ? 10 : 1;
       const d = e.key === 'ArrowLeft' ? [-step, 0] : e.key === 'ArrowRight' ? [step, 0] : e.key === 'ArrowUp' ? [0, -step] : [0, step];
       rect.x(rect.x() + d[0]); rect.y(rect.y() + d[1]);
@@ -1541,10 +1569,18 @@ export function beginCellEdit(def) {
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', place);
   const exclude = new Set(nodes);
-  _cellEdit = { def, rect, tr, bar, onKey, place, spots, align: def.align || 'c', orig, nodes, hist: [], hi: -1, nudge: null, snap: _cellSnapTargets(exclude) };
+  _cellEdit = { def, rect, tr, bar, onKey, place, spots, orig, nodes, hist: [], hi: -1, nudge: null, snap: pic ? null : _cellSnapTargets(exclude),
+                pic, slider, sliderLabel, align: pic ? (pic.getAttr('cellAlign') || def.align || 'c') : (def.align || 'c'), scale: pic ? _cellScaleOf(pic) : 1 };
+  if (pic) {
+    slider.value = String(Math.round(_cellEdit.scale * 100)); sliderLabel.textContent = `${Math.round(_cellEdit.scale * 100)} %`;
+    slider.addEventListener('input', () => { const ce = _cellEdit; if (!ce) return; ce.scale = Math.min(1, Math.max(0.05, Number(slider.value) / 100)); sliderLabel.textContent = `${Math.round(ce.scale * 100)} %`; redraw(); });
+    slider.addEventListener('change', () => _cellPushHist());
+    same.addEventListener('click', () => { const ce = _cellEdit; if (!ce) return; ce.align = def.align || 'c'; ce.scale = 1; slider.value = '100'; sliderLabel.textContent = '100 %'; redraw(); _cellPushHist(); });
+  }
   _cellPushHist();
   redraw();
-  setStatus(`Editing cell "${def.name}" — ${nodes.length} picture${nodes.length === 1 ? '' : 's'} on this step follow as you go; Apply moves every step.`, 'info', 6000);
+  setStatus(pic ? `Adjusting this picture inside "${def.name}" — its own alignment and size; the cell's box still rules.`
+                : `Editing cell "${def.name}" — ${nodes.length} picture${nodes.length === 1 ? '' : 's'} on this step follow as you go; Apply moves every step.`, 'info', 6000);
   return true;
 }
 function _teardownCellEdit() {
@@ -1554,7 +1590,7 @@ function _teardownCellEdit() {
   if (_snap && _snap.node === e.rect) _snapEnd();
   hideSnapGuides();
   try { e.spots?.destroy?.(); } catch { /* gone */ }
-  try { e.tr.destroy(); e.rect.destroy(); } catch { /* gone */ }
+  try { e.tr?.destroy(); e.rect.destroy(); } catch { /* gone */ }
   try { e.bar.remove(); } catch { /* gone */ }
   window.removeEventListener('keydown', e.onKey, true);
   window.removeEventListener('resize', e.place);
@@ -1565,6 +1601,17 @@ function _commitCellEdit() {
   const e = _cellEdit; if (!e) return;
   const g = _cellEditRect(), align = e.align;
   _teardownCellEdit();
+  if (e.pic) {
+    // this picture only: its own alignment / size on the node, one undo entry
+    const n = e.pic, o = e.orig[0] || {};
+    const before = { cellAlign: o.cellAlign ?? null, cellScale: o.cellScale ?? null };
+    const after  = { cellAlign: align === (e.def.align || 'c') ? null : align, cellScale: e.scale >= 0.999 ? null : e.scale };
+    const write = (v) => { if (!_isLiveNode(n)) { setStatus('That picture is on another step — undo it from there.', 'warn', 4000); return; } n.setAttr('cellAlign', v.cellAlign); n.setAttr('cellScale', v.cellScale); _refitIfCell(n); _scheduleSave(); };
+    write(after);
+    if (before.cellAlign !== after.cellAlign || before.cellScale !== after.cellScale) undoManager.push(`Adjust picture in cell "${e.def.name}"`, () => write(before), () => write(after));
+    setStatus(after.cellAlign || after.cellScale ? `This picture: ${CELL_ALIGN_LABELS[align] || align}, ${Math.round(e.scale * 100)} % of the fit — the others keep the cell's rule.` : 'This picture follows the cell like the others again.', 'success', 4500);
+    return;
+  }
   if (!g || !(g.w > 0 && g.h > 0)) return;
   const live = _constShapeDefs().find(d => d.id === e.def.id);
   if (!live) { setStatus('That cell is gone — nothing applied.', 'warn', 4000); return; }
@@ -1579,6 +1626,7 @@ function _cancelCellEdit() {
     if (!_isLiveNode(o.n)) continue;
     o.n.width(o.w); o.n.height(o.h); o.n.x(o.x); o.n.y(o.y);
     if (o.mask) o.n.setAttr('cropMask', o.mask);
+    if (e.pic) { o.n.setAttr('cellAlign', o.cellAlign); o.n.setAttr('cellScale', o.cellScale); }
   }
   _layer?.batchDraw();
   setStatus('Cell editing cancelled.', 'info', 2500);
@@ -1732,6 +1780,14 @@ function _cellBindItems(node) {
 function _cellMenuItems(node, def) {
   return [{ label: `▣ In cell "${def.name}"`, submenu: [
       { label: '⊹ Edit the cell — frame, size, alignment (all steps)…', action: () => beginCellEdit(def) },
+      { label: '✎ Adjust this picture in the cell — its own alignment / size…', action: () => beginCellEdit(def, { node }) },   // V0.3.6.7
+      ...((node.getAttr('cellAlign') || node.getAttr('cellScale')) ? [{ label: '↺ Like the others (drop its own alignment / size)',
+          action: () => {
+            const before = { cellAlign: node.getAttr('cellAlign') || null, cellScale: node.getAttr('cellScale') ?? null };
+            const write = (v) => { if (!_isLiveNode(node)) return; node.setAttr('cellAlign', v.cellAlign); node.setAttr('cellScale', v.cellScale); _refitIfCell(node); _scheduleSave(); };
+            write({ cellAlign: null, cellScale: null });
+            undoManager.push(`Picture follows cell "${def.name}" again`, () => write(before), () => write({ cellAlign: null, cellScale: null }));
+          } }] : []),
       { label: '↺ Fit again', action: () => { _fitNodeToCell(node, def); _layer.batchDraw(); _scheduleSave(); } },
       { separator: true },
       { label: 'Align in the cell', submenu: Object.entries(CELL_ALIGN_LABELS).map(([k, lab]) => ({
@@ -6834,6 +6890,7 @@ function _serializeNode(node) {
                       // copied/duplicated shape came back unbound, and
                       // undoing a delete resurrected it unbound too.
     'constShapeId',   // 📌 V0.3.2.143 — membership in a constant-position def
+    'cellAlign', 'cellScale',   // ▣ V0.3.6.7 — this picture's own alignment / proportional size inside its cell
     'linkId',         // 🔗 V0.3.2.150 — membership in a linked-shape definition
     // 🎯 V0.3.2.151 — 3D anchors. These are the AUTHORED state of an anchored
     // shape; its `points` are derived per frame and deliberately not trusted.
