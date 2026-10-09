@@ -1383,6 +1383,70 @@ function _cellSpots(rect, onPick) {
   };
   return { spots, place, destroy: () => { for (const g of spots) { try { g.destroy(); } catch { /* gone */ } } } };
 }
+// V0.3.6.6 — the frame behaves like any other item (his ask): 🧲 the magnet while it is dragged (items, headers,
+// the picture frame — the pictures IN the cell are not targets, they move with it), its edges snap while it is
+// resized, ⇧ Shift keeps one axis while dragging and the proportion while resizing (Konva's own Shift rule),
+// arrows nudge it (Shift ×10), and Ctrl+Z / Ctrl+Y step through the frame's own history while it is up.
+/** The boxes the frame may line up with: every visible item except the cell's own pictures, the header items. */
+function _cellSnapTargets(exclude) {
+  const prefs = getSnapPrefs();
+  const out = [];
+  if (!prefs.enabled || !_layer || !_stage) return { targets: out, frame: null, distance: 0 };
+  if (prefs.items) {
+    for (const n of _layer.getChildren()) { if (exclude.has(n) || !n.isVisible() || isAnchoredNode(n)) continue; const b = _snapBoxOf(n, true); if (b) out.push(b); }
+    for (const n of _stage.find(h => !!h.getAttr?.('headerId'))) { if (!n.isVisible() || n.opacity() < 1) continue; const b = _snapBoxOf(n, true); if (b) out.push(b); }
+  }
+  const c = getCanonicalSize();
+  return { targets: out, frame: prefs.frame ? { w: c.width, h: c.height } : null, distance: prefs.distance / (Math.abs(_stage.scaleX()) || 1) };
+}
+/** The lines of one axis the frame's edges may snap to (left / centre / right of every target + the picture frame). */
+function _cellSnapLines(axis) {
+  const e = _cellEdit; if (!e?.snap) return [];
+  const L = (b) => axis === 'x' ? [b.x, b.x + b.w / 2, b.x + b.w] : [b.y, b.y + b.h / 2, b.y + b.h];
+  const lines = e.snap.targets.flatMap(b => L(b).map(at => ({ at, box: b, frame: false })));
+  if (e.snap.frame) { const f = { x: 0, y: 0, w: e.snap.frame.w, h: e.snap.frame.h }; lines.push(...L(f).map(at => ({ at, box: f, frame: true }))); }
+  return lines;
+}
+/** A resize handle is dragged: its edge(s) snap to the nearest line within the magnet distance (Alt = no magnet). */
+function _cellAnchorSnap(oldAbs, newAbs, evt) {
+  const e = _cellEdit; if (!e?.snap || evt?.altKey || !_stage) return newAbs;
+  const name = e.tr.getActiveAnchor?.() || '';
+  const inv = _stage.getAbsoluteTransform().copy().invert();
+  const p = inv.point(newAbs);
+  const guides = [];
+  const snapAxis = (axis) => {
+    let best = null;
+    for (const l of _cellSnapLines(axis)) { const gap = l.at - p[axis]; if (Math.abs(gap) <= e.snap.distance && (!best || Math.abs(gap) < Math.abs(best.gap))) best = { gap, l }; }
+    if (!best) return;
+    p[axis] += best.gap;
+    const cross = axis === 'x' ? 'y' : 'x', size = axis === 'x' ? 'h' : 'w';
+    const r = e.rect, fb = { x: r.x(), y: r.y(), w: Math.abs(r.width() * r.scaleX()), h: Math.abs(r.height() * r.scaleY()) };
+    guides.push({ axis, at: best.l.at, from: Math.min(fb[cross], best.l.box[cross]), to: Math.max(fb[cross] + fb[size], best.l.box[cross] + best.l.box[size]), frame: best.l.frame });
+  };
+  if (!/center$/.test(name)) snapAxis('x');            // top-center / bottom-center move only the y edge
+  if (!/^middle/.test(name)) snapAxis('y');            // middle-left / middle-right move only the x edge
+  if (guides.length && _container) {
+    const cr = _container.getBoundingClientRect(), T = _stage.getAbsoluteTransform();
+    const C = (x, y) => { const q = T.point({ x, y }); return { x: Math.max(cr.left, Math.min(cr.right, cr.left + q.x)), y: Math.max(cr.top, Math.min(cr.bottom, cr.top + q.y)) }; };
+    showSnapGuides(guides.map(g => { const a = g.axis === 'x' ? C(g.at, g.from) : C(g.from, g.at), b = g.axis === 'x' ? C(g.at, g.to) : C(g.to, g.at); return { x1: a.x, y1: a.y, x2: b.x, y2: b.y, frame: !!g.frame }; }));
+  } else hideSnapGuides();
+  return _stage.getAbsoluteTransform().point(p);
+}
+function _cellState() { const g = _cellEditRect(); return g ? { x: g.x, y: g.y, w: g.w, h: g.h, align: _cellEdit.align } : null; }
+function _cellPushHist() {
+  const e = _cellEdit; if (!e) return;
+  const s = _cellState(); if (!s) return;
+  const top = e.hist[e.hi];
+  if (top && ['x', 'y', 'w', 'h', 'align'].every(k => top[k] === s[k])) return;
+  e.hist.length = e.hi + 1; e.hist.push(s); e.hi = e.hist.length - 1;
+}
+function _cellApplyState(s, redraw) {
+  const e = _cellEdit; if (!e || !s) return;
+  e.rect.setAttrs({ x: s.x, y: s.y, width: s.w, height: s.h, scaleX: 1, scaleY: 1 });
+  e.align = s.align;
+  e.tr.forceUpdate?.();
+  redraw();
+}
 /** Open the cell editor on `def` (a cell). The pictures in it on this step preview the change live. */
 export function beginCellEdit(def) {
   if (!_isCellDef(def) || !_uiLayer || !_layer) return false;
@@ -1403,12 +1467,23 @@ export function beginCellEdit(def) {
     borderStroke: '#ef4444', anchorStroke: '#ef4444', anchorFill: '#fff',
     enabledAnchors: ['top-left', 'top-center', 'top-right', 'middle-left', 'middle-right', 'bottom-left', 'bottom-center', 'bottom-right'],
     boundBoxFunc: (oldBox, newBox) => (newBox.width < 8 || newBox.height < 8) ? oldBox : newBox,
+    anchorDragBoundFunc: (oldAbs, newAbs, evt) => _cellAnchorSnap(oldAbs, newAbs, evt),   // 🧲 edges snap while resizing
   });
   _uiLayer.add(rect); _uiLayer.add(tr); tr.nodes([rect]);
-  rect.on('transformend', () => { rect.width(Math.abs(rect.width() * rect.scaleX())); rect.height(Math.abs(rect.height() * rect.scaleY())); rect.scaleX(1); rect.scaleY(1); });
+  rect.on('transformend', () => { rect.width(Math.abs(rect.width() * rect.scaleX())); rect.height(Math.abs(rect.height() * rect.scaleY())); rect.scaleX(1); rect.scaleY(1); hideSnapGuides(); _cellPushHist(); });
   const redraw = () => { _cellEditPreview(); _cellEdit?.spots?.place?.(_cellEdit.align); _uiLayer?.batchDraw(); _cellEdit?.place?.(); };
-  rect.on('dragmove transform transformend', redraw);
-  const spots = _cellSpots(rect, (k) => { if (!_cellEdit) return; _cellEdit.align = k; redraw(); });
+  // 🧲 ⇧ the drag rides the item magnet: the session's moving box is the FRAME (its pictures are carried, not targets)
+  rect.on('dragstart', () => {
+    const e = _cellEdit; if (!e) return;
+    const starts = new Map([[rect, { x: rect.x(), y: rect.y() }], ...e.nodes.map(n => [n, { x: n.x(), y: n.y() }])]);
+    _snapBegin(rect, starts);
+    if (_snap?.magnet) { const b = _snapBoxOf(rect); const p = _layer.getRelativePointerPosition(); if (b) { _snap.box0 = b; _snap.grabOff = p ? { x: p.x - b.x, y: p.y - b.y } : null; } }
+    if (_snap) _snap.carry = redraw;
+  });
+  rect.on('dragmove', (ev) => { _snapMove(rect, ev?.evt); redraw(); });
+  rect.on('dragend', () => { _snapEnd(); redraw(); _cellPushHist(); });
+  rect.on('transform', redraw);
+  const spots = _cellSpots(rect, (k) => { if (!_cellEdit) return; _cellEdit.align = k; redraw(); _cellPushHist(); });
   for (const g of spots.spots) _uiLayer.add(g);
   _setSelection(null);   // the content transformer would fight this one
   // the bar — the mask editor's, in red, parked above the frame
@@ -1433,18 +1508,41 @@ export function beginCellEdit(def) {
     bar.style.top  = `${Math.round(Math.min(Math.max(cr.top + 4, top), cr.bottom - bar.offsetHeight - 4))}px`;
   };
   const onKey = (e) => {
-    if (e.key !== 'Enter' && e.key !== 'Escape') return;
     const el = document.activeElement, tag = el?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
     if (document.querySelector('dialog[open]')) return;
-    e.preventDefault(); e.stopPropagation();
-    if (e.key === 'Enter') _commitCellEdit(); else _cancelCellEdit();
+    const mod = e.ctrlKey || e.metaKey, kc = (e.key || '').toLowerCase();
+    const isZ = e.code === 'KeyZ' || kc === 'z', isY = e.code === 'KeyY' || kc === 'y';
+    if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (e.key === 'Enter') _commitCellEdit(); else _cancelCellEdit(); return; }
+    // the frame's own history while it is up — the project's undo stays untouched until Apply
+    if (mod && (isZ || isY)) {
+      e.preventDefault(); e.stopPropagation();
+      const ce = _cellEdit; if (!ce) return;
+      if (ce.nudge) { clearTimeout(ce.nudge.timer); ce.nudge = null; _cellPushHist(); }
+      const redo = isY || e.shiftKey;
+      if (redo ? ce.hi < ce.hist.length - 1 : ce.hi > 0) { ce.hi += redo ? 1 : -1; _cellApplyState(ce.hist[ce.hi], redraw); }
+      else setStatus(redo ? 'Nothing to redo in the cell frame.' : 'Nothing to undo in the cell frame — Esc cancels the whole edit.', 'info', 2500);
+      return;
+    }
+    if (/^Arrow(Left|Right|Up|Down)$/.test(e.key) && !mod) {
+      e.preventDefault(); e.stopPropagation();
+      const ce = _cellEdit; if (!ce) return;
+      const step = e.shiftKey ? 10 : 1;
+      const d = e.key === 'ArrowLeft' ? [-step, 0] : e.key === 'ArrowRight' ? [step, 0] : e.key === 'ArrowUp' ? [0, -step] : [0, step];
+      rect.x(rect.x() + d[0]); rect.y(rect.y() + d[1]);
+      tr.forceUpdate?.(); redraw();
+      if (!ce.nudge) ce.nudge = { timer: null };
+      clearTimeout(ce.nudge.timer);
+      ce.nudge.timer = setTimeout(() => { if (_cellEdit) { _cellEdit.nudge = null; _cellPushHist(); } }, NUDGE_IDLE_MS);
+    }
   };
   apply.addEventListener('click', () => _commitCellEdit());
   cancel.addEventListener('click', () => _cancelCellEdit());
   window.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', place);
-  _cellEdit = { def, rect, tr, bar, onKey, place, spots, align: def.align || 'c', orig, nodes };
+  const exclude = new Set(nodes);
+  _cellEdit = { def, rect, tr, bar, onKey, place, spots, align: def.align || 'c', orig, nodes, hist: [], hi: -1, nudge: null, snap: _cellSnapTargets(exclude) };
+  _cellPushHist();
   redraw();
   setStatus(`Editing cell "${def.name}" — ${nodes.length} picture${nodes.length === 1 ? '' : 's'} on this step follow as you go; Apply moves every step.`, 'info', 6000);
   return true;
@@ -1452,6 +1550,9 @@ export function beginCellEdit(def) {
 function _teardownCellEdit() {
   const e = _cellEdit; if (!e) return;
   _cellEdit = null;
+  if (e.nudge) clearTimeout(e.nudge.timer);
+  if (_snap && _snap.node === e.rect) _snapEnd();
+  hideSnapGuides();
   try { e.spots?.destroy?.(); } catch { /* gone */ }
   try { e.tr.destroy(); e.rect.destroy(); } catch { /* gone */ }
   try { e.bar.remove(); } catch { /* gone */ }
